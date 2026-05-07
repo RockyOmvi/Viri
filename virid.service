@@ -1,0 +1,63 @@
+[Unit]
+Description=Viri Blockchain Node
+Documentation=https://github.com/viri-chain/viri
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=viri
+Group=viri
+ExecStart=/usr/local/bin/virid \
+  --validator \
+  --data-dir /var/lib/viri \
+  --p2p-port 30303 \
+  --rpc-port 8545 \
+  --api-port 8546 \
+  --log-level info \
+  --rpc \
+  --api
+
+Environment=VIRI_READINESS_FORCE=0
+Environment=VIRI_TLS_CERT=/etc/viri/tls/server.crt
+Environment=VIRI_TLS_KEY=/etc/viri/tls/server.key
+EnvironmentFile=-/etc/viri/virid.env
+
+Restart=on-failure
+RestartSec=10
+StartLimitInterval=60
+StartLimitBurst=5
+
+LimitNOFILE=65536
+LimitNPROC=4096
+
+ReadWritePaths=/var/lib/viri
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=virid
+
+ProtectSystem=strict
+ProtectHome=yes
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryDenyWriteExecute=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target

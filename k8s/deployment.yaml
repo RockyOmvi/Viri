@@ -1,0 +1,197 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: viri
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: viri-config
+  namespace: viri
+data:
+  config.json: |
+    {
+      "chain": {
+        "chain_id": 999,
+        "network_name": "viri-testnet",
+        "block_time": "1s",
+        "max_block_size": 10485760,
+        "max_gas_per_block": 30000000
+      },
+      "network": {
+        "listen_addr": "0.0.0.0:30303",
+        "max_peers": 100,
+        "enable_dht": true,
+        "enable_nat": true
+      },
+      "node": {
+        "name": "viri-validator",
+        "data_dir": "/data/viri",
+        "validator_mode": true,
+        "rpc_enabled": true,
+        "rpc_port": 8545,
+        "api_enabled": true,
+        "api_port": 8546
+      },
+      "consensus": {
+        "min_stake": 100000,
+        "max_validators": 50,
+        "epoch_length": 5000,
+        "slashing_enabled": true,
+        "finality_threshold": "2s"
+      },
+      "storage": {
+        "backend": "leveldb",
+        "path": "/data/viri/chaindata",
+        "max_state_size": 10737418240,
+        "pruning_enabled": true,
+        "pruning_keep_recent": 500000,
+        "archive_mode": false
+      },
+      "logging": {
+        "level": "info",
+        "format": "json",
+        "output": "stdout",
+        "max_size": 100,
+        "max_backups": 3
+      },
+      "readiness": {
+        "min_peers": 3,
+        "min_block_height": 1,
+        "force_ready": false
+      }
+    }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: viri-validator
+  namespace: viri
+  labels:
+    app: viri-validator
+spec:
+  type: ClusterIP
+  ports:
+    - name: p2p
+      port: 30303
+      targetPort: 30303
+    - name: rpc
+      port: 8545
+      targetPort: 8545
+    - name: api
+      port: 8546
+      targetPort: 8546
+    - name: metrics
+      port: 9090
+      targetPort: 9090
+  selector:
+    app: viri-validator
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: viri-validator-headless
+  namespace: viri
+  labels:
+    app: viri-validator
+spec:
+  clusterIP: None
+  ports:
+    - name: p2p
+      port: 30303
+      targetPort: 30303
+  selector:
+    app: viri-validator
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: viri-validator
+  namespace: viri
+  labels:
+    app: viri-validator
+spec:
+  serviceName: viri-validator-headless
+  replicas: 4
+  selector:
+    matchLabels:
+      app: viri-validator
+  template:
+    metadata:
+      labels:
+        app: viri-validator
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: validator
+          image: viri-chain/viri:latest
+          imagePullPolicy: Always
+          command: ["virid", "--config", "/config/config.json"]
+          ports:
+            - name: p2p
+              containerPort: 30303
+              protocol: TCP
+            - name: rpc
+              containerPort: 8545
+              protocol: TCP
+            - name: api
+              containerPort: 8546
+              protocol: TCP
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+          env:
+            - name: VIRI_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: VIRI_DATA_DIR
+              value: /data/viri
+          volumeMounts:
+            - name: config
+              mountPath: /config
+              readOnly: true
+            - name: data
+              mountPath: /data/viri
+            - name: validator-key
+              mountPath: /keys
+              readOnly: true
+          resources:
+            requests:
+              cpu: "1000m"
+              memory: "1Gi"
+            limits:
+              cpu: "2000m"
+              memory: "2Gi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 9090
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: 9090
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+      volumes:
+        - name: config
+          configMap:
+            name: viri-config
+        - name: validator-key
+          secret:
+            secretName: viri-validator-keys
+            optional: true
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 50Gi

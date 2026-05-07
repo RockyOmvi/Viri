@@ -1,0 +1,58 @@
+{
+  "chain": {
+    "chain_id": 1,
+    "network_name": "viri-mainnet",
+    "block_time": "1s",
+    "max_block_size": 10485760,
+    "max_gas_per_block": 30000000,
+    "genesis_file": "genesis.json"
+  },
+  "network": {
+    "listen_addr": "0.0.0.0:30303",
+    "external_addr": "",
+    "bootstrap_peers": [],
+    "max_peers": 200,
+    "enable_dht": true,
+    "enable_nat": true
+  },
+  "node": {
+    "name": "viri-validator",
+    "data_dir": ".viri-mainnet",
+    "validator_mode": true,
+    "validator_key": "",
+    "rpc_enabled": true,
+    "rpc_port": 8545,
+    "api_enabled": true,
+    "api_port": 8546,
+    "tls_cert_path": "",
+    "tls_key_path": "",
+    "api_key_hash": ""
+  },
+  "consensus": {
+    "min_stake": 10000000,
+    "max_validators": 100,
+    "epoch_length": 10000,
+    "slashing_enabled": true,
+    "finality_threshold": "2s"
+  },
+  "storage": {
+    "backend": "leveldb",
+    "path": ".viri-mainnet/chaindata",
+    "max_state_size": 10737418240,
+    "pruning_enabled": true,
+    "pruning_keep_recent": 1000000,
+    "archive_mode": false
+  },
+  "logging": {
+    "level": "info",
+    "format": "json",
+    "output": "stdout",
+    "max_size": 100,
+    "max_backups": 5
+  },
+  "readiness": {
+    "min_peers": 5,
+    "min_block_height": 1,
+    "force_ready": false
+  }
+}

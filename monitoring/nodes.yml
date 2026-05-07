@@ -1,0 +1,14 @@
+- targets:
+    - "validator-01.example.com:8545"
+    - "validator-02.example.com:8545"
+    - "validator-03.example.com:8545"
+  labels:
+    role: validator
+    network: mainnet
+
+- targets:
+    - "full-node-01.example.com:8545"
+    - "full-node-02.example.com:8545"
+  labels:
+    role: full-node
+    network: mainnet

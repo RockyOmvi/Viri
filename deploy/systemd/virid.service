@@ -1,0 +1,42 @@
+[Unit]
+Description=Viri Blockchain Node
+Documentation=https://github.com/viri-chain/viri
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=viri
+Group=viri
+ExecStart=/usr/local/bin/virid --config /etc/viri/config.json
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+StartLimitInterval=60
+StartLimitBurst=5
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/viri /var/log/viri
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+MemoryDenyWriteExecute=true
+LockPersonality=true
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=4096
+TasksMax=8192
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=virid
+
+[Install]
+WantedBy=multi-user.target

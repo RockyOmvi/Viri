@@ -1,0 +1,57 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - "alerting_rules.yml"
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - localhost:9093
+
+scrape_configs:
+  - job_name: "viri-node"
+    static_configs:
+      - targets: ["localhost:8545"]
+        labels:
+          instance: "viri-validator-01"
+          role: "validator"
+
+    metrics_path: /metrics
+    scheme: http
+
+    tls_config:
+      insecure_skip_verify: true
+
+    basic_auth:
+      username: prometheus
+      password: changeme
+
+  - job_name: "viri-node-api"
+    static_configs:
+      - targets: ["localhost:8546"]
+        labels:
+          instance: "viri-validator-01"
+          role: "api"
+
+    metrics_path: /metrics
+    scheme: http
+
+  - job_name: "viri-nodes"
+    file_sd_configs:
+      - files:
+          - "nodes.yml"
+        refresh_interval: 5m
+
+    metrics_path: /metrics
+    scheme: http
+
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: "node-exporter"
+    static_configs:
+      - targets: ["localhost:9100"]

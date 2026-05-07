@@ -1,0 +1,34 @@
+{
+  "chain_id": 1337,
+  "network_name": "viri-testnet",
+  "genesis_time": "2026-05-07T15:02:25Z",
+  "hash": "",
+  "validators": [
+    {
+      "address": "0x674ca43b991fceff8c6bae8a31102b08871dde35",
+      "public_key": "0427ef469726b3160fcc09cc92636ce31a4dfb76f75fd03131753f7c4c5e03630bd5c0d3e79d198bc37202cff534db794ffd4069fe6b9204ead1c196233be6dda8",
+      "stake": 1000000,
+      "name": "validator-0"
+    },
+    {
+      "address": "0x4c7e1cfe43f384edecf82380389e098181c5ca26",
+      "public_key": "043ab2cd1c74c1354087b6fbbf64b28660bfb2e5d1f3d24844bb92fe10fe9f7b188aa9fe17cba41d8e1f4e6f56e939a14495842288eae937aa6bb1f1e9bde8d0b4",
+      "stake": 1000000,
+      "name": "validator-1"
+    },
+    {
+      "address": "0x7a4881b2a570a8e6d8b228bad95083aad8826f07",
+      "public_key": "045d943cfe88fd7bff7307ba78ba55fa7d1ebe6c652a23785ac9d02234d287611d7b2433a7425f37371ed1ef296d5a55f621ce0aec04f16dcc2f798ceb72fb2514",
+      "stake": 1000000,
+      "name": "validator-2"
+    },
+    {
+      "address": "0x0840143db3383fe62992fa36eb10fe55ebdfd4d4",
+      "public_key": "041d25519d0d323280453f381ce00992842a1ad16f83b4c0a53bce22632842f47c74e2ac65a801c30e87428a8e78ff3dce309c2065af0282dc3854a02945c0a68b",
+      "stake": 1000000,
+      "name": "validator-3"
+    }
+  ],
+  "total_stake": 4000000,
+  "version": "0.1.0"
+}

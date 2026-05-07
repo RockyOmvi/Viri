@@ -1,0 +1,209 @@
+services:
+  validator-0:
+    build: .
+    container_name: viri-validator-0
+    ports:
+      - "30303:30303"
+      - "8545:8545"
+      - "8546:8546"
+      - "9090:9090"
+    volumes:
+      - validator-0-data:/home/viri/.viri
+      - ./testnet/configs/validator-0:/home/viri/config:ro
+      - ./testnet/genesis/genesis.json:/home/viri/data/genesis.json:ro
+      - ./testnet/keys/validator-0.key:/keys/validator.key:ro
+    environment:
+      - VIRI_NODE_NAME=validator-0
+      - VIRI_NODE_INDEX=0
+      - VIRI_DATA_DIR=/home/viri/.viri
+      - VIRI_RPC_PORT=8545
+      - VIRI_API_PORT=8546
+      - VIRI_LOG_LEVEL=info
+      - VIRI_READINESS_MIN_PEERS=1
+      - VIRI_CONSENSUS_DELAY=60s
+      - VIRI_VALIDATOR_KEY=/keys/validator.key
+      - VIRI_KEY_PASSPHRASE=viri-dev-key
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9090/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+        reservations:
+          cpus: "1.0"
+          memory: 512M
+
+  validator-1:
+    build: .
+    container_name: viri-validator-1
+    ports:
+      - "30304:30303"
+      - "8547:8545"
+    volumes:
+      - validator-1-data:/home/viri/.viri
+      - ./testnet/configs/validator-1:/home/viri/config:ro
+      - ./testnet/genesis/genesis.json:/home/viri/data/genesis.json:ro
+      - ./testnet/keys/validator-1.key:/keys/validator.key:ro
+    environment:
+      - VIRI_NODE_NAME=validator-1
+      - VIRI_NODE_INDEX=1
+      - VIRI_DATA_DIR=/home/viri/.viri
+      - VIRI_RPC_PORT=8545
+      - VIRI_LOG_LEVEL=info
+      - VIRI_READINESS_MIN_PEERS=1
+      - VIRI_CONSENSUS_DELAY=60s
+      - VIRI_VALIDATOR_KEY=/keys/validator.key
+      - VIRI_KEY_PASSPHRASE=viri-dev-key
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9090/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    depends_on:
+      - validator-0
+
+  validator-2:
+    build: .
+    container_name: viri-validator-2
+    ports:
+      - "30305:30303"
+      - "8548:8545"
+    volumes:
+      - validator-2-data:/home/viri/.viri
+      - ./testnet/configs/validator-2:/home/viri/config:ro
+      - ./testnet/genesis/genesis.json:/home/viri/data/genesis.json:ro
+      - ./testnet/keys/validator-2.key:/keys/validator.key:ro
+    environment:
+      - VIRI_NODE_NAME=validator-2
+      - VIRI_NODE_INDEX=2
+      - VIRI_DATA_DIR=/home/viri/.viri
+      - VIRI_RPC_PORT=8545
+      - VIRI_LOG_LEVEL=info
+      - VIRI_READINESS_MIN_PEERS=1
+      - VIRI_CONSENSUS_DELAY=60s
+      - VIRI_VALIDATOR_KEY=/keys/validator.key
+      - VIRI_KEY_PASSPHRASE=viri-dev-key
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9090/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    depends_on:
+      - validator-0
+
+  validator-3:
+    build: .
+    container_name: viri-validator-3
+    ports:
+      - "30306:30303"
+      - "8549:8545"
+    volumes:
+      - validator-3-data:/home/viri/.viri
+      - ./testnet/configs/validator-3:/home/viri/config:ro
+      - ./testnet/genesis/genesis.json:/home/viri/data/genesis.json:ro
+      - ./testnet/keys/validator-3.key:/keys/validator.key:ro
+    environment:
+      - VIRI_NODE_NAME=validator-3
+      - VIRI_NODE_INDEX=3
+      - VIRI_DATA_DIR=/home/viri/.viri
+      - VIRI_RPC_PORT=8545
+      - VIRI_LOG_LEVEL=info
+      - VIRI_READINESS_MIN_PEERS=1
+      - VIRI_CONSENSUS_DELAY=60s
+      - VIRI_VALIDATOR_KEY=/keys/validator.key
+      - VIRI_KEY_PASSPHRASE=viri-dev-key
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9090/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    depends_on:
+      - validator-0
+
+  explorer:
+    build: .
+    container_name: viri-explorer
+    ports:
+      - "8080:8080"
+    environment:
+      - EXPLORER_PORT=8080
+      - VIRI_RPC_URL=http://validator-0:8545
+    restart: unless-stopped
+    depends_on:
+      - validator-0
+    entrypoint: ["/usr/local/bin/virid"]
+    command: ["--explorer"]
+
+  faucet:
+    build: .
+    container_name: viri-faucet
+    ports:
+      - "8081:8081"
+    environment:
+      - FAUCET_PORT=8081
+      - VIRI_RPC_URL=http://validator-0:8545
+      - FAUCET_WALLET_KEY=685de4e57889cec8a5d71434932637b7826b2f8d80ba91f6d762d2cc30d84d88
+      - FAUCET_DAILY_LIMIT=10000000000000000000
+      - FAUCET_PER_CLAIM=1000000000000000000
+      - FAUCET_COOLDOWN=86400
+    restart: unless-stopped
+    depends_on:
+      - validator-0
+    entrypoint: ["/usr/local/bin/virid"]
+    command: ["--faucet"]
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: viri-prometheus
+    ports:
+      - "9091:9090"
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.enable-lifecycle"
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: viri-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./config/grafana/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      - ./config/grafana/dashboard-provider.yml:/etc/grafana/provisioning/dashboards/dashboard-provider.yml:ro
+      - ./config/grafana/dashboards:/etc/grafana/provisioning/dashboards/dashboards:ro
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+
+  alertmanager:
+    image: prom/alertmanager:latest
+    container_name: viri-alertmanager
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./config/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    restart: unless-stopped
+
+volumes:
+  validator-0-data:
+  validator-1-data:
+  validator-2-data:
+  validator-3-data:
+  prometheus-data:
+  grafana-data:

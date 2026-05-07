@@ -1,0 +1,11 @@
+[Unit]
+Description=Viri Node Automated Backup Timer
+Documentation=file:///etc/virid/DEPLOYMENT.md
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=3600
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,186 @@
+version: "3.8"
+
+services:
+  validator-0:
+    build:
+      context: ../
+      dockerfile: Dockerfile
+    container_name: viri-validator-0
+    ports:
+      - "30303:30303"
+      - "8545:8545"
+      - "8546:8546"
+      - "8547:8547"
+      - "8548:8548"
+    volumes:
+      - ./configs/validator-0:/home/viri/config:ro
+      - ./genesis/genesis.json:/home/viri/data/genesis.json:ro
+      - ./keys/validator-0.key:/keys/validator.key:ro
+      - validator-0-data:/home/viri/.viri
+    environment:
+      - VIRI_NODE_NAME=validator-0
+      - VIRI_DATA_DIR=/home/viri/.viri
+      - VIRI_RPC_PORT=8545
+      - VIRI_API_PORT=8546
+      - VIRI_LOG_LEVEL=debug
+      - VIRI_VALIDATOR_MODE=true
+      - VIRI_VALIDATOR_KEY=/keys/validator.key
+      - VIRI_KEY_PASSPHRASE=testnet-passphrase
+      - VIRI_CHAIN_ID=1337
+      - VIRI_NODE_INDEX=0
+      - VIRI_CONSENSUS_DELAY=60s
+      - VIRI_L3_PORT=8548
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9090/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  validator-1:
+    build:
+      context: ../
+      dockerfile: Dockerfile
+    container_name: viri-validator-1
+    ports:
+      - "30313:30303"
+      - "8550:8545"
+      - "8551:8546"
+      - "8552:8547"
+      - "8553:8548"
+    volumes:
+      - ./configs/validator-1:/home/viri/config:ro
+      - ./genesis/genesis.json:/home/viri/data/genesis.json:ro
+      - ./keys/validator-1.key:/keys/validator.key:ro
+      - validator-1-data:/home/viri/.viri
+    environment:
+      - VIRI_NODE_NAME=validator-1
+      - VIRI_DATA_DIR=/home/viri/.viri
+      - VIRI_RPC_PORT=8545
+      - VIRI_API_PORT=8546
+      - VIRI_LOG_LEVEL=debug
+      - VIRI_VALIDATOR_MODE=true
+      - VIRI_VALIDATOR_KEY=/keys/validator.key
+      - VIRI_KEY_PASSPHRASE=testnet-passphrase
+      - VIRI_CHAIN_ID=1337
+      - VIRI_NODE_INDEX=1
+      - VIRI_CONSENSUS_DELAY=60s
+      - VIRI_L3_PORT=8548
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9090/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  validator-2:
+    build:
+      context: ../
+      dockerfile: Dockerfile
+    container_name: viri-validator-2
+    ports:
+      - "30323:30303"
+      - "8555:8545"
+      - "8556:8546"
+      - "8557:8547"
+      - "8558:8548"
+    volumes:
+      - ./configs/validator-2:/home/viri/config:ro
+      - ./genesis/genesis.json:/home/viri/data/genesis.json:ro
+      - ./keys/validator-2.key:/keys/validator.key:ro
+      - validator-2-data:/home/viri/.viri
+    environment:
+      - VIRI_NODE_NAME=validator-2
+      - VIRI_DATA_DIR=/home/viri/.viri
+      - VIRI_RPC_PORT=8545
+      - VIRI_API_PORT=8546
+      - VIRI_LOG_LEVEL=debug
+      - VIRI_VALIDATOR_MODE=true
+      - VIRI_VALIDATOR_KEY=/keys/validator.key
+      - VIRI_KEY_PASSPHRASE=testnet-passphrase
+      - VIRI_CHAIN_ID=1337
+      - VIRI_NODE_INDEX=2
+      - VIRI_CONSENSUS_DELAY=60s
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9090/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  validator-3:
+    build:
+      context: ../
+      dockerfile: Dockerfile
+    container_name: viri-validator-3
+    ports:
+      - "30333:30303"
+      - "8560:8545"
+      - "8561:8546"
+      - "8562:8547"
+      - "8563:8548"
+    volumes:
+      - ./configs/validator-3:/home/viri/config:ro
+      - ./genesis/genesis.json:/home/viri/data/genesis.json:ro
+      - ./keys/validator-3.key:/keys/validator.key:ro
+      - validator-3-data:/home/viri/.viri
+    environment:
+      - VIRI_NODE_NAME=validator-3
+      - VIRI_DATA_DIR=/home/viri/.viri
+      - VIRI_RPC_PORT=8545
+      - VIRI_API_PORT=8546
+      - VIRI_LOG_LEVEL=debug
+      - VIRI_VALIDATOR_MODE=true
+      - VIRI_VALIDATOR_KEY=/keys/validator.key
+      - VIRI_KEY_PASSPHRASE=testnet-passphrase
+      - VIRI_CHAIN_ID=1337
+      - VIRI_NODE_INDEX=3
+      - VIRI_CONSENSUS_DELAY=60s
+      - VIRI_L3_PORT=8548
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9090/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: viri-prometheus
+    ports:
+      - "9091:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.enable-lifecycle"
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: viri-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana:/etc/grafana/provisioning:ro
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+
+volumes:
+  validator-0-data:
+  validator-1-data:
+  validator-2-data:
+  validator-3-data:
+  prometheus-data:
+  grafana-data:

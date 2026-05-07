@@ -1,0 +1,66 @@
+groups:
+  - name: viri-node-alerts
+    interval: 30s
+    rules:
+      - alert: ViriNodeDown
+        expr: up{job="viri-node"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Viri node is down"
+          description: "Viri node {{ $labels.instance }} has been down for more than 1 minute."
+
+      - alert: ViriPeerDrop
+        expr: viri_p2p_peer_count{server="rpc"} < 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Viri node has no peers"
+          description: "Viri node {{ $labels.instance }} has had zero peers for 5 minutes."
+
+      - alert: ViriChainStalled
+        expr: increase(viri_chain_block_height{server="rpc"}[10m]) == 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Viri chain height stalled"
+          description: "No new blocks produced in 10 minutes on {{ $labels.instance }}."
+
+      - alert: ViriHighErrorRate
+        expr: rate(viri_http_requests_total{status=~"5.."}[5m]) / rate(viri_http_requests_total[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High HTTP error rate on Viri node"
+          description: "More than 10% of requests are failing with 5xx errors on {{ $labels.instance }}."
+
+      - alert: ViriRateLimiting
+        expr: rate(viri_http_requests_total{status="429"}[5m]) > 10
+        for: 5m
+        labels:
+          severity: info
+        annotations:
+          summary: "Viri node is rate limiting clients"
+          description: "High rate of 429 responses on {{ $labels.instance }}."
+
+      - alert: ViriHighInFlightRequests
+        expr: viri_http_in_flight_requests{server="rpc"} > 100
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High number of in-flight requests"
+          description: "{{ $value }} requests in-flight on {{ $labels.instance }}."
+
+      - alert: ViriReadyStateNotReady
+        expr: viri_service_ready{server="rpc"} == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Viri node not ready"
+          description: "Node {{ $labels.instance }} has been in not-ready state for 10 minutes."

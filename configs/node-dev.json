@@ -1,0 +1,67 @@
+{
+  "_comment": "Viri Blockchain - Development Node Configuration",
+  "_docs": "Optimized for local development and testing",
+
+  "chain": {
+    "chain_id": 1337,
+    "network_name": "viri-dev",
+    "block_time": "500ms",
+    "max_block_size": 10485760,
+    "max_gas_per_block": 30000000,
+    "genesis_file": ""
+  },
+
+  "network": {
+    "listen_addr": "0.0.0.0:30303",
+    "external_addr": "",
+    "bootstrap_peers": [],
+    "max_peers": 20,
+    "enable_dht": true,
+    "enable_nat": false
+  },
+
+  "node": {
+    "name": "dev-node",
+    "data_dir": ".viri-dev",
+    "validator_mode": true,
+    "validator_key": "",
+    "rpc_enabled": true,
+    "rpc_port": 8545,
+    "api_enabled": true,
+    "api_port": 8546,
+    "tls_cert_path": "",
+    "tls_key_path": "",
+    "api_key_hash": ""
+  },
+
+  "consensus": {
+    "min_stake": 1000,
+    "max_validators": 10,
+    "epoch_length": 100,
+    "slashing_enabled": false,
+    "finality_threshold": "1s"
+  },
+
+  "storage": {
+    "backend": "leveldb",
+    "path": ".viri-dev/chaindata",
+    "max_state_size": 1073741824,
+    "pruning_enabled": false,
+    "pruning_keep_recent": 0,
+    "archive_mode": true
+  },
+
+  "logging": {
+    "level": "debug",
+    "format": "text",
+    "output": "stdout",
+    "max_size": 50,
+    "max_backups": 1
+  },
+
+  "readiness": {
+    "min_peers": 0,
+    "min_block_height": 0,
+    "force_ready": true
+  }
+}

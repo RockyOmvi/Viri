@@ -1,0 +1,23 @@
+[Unit]
+Description=Viri Blockchain Node Database Backup
+After=virid.service
+Requires=virid.service
+
+[Service]
+Type=oneshot
+User=viri
+Group=viri
+
+ExecStart=/usr/local/bin/virictl backup create \
+  --data-dir /var/lib/viri \
+  --backup-dir /var/lib/viri/backups \
+  --max-backups 10
+
+Environment=HOME=/var/lib/viri
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=virid-backup
+
+[Install]
+WantedBy=multi-user.target

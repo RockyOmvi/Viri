@@ -1,0 +1,152 @@
+version: "3.8"
+
+services:
+  bootstrap:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    command: ["--name", "bootstrap", "--data-dir", "/data", "--p2p-port", "30303"]
+    ports:
+      - "30300:30303"
+    volumes:
+      - bootstrap-data:/data
+    networks:
+      - viri-net
+    healthcheck:
+      test: ["CMD", "virictl", "status", "--rpc", "http://localhost:8545"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  validator-1:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    command: [
+      "--validator",
+      "--name", "validator-1",
+      "--data-dir", "/data",
+      "--p2p-port", "30303",
+      "--rpc-port", "8545",
+      "--bootnodes", "/ip4/bootstrap/tcp/30303/p2p/${BOOTSTRAP_PEER_ID}",
+    ]
+    ports:
+      - "30301:30303"
+      - "8541:8545"
+    volumes:
+      - v1-data:/data
+    networks:
+      - viri-net
+    depends_on:
+      bootstrap:
+        condition: service_healthy
+    environment:
+      - BOOTSTRAP_PEER_ID
+
+  validator-2:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    command: [
+      "--validator",
+      "--name", "validator-2",
+      "--data-dir", "/data",
+      "--p2p-port", "30303",
+      "--rpc-port", "8545",
+      "--bootnodes", "/ip4/bootstrap/tcp/30303/p2p/${BOOTSTRAP_PEER_ID}",
+    ]
+    ports:
+      - "30302:30303"
+      - "8542:8545"
+    volumes:
+      - v2-data:/data
+    networks:
+      - viri-net
+    depends_on:
+      bootstrap:
+        condition: service_healthy
+    environment:
+      - BOOTSTRAP_PEER_ID
+
+  validator-3:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    command: [
+      "--validator",
+      "--name", "validator-3",
+      "--data-dir", "/data",
+      "--p2p-port", "30303",
+      "--rpc-port", "8545",
+      "--bootnodes", "/ip4/bootstrap/tcp/30303/p2p/${BOOTSTRAP_PEER_ID}",
+    ]
+    ports:
+      - "30303:30303"
+      - "8543:8545"
+    volumes:
+      - v3-data:/data
+    networks:
+      - viri-net
+    depends_on:
+      bootstrap:
+        condition: service_healthy
+    environment:
+      - BOOTSTRAP_PEER_ID
+
+  validator-4:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    command: [
+      "--validator",
+      "--name", "validator-4",
+      "--data-dir", "/data",
+      "--p2p-port", "30303",
+      "--rpc-port", "8545",
+      "--bootnodes", "/ip4/bootstrap/tcp/30303/p2p/${BOOTSTRAP_PEER_ID}",
+    ]
+    ports:
+      - "30304:30303"
+      - "8544:8545"
+    volumes:
+      - v4-data:/data
+    networks:
+      - viri-net
+    depends_on:
+      bootstrap:
+        condition: service_healthy
+    environment:
+      - BOOTSTRAP_PEER_ID
+
+  explorer:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    command: ["--name", "explorer", "--data-dir", "/data", "--p2p-port", "30303", "--bootnodes", "/ip4/bootstrap/tcp/30303/p2p/${BOOTSTRAP_PEER_ID}"]
+    ports:
+      - "8545:8545"
+    volumes:
+      - explorer-data:/data
+    networks:
+      - viri-net
+    depends_on:
+      bootstrap:
+        condition: service_healthy
+    environment:
+      - BOOTSTRAP_PEER_ID
+
+volumes:
+  bootstrap-data:
+  v1-data:
+  v2-data:
+  v3-data:
+  v4-data:
+  explorer-data:
+
+networks:
+  viri-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
