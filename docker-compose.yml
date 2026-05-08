@@ -23,6 +23,7 @@ services:
       - VIRI_CONSENSUS_DELAY=60s
       - VIRI_VALIDATOR_KEY=/keys/validator.key
       - VIRI_KEY_PASSPHRASE=viri-dev-key
+      - VIRI_API_KEY_HASH=e8748412d08bb4ddadbd5649b56155dbfba00a3db50e8792a913c93b1163f0f8
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9090/health"]

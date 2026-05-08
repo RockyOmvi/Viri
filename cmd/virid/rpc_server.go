@@ -190,14 +190,12 @@ func (s *RPCServer) Start() error {
 	})
 
 	handler := observability.RequestIDMiddleware(
-		security.NewAPIKeyAuthFromHash(s.apiKeyHash).Middleware(
-			security.ConnectionLimitMiddleware(connLimiter, getClientID)(
-				security.DDoSProtectionMiddleware(ddosDetector, getClientID)(
-					security.RateLimitMiddleware(rateLimiter, getClientID)(
-						methodRateLimiter.Middleware(getClientID)(
-							slowQueryDetector.Middleware(getClientID)(
-								observability.ErrorLoggingMiddleware(baseHandler, s.logger),
-							),
+		security.ConnectionLimitMiddleware(connLimiter, getClientID)(
+			security.DDoSProtectionMiddleware(ddosDetector, getClientID)(
+				security.RateLimitMiddleware(rateLimiter, getClientID)(
+					methodRateLimiter.Middleware(getClientID)(
+						slowQueryDetector.Middleware(getClientID)(
+							observability.ErrorLoggingMiddleware(baseHandler, s.logger),
 						),
 					),
 				),
@@ -317,6 +315,25 @@ func (s *RPCServer) handleRequest(w http.ResponseWriter, r *http.Request) {
 	if !exists {
 		s.sendError(w, req.ID, -32601, "Method not found")
 		return
+	}
+
+	sensitiveMethods := map[string]bool{
+		"eth_sendRawTransaction": true,
+		"viri_addPeer":           true,
+		"viri_removePeer":        true,
+	}
+
+	if sensitiveMethods[req.Method] && s.apiKeyHash != "" {
+		key := security.ExtractAPIKey(r)
+		if key == "" {
+			s.sendError(w, req.ID, -32000, "missing API key")
+			return
+		}
+		auth := security.NewAPIKeyAuthFromHash(s.apiKeyHash)
+		if !auth.IsValid(key) {
+			s.sendError(w, req.ID, -32000, "invalid API key")
+			return
+		}
 	}
 
 	result, err := handler(r.Context(), req.Params)

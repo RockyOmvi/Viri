@@ -3,6 +3,7 @@ package security
 import (
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"net/http"
 	"strings"
 )
@@ -33,7 +34,7 @@ func (a *APIKeyAuth) Middleware(next http.Handler) http.Handler {
 			return
 		}
 
-		key := extractAPIKey(r)
+		key := ExtractAPIKey(r)
 		if key == "" {
 			http.Error(w, `{"error":"missing API key"}`, http.StatusUnauthorized)
 			return
@@ -54,10 +55,10 @@ func (a *APIKeyAuth) IsValid(key string) bool {
 
 func hashAPIKey(key string) string {
 	h := sha256.Sum256([]byte(key))
-	return string(h[:])
+	return hex.EncodeToString(h[:])
 }
 
-func extractAPIKey(r *http.Request) string {
+func ExtractAPIKey(r *http.Request) string {
 	if key := r.Header.Get("X-API-Key"); key != "" {
 		return key
 	}
