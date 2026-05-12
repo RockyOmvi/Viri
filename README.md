@@ -327,7 +327,7 @@ Areas where help is most welcome:
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+Non-Commercial Use Only — see [LICENSE](LICENSE) for details. — see [LICENSE](LICENSE).
 
 ---
 
