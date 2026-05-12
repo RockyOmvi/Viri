@@ -5,26 +5,26 @@
   "hash": "",
   "validators": [
     {
-      "address": "0x674ca43b991fceff8c6bae8a31102b08871dde35",
-      "public_key": "0427ef469726b3160fcc09cc92636ce31a4dfb76f75fd03131753f7c4c5e03630bd5c0d3e79d198bc37202cff534db794ffd4069fe6b9204ead1c196233be6dda8",
+      "address": "0x6ef50fdc31678bdb80e54bfc171ec50c86af4ad8",
+      "public_key": "0469affdc737656ac34f6ea27be415a7cb66091060d5407b16de0a52eb8d97cf3e155a7117322e2dfc27361929d2af1452de9045e8a1d810f5be5a19071a0c336f",
       "stake": 1000000,
       "name": "validator-0"
     },
     {
-      "address": "0x4c7e1cfe43f384edecf82380389e098181c5ca26",
-      "public_key": "043ab2cd1c74c1354087b6fbbf64b28660bfb2e5d1f3d24844bb92fe10fe9f7b188aa9fe17cba41d8e1f4e6f56e939a14495842288eae937aa6bb1f1e9bde8d0b4",
+      "address": "0x997911f734da715f0da50ef5a3222cdc65076051",
+      "public_key": "04891c2d8b185212c3cf47e31d529b30fc73bd87ad8438b8832eaee106960f621693a76e3ddbdaecc1442822b939ab3829fa52ec40f0cbfc77c839ba108eb28f85",
       "stake": 1000000,
       "name": "validator-1"
     },
     {
-      "address": "0x7a4881b2a570a8e6d8b228bad95083aad8826f07",
-      "public_key": "045d943cfe88fd7bff7307ba78ba55fa7d1ebe6c652a23785ac9d02234d287611d7b2433a7425f37371ed1ef296d5a55f621ce0aec04f16dcc2f798ceb72fb2514",
+      "address": "0x02d31561697ec60bac9c27e59579918d4402bcd4",
+      "public_key": "046de525e1e33020fd386693a8690654c04446ce35efc10d6113e334ff0a162bf372d8bc61d19770135443828a2d7d1844af5858f9c96138a4a3da7f9f04ced213",
       "stake": 1000000,
       "name": "validator-2"
     },
     {
-      "address": "0x0840143db3383fe62992fa36eb10fe55ebdfd4d4",
-      "public_key": "041d25519d0d323280453f381ce00992842a1ad16f83b4c0a53bce22632842f47c74e2ac65a801c30e87428a8e78ff3dce309c2065af0282dc3854a02945c0a68b",
+      "address": "0x9f787067edd2a0364f1f3c47a3698b9c245b5192",
+      "public_key": "04ee285a6f05724a24b0489a71b4f231d94634c095697a53e0d7178205fbdd7f987b334413497927d51c866bd2247fbcb3909ad15baecf3a80a947bdf4b3d0a364",
       "stake": 1000000,
       "name": "validator-3"
     }

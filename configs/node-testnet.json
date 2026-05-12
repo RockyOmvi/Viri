@@ -15,9 +15,9 @@
     "listen_addr": "0.0.0.0:30303",
     "external_addr": "",
     "bootstrap_peers": [
-      "/ip4/TESTNET_BOOTSTRAP_IP/tcp/30303/p2p/BOOTSTRAP_PEER_ID"
+      "/ip4/BOOTSTRAP_PUBLIC_IP/tcp/30303/p2p/BOOTSTRAP_PEER_ID"
     ],
-    "bootstrap_peers_comment": "Replace TESTNET_BOOTSTRAP_IP and BOOTSTRAP_PEER_ID with actual bootstrap node info, or set up your own bootstrap nodes before launching the public testnet. See DEPLOYMENT.md.",
+    "bootstrap_peers_comment": "Replace BOOTSTRAP_PUBLIC_IP and BOOTSTRAP_PEER_ID with the bootstrap node's public IP and peer ID. To get the peer ID: ssh to the bootstrap VM and run: grep -oP 'peer_id:\\s*\\K\\S+' /opt/viri/config/bootstrap.key. See deploy/standalone-provision.sh or deploy/one-command-provision.sh.",
     "max_peers": 50,
     "enable_dht": true,
     "enable_nat": true
