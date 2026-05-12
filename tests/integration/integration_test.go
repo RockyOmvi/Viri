@@ -604,8 +604,7 @@ func TestNetworkPartition(t *testing.T) {
 		testValidators[idx].broadcastFn = func(msg *consensus.ConsensusMessage) {
 			for _, link := range links {
 				if link.from == idx && link.active {
-					l := link.to
-					go testValidators[l].HandleMessage(msg)
+					testValidators[link.to].HandleMessage(msg)
 				}
 			}
 		}
@@ -663,13 +662,14 @@ func TestNetworkPartition(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 
 	for i := 0; i < 4; i++ {
-		idx2 := i
 		testValidators[i] = newTestValidator(t, dir, i, keys[i], staking, validatorSet)
+	}
+	for i := 0; i < 4; i++ {
+		idx2 := i
 		testValidators[i].broadcastFn = func(msg *consensus.ConsensusMessage) {
 			for _, link := range links {
 				if link.from == idx2 && link.active {
-					l := link.to
-					go testValidators[l].HandleMessage(msg)
+					testValidators[link.to].HandleMessage(msg)
 				}
 			}
 		}
