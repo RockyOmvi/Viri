@@ -61,6 +61,9 @@ func (p *testBP) ValidateBlock(blockData []byte, blockHash []byte, height uint64
 
 func (p *testBP) CommitBlock(blockHash []byte, height uint64) error {
 	p.mu.Lock()
+	if p.proposedBlocks == nil {
+		p.proposedBlocks = make(map[uint64]*blockProposal)
+	}
 	info, ok := p.proposedBlocks[height]
 	if !ok {
 		p.proposedBlocks[height] = &blockProposal{
