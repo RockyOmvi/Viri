@@ -8,6 +8,7 @@ import (
 
 	"github.com/viri-chain/viri/internal/layer1/crypto"
 	"github.com/viri-chain/viri/internal/layer1/ledger"
+	"github.com/viri-chain/viri/internal/layer2/contracts"
 	"github.com/viri-chain/viri/internal/layer2/privacy"
 	"github.com/viri-chain/viri/internal/layer2/vm"
 	"github.com/viri-chain/viri/internal/layer2/zk"
@@ -37,11 +38,62 @@ type ExecutionState struct {
 }
 
 type AccountState struct {
-	Address []byte
-	Balance *big.Int
-	Nonce   uint64
-	Code    []byte
-	Storage map[string][]byte
+	Address       []byte
+	Balance       *big.Int
+	Nonce         uint64
+	Code          []byte
+	Storage       map[string][]byte
+	TokenBalances map[string]*big.Int // token address hex -> balance (for fee-in-token)
+}
+
+// GetTokenBalance returns the balance for a specific token.
+// If the token is nil/zero, returns the native Balance.
+func (a *AccountState) GetTokenBalance(token []byte) *big.Int {
+	if len(token) == 0 {
+		return a.Balance
+	}
+	if a.TokenBalances == nil {
+		return new(big.Int)
+	}
+	b, ok := a.TokenBalances[string(token)]
+	if !ok || b == nil {
+		return new(big.Int)
+	}
+	return b
+}
+
+// DeductTokenBalance subtracts amount from the specified token balance.
+func (a *AccountState) DeductTokenBalance(token []byte, amount *big.Int) {
+	if len(token) == 0 {
+		a.Balance.Sub(a.Balance, amount)
+		return
+	}
+	if a.TokenBalances == nil {
+		a.TokenBalances = make(map[string]*big.Int)
+	}
+	current := a.TokenBalances[string(token)]
+	if current == nil {
+		current = new(big.Int)
+	}
+	current.Sub(current, amount)
+	a.TokenBalances[string(token)] = current
+}
+
+// AddTokenBalance adds amount to the specified token balance.
+func (a *AccountState) AddTokenBalance(token []byte, amount *big.Int) {
+	if len(token) == 0 {
+		a.Balance.Add(a.Balance, amount)
+		return
+	}
+	if a.TokenBalances == nil {
+		a.TokenBalances = make(map[string]*big.Int)
+	}
+	current := a.TokenBalances[string(token)]
+	if current == nil {
+		current = new(big.Int)
+	}
+	current.Add(current, amount)
+	a.TokenBalances[string(token)] = current
 }
 
 // Precompile addresses for built-in operations
@@ -51,15 +103,28 @@ var (
 	addrZKVerify        = []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF3}
 )
 
+type VMType uint8
+
+const (
+	VMTypeDefault VMType = iota
+	VMTypeEVM
+	VMTypeWASM
+)
+
 type ExecutionEngine struct {
-	baseGas      uint64
-	transferGas  uint64
-	deployGas    uint64
-	callGas      uint64
-	storageGas   uint64
-	logGas       uint64
-	shieldedPool *privacy.ShieldedPool
-	zkVerifier   *zk.Verifier
+	baseGas        uint64
+	transferGas    uint64
+	deployGas      uint64
+	callGas        uint64
+	storageGas     uint64
+	logGas         uint64
+	shieldedPool   *privacy.ShieldedPool
+	zkVerifier     *zk.Verifier
+	gnarkVerifier  *zk.GnarkVerifier
+	gnarkCircuit   *zk.Circuit
+	contractMgr    *contracts.ContractManager
+	vmType         VMType
+	parallel       bool
 }
 
 func NewExecutionEngine() *ExecutionEngine {
@@ -81,6 +146,37 @@ func (e *ExecutionEngine) SetZKVerifier(zv *zk.Verifier) {
 	e.zkVerifier = zv
 }
 
+// SetGnarkVerifier configures the constraint-based ZK verifier with its circuit.
+func (e *ExecutionEngine) SetGnarkVerifier(gv *zk.GnarkVerifier, circuit *zk.Circuit) {
+	e.gnarkVerifier = gv
+	e.gnarkCircuit = circuit
+}
+
+// SetVMType configures which VM backend to use for contract execution.
+func (e *ExecutionEngine) SetVMType(t VMType) {
+	e.vmType = t
+}
+
+// SetParallel enables or disables parallel transaction execution.
+func (e *ExecutionEngine) SetParallel(enabled bool) {
+	e.parallel = enabled
+}
+
+func (e *ExecutionEngine) SetContractManager(cm *contracts.ContractManager) {
+	e.contractMgr = cm
+}
+
+// newExecutor creates a VM executor matching the configured VM type.
+func (e *ExecutionEngine) newExecutor(ctx *vm.EVMContext, state *evmStateAdapter) vm.Executor {
+	switch e.vmType {
+	case VMTypeWASM:
+		adapter := vm.NewWasmAdapter(ctx.GasLimit)
+		return adapter
+	default:
+		return vm.NewEVMExecutor(ctx, state)
+	}
+}
+
 func isPrecompileAddress(addr []byte) bool {
 	if len(addr) != 20 {
 		return false
@@ -97,6 +193,10 @@ func isPrecompileAddress(addr []byte) bool {
 }
 
 func (e *ExecutionEngine) ExecuteBlock(txs []*ledger.Transaction, blockHeight uint64, getAccount func([]byte) (*AccountState, error), setAccount func([]byte, *AccountState) error) ([]*ExecutionResult, uint64, error) {
+	if e.parallel && len(txs) > 1 {
+		return e.ExecuteBlockParallel(txs, blockHeight, getAccount, setAccount)
+	}
+
 	results := make([]*ExecutionResult, 0, len(txs))
 	totalGasUsed := uint64(0)
 
@@ -142,15 +242,35 @@ func (e *ExecutionEngine) ExecuteTransaction(tx *ledger.Transaction, blockHeight
 		}, nil
 	}
 
-	requiredBalance := new(big.Int).SetUint64(tx.Value)
-	requiredBalance.Add(requiredBalance, new(big.Int).SetUint64(gasCost*tx.GasPrice))
+	feeToken := tx.FeeToken()
+	feeAmount := new(big.Int).SetUint64(gasCost * tx.GasPrice)
 
-	if sender.Balance.Cmp(requiredBalance) < 0 {
-		return &ExecutionResult{
-			GasUsed: 0,
-			Status:  0,
-			Err:     fmt.Errorf("insufficient balance"),
-		}, nil
+	// Check balance: value in native, fee in fee token
+	if len(feeToken) == 0 {
+		// Native fee: balance must cover value + fee
+		totalNeeded := new(big.Int).SetUint64(tx.Value)
+		totalNeeded.Add(totalNeeded, feeAmount)
+		if sender.Balance.Cmp(totalNeeded) < 0 {
+			return &ExecutionResult{
+				GasUsed: 0, Status: 0,
+				Err: fmt.Errorf("insufficient native balance: have %s, need %s", sender.Balance, totalNeeded),
+			}, nil
+		}
+	} else {
+		// Token fee: native balance must cover value, token balance must cover fee
+		if new(big.Int).SetUint64(tx.Value).Cmp(sender.Balance) > 0 {
+			return &ExecutionResult{
+				GasUsed: 0, Status: 0,
+				Err: fmt.Errorf("insufficient native balance for value transfer"),
+			}, nil
+		}
+		tokenBal := sender.GetTokenBalance(feeToken)
+		if tokenBal.Cmp(feeAmount) < 0 {
+			return &ExecutionResult{
+				GasUsed: 0, Status: 0,
+				Err: fmt.Errorf("insufficient token balance for fee: have %s, need %s", tokenBal, feeAmount),
+			}, nil
+		}
 	}
 
 	if tx.Nonce != sender.Nonce {
@@ -162,8 +282,14 @@ func (e *ExecutionEngine) ExecuteTransaction(tx *ledger.Transaction, blockHeight
 	}
 
 	sender.Nonce = tx.Nonce + 1
-	sender.Balance.Sub(sender.Balance, new(big.Int).SetUint64(tx.Value))
-	sender.Balance.Sub(sender.Balance, new(big.Int).SetUint64(gasCost*tx.GasPrice))
+
+	// Deduct value in native coin
+	if tx.Value > 0 {
+		sender.Balance.Sub(sender.Balance, new(big.Int).SetUint64(tx.Value))
+	}
+
+	// Deduct fee in appropriate currency
+	sender.DeductTokenBalance(feeToken, feeAmount)
 
 	if err := setAccount(senderAddr, sender); err != nil {
 		return &ExecutionResult{
@@ -189,20 +315,27 @@ func (e *ExecutionEngine) ExecuteTransaction(tx *ledger.Transaction, blockHeight
 	}
 
 	if result.Err != nil {
-		result.GasUsed = gasCost
+		if result.GasUsed == 0 {
+			result.GasUsed = gasCost
+		}
 		return result, nil
 	}
 
-	result.GasUsed = gasCost
-	result.GasRefund = (tx.GasLimit - gasCost) * tx.GasPrice
 	result.Status = 1
+	if result.GasUsed == 0 {
+		result.GasUsed = gasCost
+	}
+	feeToCharge := result.GasUsed
+	result.GasRefund = (tx.GasLimit - feeToCharge) * tx.GasPrice
 
 	if result.GasRefund > 0 {
 		refundAddr := tx.SenderAddress()
 		refundAccount, err := getAccount(refundAddr)
 		if err == nil {
-			refundAccount.Balance.Add(refundAccount.Balance, new(big.Int).SetUint64(result.GasRefund))
-			_ = setAccount(refundAddr, refundAccount)
+			refundAccount.AddTokenBalance(feeToken, new(big.Int).SetUint64(result.GasRefund))
+			if err := setAccount(refundAddr, refundAccount); err != nil {
+				fmt.Printf("[WARN] Failed to persist gas refund for %x: %v\n", refundAddr, err)
+			}
 		}
 	}
 
@@ -259,43 +392,51 @@ func (e *ExecutionEngine) executeDeploy(tx *ledger.Transaction, getAccount func(
 		}
 	}
 
-	// Derive unique contract address from hash(sender || nonce)
 	nonceBytes := make([]byte, 8)
 	binary.BigEndian.PutUint64(nonceBytes, tx.Nonce)
-	contractAddr := crypto.SHA256(append(tx.SenderAddress(), nonceBytes...))[:20]
+	contractAddr := crypto.Keccak256(append(tx.SenderAddress(), nonceBytes...))[:20]
 
 	contract := &AccountState{
 		Address: contractAddr,
 		Balance: new(big.Int).SetUint64(tx.Value),
 		Nonce:   0,
-		Code:    tx.Data,
+		Code:    nil,
 		Storage: make(map[string][]byte),
 	}
 
 	if err := setAccount(contractAddr, contract); err != nil {
 		return &ExecutionResult{
 			Status: 0,
-			Err:    fmt.Errorf("failed to deploy contract"),
+			Err:    fmt.Errorf("failed to create contract account"),
 		}
 	}
 
-	// Try to execute constructor if we wanted to, but for now we just deploy the code as is.
-	// Actually, an EVM deployment executes init code and returns the runtime code.
-	// We'll run the code and save its output as the contract code.
 	stateAdapter := &evmStateAdapter{
 		getAccount: getAccount,
 		setAccount: setAccount,
 	}
+
+	constructorArgs := []byte{}
+	if len(tx.Data) > 32 {
+		constructorArgs = tx.Data[len(tx.Data)-32:]
+	}
+
 	ctx := &vm.EVMContext{
-			Caller:   tx.SenderAddress(),
-			Address:  contractAddr,
-			Value:    new(big.Int).SetUint64(tx.Value),
-			GasLimit: tx.GasLimit,
-			GasPrice: new(big.Int).SetUint64(tx.GasPrice),
-			Data:     tx.Data, // constructor args via calldata
-		}
-	executor := vm.NewEVMExecutor(ctx, stateAdapter)
-	output, gasUsed, err := executor.Execute(tx.Data)
+		Caller:   tx.SenderAddress(),
+		Address:  contractAddr,
+		Value:    new(big.Int).SetUint64(tx.Value),
+		GasLimit: tx.GasLimit,
+		GasPrice: new(big.Int).SetUint64(tx.GasPrice),
+		Data:     constructorArgs,
+	}
+
+	initCode := tx.Data
+	if len(tx.Data) > 32 {
+		initCode = tx.Data[:len(tx.Data)-32]
+	}
+
+	executor := e.newExecutor(ctx, stateAdapter)
+	runtimeCode, gasUsed, err := executor.Execute(initCode)
 
 	if err != nil {
 		return &ExecutionResult{
@@ -305,13 +446,23 @@ func (e *ExecutionEngine) executeDeploy(tx *ledger.Transaction, getAccount func(
 		}
 	}
 
-	// Re-read the contract account to preserve storage set during init code execution
-	deployedContract, _ := getAccount(contractAddr)
-	if deployedContract == nil {
-		deployedContract = contract
+	if len(runtimeCode) == 0 {
+		runtimeCode = initCode
 	}
-	deployedContract.Code = output
-	setAccount(contractAddr, deployedContract)
+
+	contract.Code = runtimeCode
+
+	deployedContract, _ := getAccount(contractAddr)
+	if deployedContract != nil && deployedContract.Storage != nil {
+		contract.Storage = deployedContract.Storage
+	}
+
+	if err := setAccount(contractAddr, contract); err != nil {
+		return &ExecutionResult{
+			Status:  0,
+			Err:     fmt.Errorf("failed to save contract: %v", err),
+		}
+	}
 
 	return &ExecutionResult{
 		Status:  1,
@@ -322,7 +473,7 @@ func (e *ExecutionEngine) executeDeploy(tx *ledger.Transaction, getAccount func(
 
 func (e *ExecutionEngine) executeCall(tx *ledger.Transaction, getAccount func([]byte) (*AccountState, error), setAccount func([]byte, *AccountState) error) *ExecutionResult {
 	// Check for precompile addresses
-	if e.shieldedPool != nil || e.zkVerifier != nil {
+	if e.shieldedPool != nil || e.zkVerifier != nil || e.gnarkVerifier != nil {
 		if res := e.handlePrecompile(tx, getAccount, setAccount); res != nil {
 			return res
 		}
@@ -333,6 +484,20 @@ func (e *ExecutionEngine) executeCall(tx *ledger.Transaction, getAccount func([]
 		return &ExecutionResult{
 			Status: 0,
 			Err:    fmt.Errorf("contract not found"),
+		}
+	}
+
+	// Credit the contract with the transferred value (already deducted from sender)
+	if tx.Value > 0 {
+		if contract.Balance == nil {
+			contract.Balance = new(big.Int)
+		}
+		contract.Balance.Add(contract.Balance, new(big.Int).SetUint64(tx.Value))
+		if err := setAccount(tx.To, contract); err != nil {
+			return &ExecutionResult{
+				Status: 0,
+				Err:    fmt.Errorf("failed to credit contract balance"),
+			}
 		}
 	}
 
@@ -350,7 +515,7 @@ func (e *ExecutionEngine) executeCall(tx *ledger.Transaction, getAccount func([]
 		Data:     tx.Data,
 	}
 
-	executor := vm.NewEVMExecutor(ctx, stateAdapter)
+	executor := e.newExecutor(ctx, stateAdapter)
 	output, gasUsed, err := executor.Execute(contract.Code)
 
 	if err != nil {
@@ -381,6 +546,18 @@ func (e *ExecutionEngine) handlePrecompile(tx *ledger.Transaction, getAccount fu
 	case bytes.Equal(tx.To, addrZKVerify):
 		return e.precompileZKVerify(tx, getAccount, setAccount)
 	}
+
+	// Check standard contracts (ERC20, ERC721, etc.)
+	if e.contractMgr != nil {
+		if sc := e.contractMgr.GetStandardContract(tx.To); sc != nil {
+			output, err := sc.ExecuteCall(tx.SenderAddress(), tx.Data)
+			if err != nil {
+				return &ExecutionResult{Status: 0, GasUsed: 1000, Err: err}
+			}
+			return &ExecutionResult{Status: 1, GasUsed: 1000, Output: output}
+		}
+	}
+
 	return nil
 }
 
@@ -423,11 +600,16 @@ func (e *ExecutionEngine) precompileShieldedWithdraw(tx *ledger.Transaction, get
 		}
 	}
 	recipient.Balance.Add(recipient.Balance, new(big.Int).SetUint64(tx.Value))
-	_ = setAccount(tx.To, recipient)
+	if err := setAccount(tx.To, recipient); err != nil {
+		fmt.Printf("[WARN] Failed to persist shielded withdraw recipient %x: %v\n", tx.To, err)
+	}
 	return &ExecutionResult{Status: 1}
 }
 
 func (e *ExecutionEngine) precompileZKVerify(tx *ledger.Transaction, getAccount func([]byte) (*AccountState, error), setAccount func([]byte, *AccountState) error) *ExecutionResult {
+	if e.gnarkVerifier != nil && e.gnarkCircuit != nil {
+		return e.precompileGnarkVerify(tx)
+	}
 	if e.zkVerifier == nil {
 		return &ExecutionResult{Status: 0, Err: fmt.Errorf("ZK verifier not available")}
 	}
@@ -445,9 +627,47 @@ func (e *ExecutionEngine) precompileZKVerify(tx *ledger.Transaction, getAccount 
 	return &ExecutionResult{Status: 1, Output: []byte{0x01}}
 }
 
+func (e *ExecutionEngine) precompileGnarkVerify(tx *ledger.Transaction) *ExecutionResult {
+	if len(tx.Data) < 96 {
+		return &ExecutionResult{Status: 0, Err: fmt.Errorf("invalid verify data: need A(32)+B(32)+C(32)+publicWitnesses")}
+	}
+	proof := &zk.Proof{
+		A: []*big.Int{new(big.Int).SetBytes(tx.Data[:32])},
+		B: []*big.Int{new(big.Int).SetBytes(tx.Data[32:64])},
+		C: []*big.Int{new(big.Int).SetBytes(tx.Data[64:96])},
+	}
+	numPublic := e.gnarkCircuit.NumInputs
+	publicWitness := &zk.Witness{
+		Public: make([]*big.Int, numPublic),
+		Secret: []*big.Int{},
+	}
+	for i := 0; i < numPublic; i++ {
+		offset := 96 + i*32
+		if offset+32 > len(tx.Data) {
+			publicWitness.Public[i] = big.NewInt(0)
+			continue
+		}
+		publicWitness.Public[i] = new(big.Int).SetBytes(tx.Data[offset : offset+32])
+	}
+	proof.CircuitID = []byte(e.gnarkCircuit.Name)
+	proof.Public = publicWitness.Public
+	if err := e.gnarkVerifier.Verify(proof, e.gnarkCircuit, publicWitness); err != nil {
+		return &ExecutionResult{Status: 0, Err: fmt.Errorf("gnark proof verification failed: %v", err)}
+	}
+	return &ExecutionResult{Status: 1, Output: []byte{0x01}}
+}
+
 type evmStateAdapter struct {
 	getAccount func([]byte) (*AccountState, error)
 	setAccount func([]byte, *AccountState) error
+}
+
+func (s *evmStateAdapter) GetNonce(addr []byte) uint64 {
+	acct, err := s.getAccount(addr)
+	if err != nil || acct == nil {
+		return 0
+	}
+	return acct.Nonce
 }
 
 func (s *evmStateAdapter) GetBalance(addr []byte) *big.Int {

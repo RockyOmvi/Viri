@@ -366,6 +366,8 @@ func (al *AuditLogger) writeEntryLocked(entry *AuditEntry) {
 func (al *AuditLogger) createEntry(eventType string, eventData interface{}) *AuditEntry {
 	al.mu.Lock()
 	seqNo := al.currentSeq + 1
+	prevHash := make([]byte, len(al.lastHash))
+	copy(prevHash, al.lastHash)
 	al.mu.Unlock()
 
 	rawEventData, _ := json.Marshal(eventData)
@@ -375,7 +377,7 @@ func (al *AuditLogger) createEntry(eventType string, eventData interface{}) *Aud
 		Timestamp:  time.Now().UTC(),
 		EventType:  eventType,
 		EventData:  eventData,
-		PrevHash:   al.lastHash,
+		PrevHash:   prevHash,
 		rawEventData: rawEventData,
 	}
 
@@ -394,8 +396,9 @@ func (al *AuditLogger) createEntry(eventType string, eventData interface{}) *Aud
 func (al *AuditLogger) computeHash(entry *AuditEntry) []byte {
 	h := sha256.New()
 
-	binary.BigEndian.PutUint64(entrySeqBuf[:], entry.SeqNo)
-	h.Write(entrySeqBuf[:])
+	var seqBuf [8]byte
+	binary.BigEndian.PutUint64(seqBuf[:], entry.SeqNo)
+	h.Write(seqBuf[:])
 
 	ts, _ := entry.Timestamp.MarshalBinary()
 	h.Write(ts)
@@ -414,7 +417,7 @@ func (al *AuditLogger) computeHash(entry *AuditEntry) []byte {
 	return h.Sum(nil)
 }
 
-var entrySeqBuf [8]byte
+// entrySeqBuf is kept for backward compatibility; new code uses local buffers.
 
 func (al *AuditLogger) LogProposal(height, view uint64, proposer, blockHash string) {
 	event := EventProposal{
@@ -622,8 +625,9 @@ func (al *AuditLogger) VerifyAuditChain() error {
 func (al *AuditLogger) computeHashForVerify(entry *AuditEntry) []byte {
 	h := sha256.New()
 
-	binary.BigEndian.PutUint64(entrySeqBuf[:], entry.SeqNo)
-	h.Write(entrySeqBuf[:])
+	var seqBuf [8]byte
+	binary.BigEndian.PutUint64(seqBuf[:], entry.SeqNo)
+	h.Write(seqBuf[:])
 
 	ts, _ := entry.Timestamp.MarshalBinary()
 	h.Write(ts)

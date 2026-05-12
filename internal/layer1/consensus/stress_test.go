@@ -252,7 +252,8 @@ func TestStressMessageThroughput(t *testing.T) {
 			for j := 0; j < n; j++ {
 				if j != idx {
 					if engines[j].IsRunning() {
-						engines[j].HandleMessage(msg)
+						j := j
+						go engines[j].HandleMessage(msg)
 					}
 				}
 			}

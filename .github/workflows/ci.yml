@@ -61,6 +61,59 @@ jobs:
       - name: Go vet
         run: go vet ./...
 
+  benchmark:
+    name: Run Benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Run benchmarks
+        run: go test -bench=. -benchmem -count=1 -run=^$ ./tests/benchmarks/... -timeout 10m
+
+      - name: Run VM benchmarks
+        run: go test -bench=. -benchmem -count=1 -run=^$ ./internal/layer2/vm/... -timeout 5m
+
+  fuzz:
+    name: Run Fuzz Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Fuzz consensus
+        run: go test -fuzz=FuzzHasSuperMajority -fuzztime=30s ./internal/layer1/consensus/... -timeout 5m
+
+      - name: Fuzz signatures
+        run: go test -fuzz=FuzzSignatureVerification -fuzztime=30s ./tests/fuzz/... -timeout 5m
+
+      - name: Fuzz transaction hash
+        run: go test -fuzz=FuzzTransactionHash -fuzztime=30s ./tests/fuzz/... -timeout 5m
+
+      - name: Fuzz merkle tree
+        run: go test -fuzz=FuzzMerkleTree -fuzztime=30s ./tests/fuzz/... -timeout 5m
+
+      - name: Fuzz ECDSA sign/verify
+        run: go test -fuzz=FuzzECDSASignVerify -fuzztime=30s ./tests/fuzz/... -timeout 5m
+
   security-scan:
     name: Security Scan
     runs-on: ubuntu-latest

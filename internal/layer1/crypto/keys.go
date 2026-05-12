@@ -3,16 +3,21 @@ package crypto
 import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
-	"crypto/rand"
+	crand "crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"math/big"
 
-	"golang.org/x/crypto/ripemd160"
 	"golang.org/x/crypto/sha3"
 )
+
+// Note: PrivateKey implements Signer/KeyPair via SignMessage, Scheme, PublicBytes, Seed, PrivateBytes.
+// PublicKey implements Verifier via VerifyMessage, Scheme, PublicBytes.
+// Compile-time interface assertions are omitted because Sign/Verify take concrete *Signature types
+// rather than []byte for backward compatibility.
 
 var ErrInvalidSignature = errors.New("invalid signature")
 var ErrInvalidKey = errors.New("invalid key")
@@ -30,7 +35,11 @@ type Signature struct {
 }
 
 func GenerateKey() (*PrivateKey, error) {
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	return GenerateKeyWithReader(crand.Reader)
+}
+
+func GenerateKeyWithReader(rand io.Reader) (*PrivateKey, error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand)
 	if err != nil {
 		return nil, err
 	}
@@ -41,14 +50,41 @@ func (k *PrivateKey) PubKey() *PublicKey {
 	return &PublicKey{PublicKey: &k.PrivateKey.PublicKey}
 }
 
+// Sign returns the raw 64-byte ECDSA signature.
 func (k *PrivateKey) Sign(data []byte) (*Signature, error) {
 	hash := SHA256(data)
-	r, s, err := ecdsa.Sign(rand.Reader, k.PrivateKey, hash)
+	r, s, err := ecdsa.Sign(crand.Reader, k.PrivateKey, hash)
 	if err != nil {
 		return nil, err
 	}
 	return &Signature{R: r, S: s}, nil
 }
+
+// VerifyMessage implements the Verifier interface on PrivateKey (delegates to public key).
+func (k *PrivateKey) VerifyMessage(data, sig []byte) bool {
+	return k.PubKey().VerifyMessage(data, sig)
+}
+
+// SignMessage implements the Signer interface.
+func (k *PrivateKey) SignMessage(data []byte) ([]byte, error) {
+	sig, err := k.Sign(data)
+	if err != nil {
+		return nil, err
+	}
+	return sig.Bytes(), nil
+}
+
+// Scheme returns SchemeECDSA for backward compatibility.
+func (k *PrivateKey) Scheme() Scheme { return SchemeECDSA }
+
+// PublicBytes returns the uncompressed public key bytes.
+func (k *PrivateKey) PublicBytes() []byte { return k.PubKey().Bytes() }
+
+// Seed returns the private key scalar as 32 bytes.
+func (k *PrivateKey) Seed() []byte { return k.D.Bytes() }
+
+// PrivateBytes returns the private key bytes.
+func (k *PrivateKey) PrivateBytes() []byte { return k.D.Bytes() }
 
 func (k *PrivateKey) Hex() string {
 	return hex.EncodeToString(k.D.Bytes())
@@ -59,11 +95,26 @@ func (pub *PublicKey) Verify(data []byte, sig *Signature) bool {
 	return ecdsa.Verify(pub.PublicKey, hash, sig.R, sig.S)
 }
 
+// VerifyMessage implements the Verifier interface, accepting raw bytes.
+func (pub *PublicKey) VerifyMessage(data, sig []byte) bool {
+	if len(sig) != 64 {
+		return false
+	}
+	r := new(big.Int).SetBytes(sig[:32])
+	s := new(big.Int).SetBytes(sig[32:])
+	hash := SHA256(data)
+	return ecdsa.Verify(pub.PublicKey, hash, r, s)
+}
+
+// Scheme returns SchemeECDSA.
+func (pub *PublicKey) Scheme() Scheme { return SchemeECDSA }
+
+// PublicBytes returns the uncompressed public key bytes.
+func (pub *PublicKey) PublicBytes() []byte { return pub.Bytes() }
+
 func (pub *PublicKey) Address() []byte {
-	hash := SHA256(pub.Bytes())
-	ripemd := ripemd160.New()
-	ripemd.Write(hash)
-	return ripemd.Sum(nil)
+	hash := Keccak256(pub.Bytes())
+	return hash[12:]
 }
 
 func (pub *PublicKey) Hex() string {

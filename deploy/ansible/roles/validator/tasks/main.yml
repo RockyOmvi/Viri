@@ -1,0 +1,58 @@
+---
+# Validator node — part of the 4-validator testnet set
+
+- name: Create validator config directory
+  file:
+    path: "{{ viri_home }}/config/validator-{{ validator_id }}"
+    state: directory
+    owner: "{{ viri_user }}"
+    group: "{{ viri_user }}"
+    mode: 0700
+  become: yes
+
+- name: Copy validator key
+  copy:
+    src: "{{ playbook_dir }}/../../testnet/configs/validator-{{ validator_id }}/validator.key"
+    dest: "{{ viri_home }}/config/validator-{{ validator_id }}/validator.key"
+    owner: "{{ viri_user }}"
+    group: "{{ viri_user }}"
+    mode: 0600
+  become: yes
+  when: local_validator_keys | default(false)
+
+- name: Generate validator key (first run)
+  shell: |
+    docker run --rm \
+      -v "{{ viri_home }}/config/validator-{{ validator_id }}:/config" \
+      viri-node:latest \
+      virid --generate-validator-key --key-file /config/validator.key
+  args:
+    creates: "{{ viri_home }}/config/validator-{{ validator_id }}/validator.key"
+  become: yes
+  when: not (local_validator_keys | default(false))
+
+- name: Deploy validator docker-compose
+  template:
+    src: docker-compose.validator.yml.j2
+    dest: "{{ viri_home }}/docker-compose.yml"
+    owner: "{{ viri_user }}"
+    group: "{{ viri_user }}"
+    mode: 0644
+  become: yes
+
+- name: Create systemd service for validator
+  template:
+    src: virid.service.j2
+    dest: /etc/systemd/system/virid.service
+    owner: root
+    group: root
+    mode: 0644
+  become: yes
+
+- name: Start validator
+  systemd:
+    name: virid
+    enabled: yes
+    state: started
+    daemon_reload: yes
+  become: yes

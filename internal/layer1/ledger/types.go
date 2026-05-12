@@ -30,15 +30,40 @@ type Block struct {
 }
 
 type Transaction struct {
-	Hash      []byte
-	Nonce     uint64
-	From      []byte
-	To        []byte
-	Value     uint64
-	GasLimit  uint64
-	GasPrice  uint64
-	Data      []byte
-	Signature *TxSignature
+	Hash        []byte
+	Nonce       uint64
+	From        []byte
+	To          []byte
+	Value       uint64
+	GasLimit    uint64
+	GasPrice    uint64
+	FeeCurrency []byte // token address for gas payment; nil or zero = native coin
+	Data        []byte
+	Signature   *TxSignature
+}
+
+// FeeToken returns the fee currency. nil means native coin.
+func (tx *Transaction) FeeToken() []byte {
+	if len(tx.FeeCurrency) == 0 {
+		return nil
+	}
+	zero := make([]byte, 20)
+	if len(tx.FeeCurrency) == 20 && bytesEqual(tx.FeeCurrency, zero) {
+		return nil
+	}
+	return tx.FeeCurrency
+}
+
+func bytesEqual(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 type TxSignature struct {

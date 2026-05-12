@@ -89,6 +89,9 @@ for arg in "$@"; do
         --genesis-init)
             MODE="genesis-init"
             ;;
+        --testnet)
+            TESTNET_FLAG="--testnet"
+            ;;
         --help)
             MODE="help"
             ;;
@@ -131,21 +134,27 @@ EOF
         echo "Usage: virid [OPTIONS]"
         echo ""
         echo "Special modes:"
-        echo "  --genesis-init    Initialize genesis configuration"
-        echo "  --explorer        Start block explorer mode"
-        echo "  --faucet          Start faucet service"
+        echo "  --genesis-init      Initialize genesis configuration"
+        echo "  --explorer          Start block explorer mode"
+        echo "  --faucet            Start faucet service"
+        echo "  --testnet           Shortcut for testnet config (chain ID 2)"
         echo ""
         echo "Environment variables:"
-        echo "  VIRI_NODE_NAME      Node name"
-        echo "  VIRI_DATA_DIR       Data directory"
-        echo "  VIRI_RPC_PORT       RPC port"
-        echo "  VIRI_API_PORT       API port"
-        echo "  VIRI_LOG_LEVEL      Log level (debug, info, warn, error)"
-        echo "  VIRI_VALIDATOR_MODE Enable validator mode"
-        echo "  VIRI_VALIDATOR_KEY  Path to validator key file"
-        echo "  VIRI_CHAIN_ID       Chain ID"
+        echo "  VIRI_NODE_NAME        Node name"
+        echo "  VIRI_DATA_DIR         Data directory"
+        echo "  VIRI_RPC_PORT         RPC port"
+        echo "  VIRI_API_PORT         API port"
+        echo "  VIRI_LOG_LEVEL        Log level (debug, info, warn, error)"
+        echo "  VIRI_VALIDATOR_MODE   Enable validator mode"
+        echo "  VIRI_VALIDATOR_KEY    Path to validator key file"
+        echo "  VIRI_CHAIN_ID         Chain ID"
+        echo "  VIRI_TESTNET          Set to true for testnet mode"
         echo "  VIRI_CONSENSUS_DELAY  Delay before starting consensus"
         echo "  VIRI_KEY_PASSPHRASE   Passphrase for key encryption"
+        echo ""
+        echo "Auto-generated API key:"
+        echo "  When no api_key_hash is set, the node generates a random 32-byte"
+        echo "  API key on first run, persists it to {dataDir}/api_key.txt,"
         exit 0
         ;;
 esac
@@ -207,14 +216,23 @@ for arg in "$@"; do
             SKIP_NEXT=true
             continue
             ;;
+        --testnet)
+            continue
+            ;;
     esac
     EXTRA_ARGS="${EXTRA_ARGS} ${arg}"
 done
 
-log "Flags: ${VALIDATOR_FLAG} ${CONSENSUS_DELAY} ${L3_PORT_FLAG} ${EXTRA_ARGS}"
+# Check if testnet mode is requested (env var or flag)
+TESTNET_FLAG=""
+if [ "${VIRI_TESTNET}" = "true" ]; then
+    TESTNET_FLAG="--testnet"
+fi
+
+log "Flags: ${VALIDATOR_FLAG} ${CONSENSUS_DELAY} ${L3_PORT_FLAG} ${TESTNET_FLAG} ${EXTRA_ARGS}"
 
 # Execute the main command in background, then run peer discovery
-virid --config "${CONFIG_FILE}" ${VALIDATOR_FLAG} ${CONSENSUS_DELAY} ${L3_PORT_FLAG} ${EXTRA_ARGS} &
+virid --config "${CONFIG_FILE}" ${VALIDATOR_FLAG} ${CONSENSUS_DELAY} ${L3_PORT_FLAG} ${TESTNET_FLAG} ${EXTRA_ARGS} &
 VIRID_PID=$!
 
 # Run peer discovery in background if we have multiple validators

@@ -1,10 +1,15 @@
 {
-  "chain_id": 1337,
-  "initial_validators": [],
-  "initial_supply": 10000000000,
-  "block_time": "500ms",
-  "max_block_size": 5242880,
-  "max_gas_per_block": 10000000,
-  "network": "testnet",
-  "description": "Viri Testnet Genesis Configuration"
+  "_comment": "Viri Testnet Genesis - PLACEHOLDER",
+  "_docs": "Replace this file with the output of 'virictl genesis finalize' or run the genesis ceremony (see scripts/genesis-ceremony.sh)",
+  "chain_id": 2,
+  "network_name": "viri-testnet",
+  "genesis_time": "2026-05-12T00:00:00Z",
+  "genesis_hash": "",
+  "validators": [],
+  "total_stake": 0,
+  "initial_supply": 1000000000000000000,
+  "block_time": "1s",
+  "max_block_size": 10485760,
+  "max_gas_per_block": 30000000,
+  "version": "0.1.0"
 }

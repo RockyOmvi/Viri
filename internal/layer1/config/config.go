@@ -118,7 +118,7 @@ func DefaultConfig() *Config {
 		Chain: ChainConfig{
 			ChainID:        1,
 			NetworkName:    "viri-mainnet",
-			BlockTime:      Duration(time.Second),
+			BlockTime:      Duration(3 * time.Second),
 			MaxBlockSize:   10 * 1024 * 1024,
 			MaxGasPerBlock: 30_000_000,
 		},
@@ -162,8 +162,8 @@ func DefaultConfig() *Config {
 			MaxBackups: 3,
 		},
 		Readiness: ReadinessConfig{
-			MinPeers:       1,
-			MinBlockHeight: 0,
+			MinPeers:       3,
+			MinBlockHeight: 1,
 			ForceReady:     false,
 		},
 	}

@@ -124,8 +124,9 @@ func (m *ConsensusMessage) UnmarshalJSON(data []byte) error {
 		m.Signature = nil
 	}
 	if len(aux.JustifyQC) > 0 {
-		m.JustifyQC = &QC{}
-		if err := json.Unmarshal(aux.JustifyQC, m.JustifyQC); err == nil {
+		qc, err := DecodeQC(aux.JustifyQC)
+		if err == nil {
+			m.JustifyQC = qc
 		} else {
 			m.JustifyQC = nil
 		}

@@ -1,6 +1,9 @@
 package main
 
 import (
+	"context"
+	crand "crypto/rand"
+	csha256 "crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
@@ -11,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -24,7 +28,7 @@ import (
 	"github.com/viri-chain/viri/internal/layer1/logging"
 	"github.com/viri-chain/viri/internal/layer1/p2p"
 	"github.com/viri-chain/viri/internal/layer1/state"
-	"github.com/viri-chain/viri/internal/layer1/sync"
+	nodesync "github.com/viri-chain/viri/internal/layer1/sync"
 	"github.com/viri-chain/viri/internal/layer2/accounts"
 	"github.com/viri-chain/viri/internal/layer2/agents"
 	"github.com/viri-chain/viri/internal/layer2/contracts"
@@ -70,6 +74,10 @@ type nodeFlags struct {
 	explorerMode   bool
 	faucetMode     bool
 	tlsAuto        bool
+	enableWASM     bool
+	parallelExec   bool
+	gnarkProver    bool
+	testnet        bool
 }
 
 func parseFlags() nodeFlags {
@@ -100,6 +108,10 @@ func parseFlags() nodeFlags {
 	flag.BoolVar(&f.explorerMode, "explorer", false, "Run as block explorer")
 	flag.BoolVar(&f.faucetMode, "faucet", false, "Run as testnet faucet")
 	flag.BoolVar(&f.tlsAuto, "tls-auto", false, "Auto-generate self-signed TLS certificates")
+	flag.BoolVar(&f.enableWASM, "wasm", false, "Use wazero WASM runtime for smart contracts")
+	flag.BoolVar(&f.parallelExec, "parallel-exec", false, "Enable parallel transaction execution")
+	flag.BoolVar(&f.gnarkProver, "gnark-prover", false, "Use gnark-based ZK prover/verifier")
+	flag.BoolVar(&f.testnet, "testnet", false, "Run in testnet mode (shorthand for --config configs/node-testnet.json)")
 
 	flag.Parse()
 
@@ -168,12 +180,14 @@ func loadKey(flags nodeFlags, cfg *config.Config, log *logging.Logger) *crypto.P
 
 	passphrase := os.Getenv("VIRI_KEY_PASSPHRASE")
 	if passphrase == "" {
-		if cfg.Readiness.ForceReady {
-			passphrase = "viri-dev-key"
-			log.Warn("Using default dev passphrase for keystore")
-		} else {
-			log.Fatal("VIRI_KEY_PASSPHRASE must be set in production mode")
-		}
+		fmt.Fprintln(os.Stderr, "ERROR: VIRI_KEY_PASSPHRASE environment variable is required.")
+		fmt.Fprintln(os.Stderr, "       Set it to a strong passphrase for your encrypted validator keystore.")
+		fmt.Fprintln(os.Stderr, "       Example (generate one):  openssl rand -hex 32")
+		fmt.Fprintln(os.Stderr, "       Then export VIRI_KEY_PASSPHRASE=<your-passphrase>")
+		os.Exit(2)
+	}
+	if len(passphrase) < 12 {
+		log.Fatal("VIRI_KEY_PASSPHRASE must be at least 12 characters long")
 	}
 	key, err := crypto.LoadKeyOrGenerate(filepath.Join(flags.dataDir, "node.key"), passphrase)
 	if err != nil {
@@ -188,7 +202,7 @@ func initDB(flags nodeFlags, log *logging.Logger) state.KVStore {
 	badgerDir := filepath.Join(flags.dataDir, "badger")
 	store, err := state.NewBadgerStore(badgerDir)
 	if err != nil {
-		log.Warn(fmt.Sprintf("Failed to open BadgerDB, falling back to memory store: %v", err))
+		log.Warn(fmt.Sprintf("Failed to open BadgerDB, falling back to in-memory store: %v", err))
 		return state.NewMemoryStore()
 	}
 	log.WithField("path", badgerDir).Info("Persistent storage initialized")
@@ -198,7 +212,7 @@ func initDB(flags nodeFlags, log *logging.Logger) state.KVStore {
 func main() {
 	flags := parseFlags()
 
-	// Handle special modes — explorer & faucet run as standalone services
+	// Handle special modes - explorer & faucet run as standalone services
 	if flags.explorerMode {
 		RunExplorer()
 		return
@@ -211,6 +225,16 @@ func main() {
 	fmt.Printf("Viri Daemon v%s\n", Version)
 	fmt.Printf("Node: %s | Data: %s | Validator: %v\n", flags.name, flags.dataDir, flags.validator)
 	fmt.Println("Initializing...")
+
+	// If --testnet flag is set, default to testnet config
+	if flags.testnet {
+		if flags.config == "" {
+			flags.config = "configs/node-testnet.json"
+		}
+		if flags.chainID == 0 {
+			flags.chainID = 2
+		}
+	}
 
 	cfg, err := config.LoadConfigOrDefault(flags.config)
 	if err != nil {
@@ -242,6 +266,29 @@ func main() {
 	observability.ForceReady(cfg.Readiness.ForceReady)
 
 	log := logging.NewLogger("virid", logging.ParseLogLevel(cfg.Logging.Level), cfg.Logging.Level)
+
+	// Set up file-based log rotation if output path is configured
+	if cfg.Logging.Output != "" {
+		maxSize := cfg.Logging.MaxSize
+		if maxSize <= 0 {
+			maxSize = 100
+		}
+		maxBackups := cfg.Logging.MaxBackups
+		if maxBackups <= 0 {
+			maxBackups = 7
+		}
+		rotatingWriter, err := logging.NewRotatingFileWriter(cfg.Logging.Output, "virid", maxSize, maxBackups)
+		if err != nil {
+			log.WithField("error", err.Error()).Warn("Failed to set up log rotation, using stdout")
+		} else {
+			log.SetOutput(rotatingWriter)
+			log.WithField("path", cfg.Logging.Output).
+				WithField("max_size_mb", maxSize).
+				WithField("max_backups", maxBackups).
+				Info("File-based log rotation enabled")
+			defer rotatingWriter.Close()
+		}
+	}
 
 	log.WithField("chain_id", cfg.Chain.ChainID).
 		WithField("network", cfg.Chain.NetworkName).
@@ -323,9 +370,30 @@ func main() {
 		log.Fatal(fmt.Sprintf("Failed to initialize state: %v", err))
 	}
 
+	// Create state accounts for all genesis validators with their stake as balance
+	for _, gv := range genesis.InitialValidators {
+		if _, err := stateMgr.CreateAccount(gv.Address, state.AccountTypeValidator, new(big.Int).SetUint64(gv.Stake)); err != nil {
+			log.WithField("address", fmt.Sprintf("%x", gv.Address)).
+				WithField("error", err.Error()).
+				Warn("Genesis validator account creation skipped")
+		} else {
+			log.WithField("address", fmt.Sprintf("%x", gv.Address)).
+				WithField("balance", gv.Stake).
+				Info("Genesis validator account created")
+		}
+	}
+
 	// Initialize L2 Execution Engine
 	execEngine := execution.NewExecutionEngine()
-	log.Info("L2 Execution Engine initialized (transfers, deploys, calls)")
+	if flags.enableWASM {
+		execEngine.SetVMType(execution.VMTypeWASM)
+	}
+	if flags.parallelExec {
+		execEngine.SetParallel(true)
+	}
+	log.WithField("vm", map[bool]string{false: "evm", true: "wasm"}[flags.enableWASM]).
+		WithField("parallel", flags.parallelExec).
+		Info("L2 Execution Engine initialized (transfers, deploys, calls)")
 
 	// Initialize L2 modules
 	accountMgr := accounts.NewAccountManager()
@@ -341,9 +409,17 @@ func main() {
 	zkProver := zk.NewProver(zkProvingKey, zkCircuit)
 	zkVerifier := zk.NewVerifier(zkVerifyingKey, zkCircuit)
 	_ = zkProver
+	if flags.gnarkProver {
+		gp := zk.NewGnarkProver()
+		gv := zk.NewGnarkVerifier()
+		_ = gp
+		execEngine.SetGnarkVerifier(gv, zkCircuit)
+		log.Info("Gnark-based ZK prover/verifier enabled (structural constraint verification)")
+	}
 	// Wire modules into the execution engine
 	execEngine.SetShieldedPool(shieldedPool)
 	execEngine.SetZKVerifier(zkVerifier)
+	execEngine.SetContractManager(contractMgr)
 
 	log.WithField("modules", "accounts,agents,contracts,gas,mev,privacy,rollups,zk").
 		Info("L2 modules initialized")
@@ -358,13 +434,6 @@ func main() {
 
 	// Wire gas oracle into block event bus for automatic gas tracking
 	// Wire rollups and agents into block producer
-	_ = accountMgr
-	_ = contractMgr
-	_ = govDAO
-	_ = chainBridge
-	_ = interopProtocol
-	_ = intentSolver
-
 	var l3APIServer *api.L3APIServer
 	var wsServer *WSServer
 	eventBus := events.NewEventBus(1000)
@@ -443,17 +512,17 @@ func main() {
 		}()
 	}
 
-	syncConfig := sync.DefaultSyncConfig()
+	syncConfig := nodesync.DefaultSyncConfig()
 	switch flags.syncMode {
 	case "full":
-		syncConfig.Mode = sync.FullSync
+		syncConfig.Mode = nodesync.FullSync
 	case "fast":
-		syncConfig.Mode = sync.FastSync
+		syncConfig.Mode = nodesync.FastSync
 	case "snap":
-		syncConfig.Mode = sync.SnapSync
+		syncConfig.Mode = nodesync.SnapSync
 	}
 
-	nodeSyncer := sync.NewSyncer(syncConfig, log)
+	nodeSyncer := nodesync.NewSyncer(syncConfig, log)
 
 	if blockchain.Height() == 0 && flags.bootnodes != "" {
 		log.WithField("mode", flags.syncMode).Info("Starting node sync from genesis")
@@ -477,6 +546,19 @@ func main() {
 			log.WithField("peer", from.String()).
 				WithField("size", len(msg.Payload)).
 				Info("Received transaction from peer")
+			tx, err := ledger.DeserializeTransaction(msg.Payload)
+			if err != nil {
+				log.WithField("error", err.Error()).Warn("Failed to deserialize received transaction")
+				return nil
+			}
+			if !tx.Verify() {
+				log.Warn("Received invalid transaction from peer")
+				return nil
+			}
+			txPool := blockchain.TxPool()
+			if err := txPool.Add(tx); err != nil {
+				log.WithField("error", err.Error()).Debug("Received transaction not added to pool")
+			}
 			return nil
 		},
 		OnGetBlocksHandler: func(msg *p2p.Message, from peer.ID) error {
@@ -615,6 +697,26 @@ func main() {
 		}
 	}()
 
+	// Emergency shutdown handler for DoS protection
+	var shutdownOnce sync.Once
+	doEmergencyShutdown := func() {
+		shutdownOnce.Do(func() {
+			log.Warn("!!!! EMERGENCY SHUTDOWN TRIGGERED !!!!")
+			if flags.validator {
+				engine.Stop()
+			}
+			viriNet.Close()
+			db.Close()
+			stateMgr.Close()
+			os.Exit(1)
+		})
+	}
+
+	// Register DoS protector with emergency shutdown
+	if viriNet.GetDoSProtector() != nil {
+		viriNet.GetDoSProtector().SetEmergencyHandler(doEmergencyShutdown)
+	}
+
 	if flags.validator {
 		if flags.consensusDelay > 0 {
 			log.Info(fmt.Sprintf("Waiting %s for peer discovery before starting consensus", flags.consensusDelay))
@@ -642,6 +744,24 @@ func main() {
 	var rpcServer *RPCServer
 	var apiServer *APIServer
 
+	// Auto-generate API key if not configured
+	if cfg.Node.APIKeyHash == "" && (flags.rpc || flags.api) {
+		apiKeyPath := filepath.Join(flags.dataDir, "api_key.txt")
+		var rawKey string
+		if data, err := os.ReadFile(apiKeyPath); err == nil && len(data) > 0 {
+			rawKey = string(data)
+		} else {
+			keyBytes := make([]byte, 32)
+			crand.Read(keyBytes)
+			rawKey = hex.EncodeToString(keyBytes)
+			os.WriteFile(apiKeyPath, []byte(rawKey), 0600)
+		}
+		h := csha256.Sum256([]byte(rawKey))
+		cfg.Node.APIKeyHash = hex.EncodeToString(h[:])
+		log.WithField("hint", fmt.Sprintf("%s...%s", rawKey[:8], rawKey[len(rawKey)-4:])).Warn("Generated API key hash")
+		fmt.Fprintf(os.Stderr, "\n=== API KEY ===\n%s\n===============\n", rawKey)
+	}
+
 	// Auto-generate TLS certs if requested
 	tlsCert := cfg.Node.TLSCertPath
 	tlsKey := cfg.Node.TLSKeyPath
@@ -658,7 +778,8 @@ func main() {
 	}
 
 	if flags.rpc {
-		rpcServer = NewRPCServer(flags.rpcPort, blockchain, stateMgr, viriNet, engine, log, cfg.Chain.ChainID, flags.validator, key.PubKey().Address(), tlsCert, tlsKey, cfg.Node.APIKeyHash, obsAuditLog, nodeSyncer)
+		entryPoint := accounts.NewEntryPoint(accountMgr, cfg.Chain.ChainID)
+		rpcServer = NewRPCServer(flags.rpcPort, blockchain, stateMgr, viriNet, engine, log, cfg.Chain.ChainID, flags.validator, key.PubKey().Address(), tlsCert, tlsKey, cfg.Node.APIKeyHash, obsAuditLog, nodeSyncer, entryPoint)
 		if err := rpcServer.Start(); err != nil {
 			log.Error(fmt.Sprintf("Failed to start RPC server: %v", err))
 		}
@@ -683,6 +804,14 @@ func main() {
 		log.Error(fmt.Sprintf("Failed to start L3 API server: %v", err))
 	}
 	log.WithField("port", flags.l3Port).Info("L3 API server started")
+
+	// Start Admin API server
+	adminPort := flags.rpcPort + 4
+	adminServer := NewAdminServer(adminPort, blockchain, stateMgr, viriNet, engine, log, cfg.Node.APIKeyHash)
+	if err := adminServer.Start(); err != nil {
+		log.Error(fmt.Sprintf("Failed to start Admin API server: %v", err))
+	}
+	log.WithField("port", adminPort).Info("Admin API server started")
 
 	go func() {
 		time.Sleep(5 * time.Second)
@@ -775,9 +904,21 @@ func main() {
 		}
 	}
 
+	if adminServer != nil {
+		if err := adminServer.Stop(); err != nil {
+			log.Error(fmt.Sprintf("Error stopping Admin API server: %v", err))
+		}
+	}
+
 	if flags.validator {
 		engine.Stop()
 	}
+
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if err := viriNet.Drain(drainCtx); err != nil {
+		log.Warn(fmt.Sprintf("P2P drain warning: %v", err))
+	}
+	drainCancel()
 
 	if err := viriNet.Close(); err != nil {
 		log.Error(fmt.Sprintf("Error closing network: %v", err))

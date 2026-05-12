@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/viri-chain/viri/cmd/virid/explorer"
 	"github.com/viri-chain/viri/internal/layer1/ledger"
 	"github.com/viri-chain/viri/internal/layer1/logging"
 	"github.com/viri-chain/viri/internal/layer1/p2p"
@@ -58,6 +59,18 @@ func (s *APIServer) Start() error {
 	mux.HandleFunc("/api/v1/status", s.getStatus)
 	mux.HandleFunc("/api/v1/health", s.healthCheck)
 	mux.Handle("/metrics", observability.LocalOnly(observability.MetricsHandler()))
+	mux.Handle("/explorer/", http.StripPrefix("/explorer/", explorer.Handler()))
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		http.Redirect(w, r, "/explorer/", http.StatusFound)
+	})
+
+	if s.apiKeyHash == "" {
+		s.logger.Warn("REST API key auth is disabled")
+	}
 
 	getClientID := func(r *http.Request) string {
 		if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
@@ -67,23 +80,27 @@ func (s *APIServer) Start() error {
 		return r.RemoteAddr
 	}
 
-	rateLimiter := security.NewRateLimiter(20.0, 40)
-	ddosDetector := security.NewDDoSDetector(10*time.Second, 200, 2*time.Minute)
-	connLimiter := security.NewConnectionLimiter(200, 50)
+	rateLimiter := security.NewRateLimiter(10.0, 20)
+	ddosDetector := security.NewDDoSDetector(10*time.Second, 100, 5*time.Minute)
+	connLimiter := security.NewConnectionLimiter(100, 25)
 
 	baseHandler := observability.InstrumentHandler("api", mux, func() {
 		observability.SetChainStats("api", s.blockchain.Height(), s.network.PeerCount())
 		observability.UpdateReadiness(s.network.PeerCount(), s.blockchain.Height())
 	})
 
+	tlsEnabled := s.tlsCert != "" && s.tlsKey != ""
+
 	handler := observability.RequestIDMiddleware(
-		security.NewAPIKeyAuthFromHash(s.apiKeyHash).Middleware(
-			security.ConnectionLimitMiddleware(connLimiter, getClientID)(
-				security.DDoSProtectionMiddleware(ddosDetector, getClientID)(
-					security.RateLimitMiddleware(rateLimiter, getClientID)(
-						observability.ErrorLoggingMiddleware(
-							s.corsMiddleware(baseHandler),
-							s.logger,
+		security.HTTPSRedirectMiddleware(tlsEnabled,
+			security.NewAPIKeyAuthFromHash(s.apiKeyHash).Middleware(
+				security.ConnectionLimitMiddleware(connLimiter, getClientID)(
+					security.DDoSProtectionMiddleware(ddosDetector, getClientID)(
+						security.RateLimitMiddleware(rateLimiter, getClientID)(
+							observability.ErrorLoggingMiddleware(
+								s.corsMiddleware(baseHandler),
+								s.logger,
+							),
 						),
 					),
 				),
@@ -172,6 +189,10 @@ func (s *APIServer) getBlocks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.blockchain == nil {
+		http.Error(w, "blockchain not available", http.StatusServiceUnavailable)
+		return
+	}
 	from := s.blockchain.Height()
 	to := s.blockchain.Height()
 
@@ -231,6 +252,10 @@ func (s *APIServer) getBlock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.blockchain == nil {
+		s.sendJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "blockchain not available"})
+		return
+	}
 	block, err := s.blockchain.GetBlock(height)
 	if err != nil {
 		s.sendJSON(w, http.StatusNotFound, map[string]string{"error": "block not found"})
@@ -262,6 +287,10 @@ func (s *APIServer) getTransaction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.blockchain == nil || s.blockchain.TxPool() == nil {
+		s.sendJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "blockchain not available"})
+		return
+	}
 	for _, tx := range s.blockchain.TxPool().GetPending() {
 		if bytes.Equal(tx.Hash, txHash) {
 			s.sendJSON(w, http.StatusOK, map[string]interface{}{
@@ -383,6 +412,10 @@ func (s *APIServer) getPeers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.network == nil {
+		s.sendJSON(w, http.StatusOK, map[string]interface{}{"peers": []interface{}{}, "total": 0})
+		return
+	}
 	peers := s.network.Peers()
 	result := make([]map[string]interface{}, 0, len(peers))
 	for _, p := range peers {

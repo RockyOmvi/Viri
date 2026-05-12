@@ -1,0 +1,53 @@
+---
+# Viri Public Testnet — Oracle Cloud Free Tier
+# These are the default variables for all hosts.
+# Override via --extra-vars or environment variables.
+
+chain_id: 1337
+network_name: "viri-testnet"
+
+# Oracle Cloud Free Tier — Ampere A1 (ARM) instances
+# Bootstrap + Validators: 4 OCPU, 24 GB RAM total
+# Faucet/Explorer: 0.48 OCPU, 1 GB RAM (AMD micro)
+
+# Docker
+docker_compose_version: "v2.24.2"
+docker_compose_path: /usr/local/bin/docker-compose
+
+# Viri binary
+viri_repo: "https://github.com/{{ github_repo | default('viri-chain/viri') }}.git"
+viri_branch: "main"
+viri_home: /opt/viri
+viri_user: viri
+viri_data_dir: "{{ viri_home }}/data"
+
+# P2P
+p2p_port: 30303
+p2p_protocol: "tcp"
+
+# RPC / API
+rpc_port: 8545
+api_port: 8546
+
+# Explorer / Faucet
+explorer_port: 8080
+faucet_port: 8081
+
+# Monitoring
+prometheus_port: 9090
+
+# TLS (Let's Encrypt via acme.sh)
+tls_enabled: true
+acme_email: "admin@{{ domain | default('viri-testnet.io') }}"
+domain: "{{ domain | default('viri-testnet.io') }}"
+
+# Bootstrap node (first validator = bootstrap)
+bootstrap_peer_id: "{{ bootstrap_peer_id | default('') }}"
+bootstrap_multiaddr: "/ip4/{{ BOOTSTRAP_PUBLIC_IP }}/tcp/{{ p2p_port }}/p2p/{{ bootstrap_peer_id }}"
+
+# Genesis
+genesis_file: "{{ viri_home }}/genesis.json"
+initial_supply: 10000000000
+min_validators: 4
+epoch_length: 1000
+block_time: 3s

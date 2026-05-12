@@ -1,0 +1,28 @@
+---
+# Faucet + Explorer node — public-facing light node
+
+- name: Deploy faucet + explorer docker-compose
+  template:
+    src: docker-compose.faucet.yml.j2
+    dest: "{{ viri_home }}/docker-compose.yml"
+    owner: "{{ viri_user }}"
+    group: "{{ viri_user }}"
+    mode: 0644
+  become: yes
+
+- name: Create systemd service for faucet/explorer
+  template:
+    src: virid.service.j2
+    dest: /etc/systemd/system/virid.service
+    owner: root
+    group: root
+    mode: 0644
+  become: yes
+
+- name: Start faucet + explorer
+  systemd:
+    name: virid
+    enabled: yes
+    state: started
+    daemon_reload: yes
+  become: yes

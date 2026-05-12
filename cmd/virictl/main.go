@@ -43,6 +43,8 @@ func main() {
 		handleStatus()
 	case "backup":
 		handleBackup()
+	case "mnemonic":
+		handleMnemonic()
 	case "genesis":
 		handleGenesis()
 	case "version":
@@ -64,7 +66,7 @@ func printUsage() {
 	fmt.Println()
 	fmt.Println("Commands:")
 	fmt.Println("  wallet                        Wallet management")
-	fmt.Println("    create                      Create a new wallet")
+	fmt.Println("    create [--mnemonic <phrase>] Create a new wallet (or recover from mnemonic)")
 	fmt.Println("    export <keyfile>            Export wallet to file")
 	fmt.Println("    import <keyfile>            Import wallet from file")
 	fmt.Println()
@@ -89,6 +91,10 @@ func printUsage() {
 	fmt.Println("    list [--dir <path>]         List existing backups")
 	fmt.Println("    restore <file> [--dir <path>] Restore from a backup")
 	fmt.Println("    delete <file>               Delete a backup")
+	fmt.Println()
+	fmt.Println("  mnemonic                      BIP39 mnemonic management")
+	fmt.Println("    generate <12|15|18|21|24>   Generate a new mnemonic phrase")
+	fmt.Println("    to-key <mnemonic>           Derive public key info from mnemonic")
 	fmt.Println()
 	fmt.Println("  genesis                       Genesis ceremony management")
 	fmt.Println("    init                        Initialize a new ceremony")
@@ -231,10 +237,29 @@ func handleWallet() {
 }
 
 func walletCreate() {
-	key, err := crypto.GenerateKey()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to generate wallet: %v\n", err)
-		os.Exit(1)
+	var mnemonic string
+	for i, arg := range os.Args {
+		if arg == "--mnemonic" && i+1 < len(os.Args) {
+			mnemonic = os.Args[i+1]
+		}
+	}
+
+	var key *crypto.PrivateKey
+	if mnemonic != "" {
+		var err error
+		key, err = crypto.MnemonicToKey(mnemonic, "")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to derive key from mnemonic: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("Recovered wallet from mnemonic!")
+	} else {
+		var err error
+		key, err = crypto.GenerateKey()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to generate wallet: %v\n", err)
+			os.Exit(1)
+		}
 	}
 
 	// Save to encrypted keystore
@@ -244,7 +269,13 @@ func walletCreate() {
 
 	passphrase := os.Getenv("VIRI_WALLET_PASSPHRASE")
 	if passphrase == "" {
-		passphrase = "default-wallet-passphrase" // User should set env var
+		fmt.Fprintln(os.Stderr, "ERROR: VIRI_WALLET_PASSPHRASE environment variable is required.")
+		fmt.Fprintln(os.Stderr, "       Set it to a strong passphrase for wallet encryption.")
+		os.Exit(2)
+	}
+	if len(passphrase) < 12 {
+		fmt.Fprintln(os.Stderr, "ERROR: VIRI_WALLET_PASSPHRASE must be at least 12 characters long.")
+		os.Exit(2)
 	}
 
 	if err := crypto.EncryptKey(key, passphrase, keyFile); err != nil {
@@ -274,10 +305,7 @@ func walletExport(keyfile string) {
 		os.Exit(1)
 	}
 
-	passphrase := os.Getenv("VIRI_WALLET_PASSPHRASE")
-	if passphrase == "" {
-		passphrase = "default-wallet-passphrase"
-	}
+	passphrase := getWalletPassphrase()
 
 	// Use first wallet found
 	encKeyFile := filepath.Join(walletDir, files[0].Name())
@@ -326,10 +354,7 @@ func walletImport(keyfile string) {
 		os.Exit(1)
 	}
 
-	passphrase := os.Getenv("VIRI_WALLET_PASSPHRASE")
-	if passphrase == "" {
-		passphrase = "default-wallet-passphrase"
-	}
+	passphrase := getWalletPassphrase()
 
 	walletDir := filepath.Join(defaultWalletDir, "wallets")
 	if err := os.MkdirAll(walletDir, 0700); err != nil {
@@ -348,6 +373,49 @@ func walletImport(keyfile string) {
 	fmt.Println("Wallet imported and encrypted successfully!")
 	fmt.Printf("Address: 0x%s\n", addr)
 	fmt.Printf("Keystore: %s\n", encKeyFile)
+}
+
+func handleMnemonic() {
+	if len(os.Args) < 3 {
+		fmt.Println("Usage: virictl mnemonic <generate|to-key>")
+		return
+	}
+
+	switch os.Args[2] {
+	case "generate":
+		if len(os.Args) < 4 {
+			fmt.Println("Usage: virictl mnemonic generate <12|15|18|21|24>")
+			return
+		}
+		wordCount, err := strconv.Atoi(os.Args[3])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Invalid word count: %s\n", os.Args[3])
+			os.Exit(1)
+		}
+		mnemonic, err := crypto.GenerateMnemonic(wordCount)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to generate mnemonic: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println(mnemonic)
+
+	case "to-key":
+		if len(os.Args) < 4 {
+			fmt.Println("Usage: virictl mnemonic to-key <mnemonic>")
+			return
+		}
+		mnemonic := os.Args[3]
+		key, err := crypto.MnemonicToKey(mnemonic, "")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to derive key: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Address:    0x%x\n", key.PubKey().Address())
+		fmt.Printf("Public Key: 0x%s\n", key.PubKey().Hex())
+
+	default:
+		fmt.Fprintf(os.Stderr, "Unknown mnemonic command: %s\n", os.Args[2])
+	}
 }
 
 func handleBlock() {
@@ -441,10 +509,7 @@ func txSend(to string, amountStr string) {
 	}
 
 	// Load wallet key
-	passphrase := os.Getenv("VIRI_WALLET_PASSPHRASE")
-	if passphrase == "" {
-		passphrase = "default-wallet-passphrase"
-	}
+	passphrase := getWalletPassphrase()
 
 	walletDir := filepath.Join(defaultWalletDir, "wallets")
 	files, err := os.ReadDir(walletDir)
@@ -467,7 +532,9 @@ func txSend(to string, amountStr string) {
 	var nonce uint64
 	if err == nil {
 		if nonceHex, ok := nonceResult["result"].(string); ok {
-			fmt.Sscanf(nonceHex, "0x%x", &nonce)
+			if _, err := fmt.Sscanf(nonceHex, "0x%x", &nonce); err != nil {
+				nonce = 0
+			}
 		}
 	}
 
@@ -715,6 +782,20 @@ func getDefaultDataDir() string {
 func getDefaultBackupDir() string {
 	dataDir := getDefaultDataDir()
 	return filepath.Join(dataDir, "backups")
+}
+
+func getWalletPassphrase() string {
+	passphrase := os.Getenv("VIRI_WALLET_PASSPHRASE")
+	if passphrase == "" {
+		fmt.Fprintln(os.Stderr, "ERROR: VIRI_WALLET_PASSPHRASE environment variable is required.")
+		fmt.Fprintln(os.Stderr, "       Set it to a strong passphrase for wallet encryption.")
+		os.Exit(2)
+	}
+	if len(passphrase) < 12 {
+		fmt.Fprintln(os.Stderr, "ERROR: VIRI_WALLET_PASSPHRASE must be at least 12 characters long.")
+		os.Exit(2)
+	}
+	return passphrase
 }
 
 func handleGenesis() {

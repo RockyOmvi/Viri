@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -21,7 +22,8 @@ const contractBytecode = "600a600c600039600a6000f3604260005260206000f3"
 func main() {
 	faucetKeyHex := os.Getenv("FAUCET_WALLET_KEY")
 	if faucetKeyHex == "" {
-		faucetKeyHex = "a4d0b548f43c7034987abda0db71c715c123c1a521a9f53f482e45f0853ea1a2" // Using standard testnet key
+		// WARNING: This is a publicly known test key. Do NOT use on any network with real value.
+		faucetKeyHex = "a4d0b548f43c7034987abda0db71c715c123c1a521a9f53f482e45f0853ea1a2"
 	}
 
 	keyBytes, err := hex.DecodeString(faucetKeyHex)
@@ -38,7 +40,10 @@ func main() {
 	addrHex := "0x" + hex.EncodeToString(address)
 	fmt.Printf("Deploying from address: %s\n", addrHex)
 
-	rpcURL := "http://localhost:8545"
+	rpcURL := os.Getenv("RPC_URL")
+	if rpcURL == "" {
+		rpcURL = "http://localhost:8545"
+	}
 
 	// 1. Get Nonce
 	nonceReq := map[string]interface{}{
@@ -113,13 +118,8 @@ pollLoop:
 
 	// Calculate expected contract address
 	nonceBytes := make([]byte, 8)
-	// We need to use binary.BigEndian
-	importBinary := true
-	_ = importBinary
-	for i := uint64(0); i < 8; i++ {
-		nonceBytes[7-i] = byte(nonce >> (i * 8))
-	}
-	addrHash := crypto.SHA256(append(address, nonceBytes...))[:20]
+	binary.BigEndian.PutUint64(nonceBytes, nonce)
+	addrHash := crypto.Keccak256(append(address, nonceBytes...))[:20]
 	contractAddress := "0x" + hex.EncodeToString(addrHash)
 	fmt.Printf("Expected contract deployed at: %s\n", contractAddress)
 

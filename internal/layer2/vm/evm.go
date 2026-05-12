@@ -1,7 +1,6 @@
 package vm
 
 import (
-	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
 	"math/big"
@@ -147,6 +146,7 @@ type EVMContext struct {
 
 type EVMState interface {
 	GetBalance(addr []byte) *big.Int
+	GetNonce(addr []byte) uint64
 	GetCode(addr []byte) []byte
 	GetStorage(addr []byte, key []byte) []byte
 	SetStorage(addr []byte, key []byte, value []byte)
@@ -365,7 +365,8 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 			}
 			b, a := evm.stack[len(evm.stack)-1], evm.stack[len(evm.stack)-2]
 			evm.stack = evm.stack[:len(evm.stack)-2]
-			if b.Cmp(a) < 0 {
+			sb, sa := toSigned256(b), toSigned256(a)
+			if sb.Cmp(sa) < 0 {
 				evm.stack = append(evm.stack, big.NewInt(1))
 			} else {
 				evm.stack = append(evm.stack, big.NewInt(0))
@@ -377,7 +378,8 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 			}
 			b, a := evm.stack[len(evm.stack)-1], evm.stack[len(evm.stack)-2]
 			evm.stack = evm.stack[:len(evm.stack)-2]
-			if b.Cmp(a) > 0 {
+			sb, sa := toSigned256(b), toSigned256(a)
+			if sb.Cmp(sa) > 0 {
 				evm.stack = append(evm.stack, big.NewInt(1))
 			} else {
 				evm.stack = append(evm.stack, big.NewInt(0))
@@ -520,9 +522,9 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 			if len(evm.stack) < 2 {
 				return nil, evm.gasUsed, fmt.Errorf("stack underflow")
 			}
-			offset, size := evm.stack[len(evm.stack)-1].Int64(), evm.stack[len(evm.stack)-2].Int64()
+			offset, size := evm.stack[len(evm.stack)-1].Uint64(), evm.stack[len(evm.stack)-2].Uint64()
 			evm.stack = evm.stack[:len(evm.stack)-2]
-			data := evm.getMemory(offset, size)
+			data := evm.getMemory(int64(offset), int64(size))
 			hash := crypto.Keccak256(data)
 			evm.stack = append(evm.stack, new(big.Int).SetBytes(hash))
 
@@ -731,7 +733,8 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 			value, offset, size := evm.stack[len(evm.stack)-1], evm.stack[len(evm.stack)-2], evm.stack[len(evm.stack)-3]
 			evm.stack = evm.stack[:len(evm.stack)-3]
 			initCode := evm.getMemory(offset.Int64(), size.Int64())
-			contractAddr := evm.createAddress(evm.ctx.Address, evm.ctx.BlockNum)
+			nonce := evm.state.GetNonce(evm.ctx.Address)
+			contractAddr := evm.createAddress(evm.ctx.Address, nonce)
 			evm.state.CreateAccount(contractAddr)
 			evm.state.Transfer(evm.ctx.Address, contractAddr, value)
 
@@ -746,11 +749,8 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 			}
 			sub := NewEVMExecutor(subCtx, evm.state)
 			retdata, _, err := sub.Execute(initCode)
-			if err == nil {
-				contract := evm.state.GetCode(contractAddr)
-				if len(retdata) > 0 {
-					_ = contract
-				}
+			if err == nil && len(retdata) > 0 {
+				evm.state.SetStorage(contractAddr, nil, nil)
 			}
 			evm.stack = append(evm.stack, new(big.Int).SetBytes(contractAddr))
 
@@ -875,6 +875,21 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 			contractAddr := evm.createAddress2(evm.ctx.Address, saltBytes, initCode)
 			evm.state.CreateAccount(contractAddr)
 			evm.state.Transfer(evm.ctx.Address, contractAddr, value)
+
+			subCtx := &EVMContext{
+				Caller:   evm.ctx.Address,
+				Address:  contractAddr,
+				Value:    new(big.Int).Set(value),
+				GasLimit: evm.ctx.GasLimit - evm.gasUsed,
+				GasPrice: new(big.Int).Set(evm.ctx.GasPrice),
+				Data:     nil,
+				BlockNum: evm.ctx.BlockNum,
+			}
+			sub := NewEVMExecutor(subCtx, evm.state)
+			retdata, _, err := sub.Execute(initCode)
+			if err == nil && len(retdata) > 0 {
+				evm.state.SetStorage(contractAddr, nil, nil)
+			}
 			evm.stack = append(evm.stack, new(big.Int).SetBytes(contractAddr))
 
 		case EVMSTATICCALL:
@@ -923,7 +938,9 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 			stackIdx := len(evm.stack) - 2 - numTopics
 			topics := make([][]byte, numTopics)
 			for i := 0; i < numTopics; i++ {
-				topics[i] = evm.stack[stackIdx+i].Bytes()
+				topic := make([]byte, 32)
+				evm.stack[stackIdx+i].FillBytes(topic)
+				topics[i] = topic
 			}
 			evm.stack = evm.stack[:stackIdx]
 			_ = topics
@@ -1016,20 +1033,18 @@ func (evm *EVMExecutor) toAddress(val *big.Int) []byte {
 }
 
 func (evm *EVMExecutor) createAddress(caller []byte, nonce uint64) []byte {
-	h := sha256.New()
-	h.Write(caller)
-	binary.Write(h, binary.BigEndian, nonce)
-	hash := h.Sum(nil)
+	nonceBytes := make([]byte, 8)
+	binary.BigEndian.PutUint64(nonceBytes, nonce)
+	input := append(append([]byte{}, caller...), nonceBytes...)
+	hash := crypto.Keccak256(input)
 	return hash[12:]
 }
 
 func (evm *EVMExecutor) createAddress2(caller []byte, salt []byte, initCode []byte) []byte {
-	h := sha256.New()
-	h.Write([]byte{0xFF})
-	h.Write(caller)
-	h.Write(salt)
-	codeHash := sha256.Sum256(initCode)
-	h.Write(codeHash[:])
-	hash := h.Sum(nil)
+	codeHash := crypto.Keccak256(initCode)
+	input := append([]byte{0xFF}, caller...)
+	input = append(input, salt...)
+	input = append(input, codeHash...)
+	hash := crypto.Keccak256(input)
 	return hash[12:]
 }

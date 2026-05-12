@@ -1,0 +1,32 @@
+{
+  "version": "0.1.0",
+  "description": "Viri blockchain node and CLI — 3-layer modular blockchain with native Account Abstraction, Multi-VM (WASM+EVM), and ZK privacy.",
+  "homepage": "https://viri-chain.org",
+  "license": "MIT",
+  "architecture": {
+    "64bit": {
+      "url": "https://github.com/viri-chain/viri/releases/download/v0.1.0/viri-0.1.0-windows-amd64.zip",
+      "hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "extract_dir": "viri-0.1.0-windows-amd64"
+    }
+  },
+  "bin": [
+    "virid.exe",
+    "virictl.exe"
+  ],
+  "checkver": {
+    "github": "https://github.com/viri-chain/viri"
+  },
+  "autoupdate": {
+    "architecture": {
+      "64bit": {
+        "url": "https://github.com/viri-chain/viri/releases/download/v$version/viri-$version-windows-amd64.zip",
+        "extract_dir": "viri-$version-windows-amd64"
+      }
+    }
+  },
+  "notes": [
+    "To start a validator node: virid --validator --chain-id 1337 --data-dir ~/.viri",
+    "To create a wallet: virictl wallet create"
+  ]
+}

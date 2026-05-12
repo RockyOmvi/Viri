@@ -1,0 +1,180 @@
+version: 2
+
+project_name: viri
+
+env:
+  - GO_VERSION=1.25
+
+before:
+  hooks:
+    - go mod tidy
+    - go mod download
+
+builds:
+  - id: virid
+    main: ./cmd/virid
+    binary: virid
+    ldflags:
+      - -s -w -X main.Version={{.Version}} -X main.Commit={{.Commit}} -X main.Date={{.Date}}
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+      - arm
+    goarm:
+      - 6
+      - 7
+    ignore:
+      - goos: windows
+        goarch: arm64
+      - goos: windows
+        goarch: arm
+      - goos: darwin
+        goarch: arm
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+  - id: virictl
+    main: ./cmd/virictl
+    binary: virictl
+    ldflags:
+      - -s -w -X main.Version={{.Version}} -X main.Commit={{.Commit}} -X main.Date={{.Date}}
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+      - arm
+    goarm:
+      - 6
+      - 7
+    ignore:
+      - goos: windows
+        goarch: arm64
+      - goos: windows
+        goarch: arm
+      - goos: darwin
+        goarch: arm
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: binaries
+    name_template: >-
+      {{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}
+      {{- if .Arm }}v{{ .Arm }}{{ end }}
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        format: zip
+    files:
+      - README.md
+      - LICENSE
+      - CHANGELOG.md
+    rlcp: true
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+      - "^chore:"
+      - Merge pull request
+      - Merge branch
+
+release:
+  github:
+    owner: viri-chain
+    name: viri
+  prerelease: auto
+  make_latest: true
+
+brews:
+  - name: viri
+    repository:
+      owner: viri-chain
+      name: homebrew-viri
+    directory: Formula
+    homepage: "https://viri-chain.org"
+    description: "Viri blockchain node and CLI — 3-layer modular blockchain with native Account Abstraction, Multi-VM (WASM+EVM), and ZK privacy."
+    license: "MIT"
+    test: |
+      system "#{bin}/virid", "--version"
+    install: |
+      bin.install "virid"
+      bin.install "virictl"
+    caveats: |
+      To start a node: virid --validator --chain-id 1337
+      To create a wallet: virictl wallet create
+
+scoops:
+  - name: viri
+    repository:
+      owner: viri-chain
+      name: scoop-bucket
+    homepage: "https://viri-chain.org"
+    description: "Viri blockchain node and CLI — 3-layer modular blockchain with native Account Abstraction, Multi-VM (WASM+EVM), and ZK privacy."
+    license: "MIT"
+
+nfpms:
+  - id: packages
+    package_name: viri
+    file_name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    vendor: Viri Chain
+    homepage: "https://viri-chain.org"
+    description: "Viri blockchain node and CLI"
+    maintainer: "Viri Chain Developers <dev@viri-chain.org>"
+    license: MIT
+    bindir: /usr/bin
+    formats:
+      - deb
+      - rpm
+      - apk
+    contents:
+      - src: deploy/install/apt/viri.list
+        dst: /etc/apt/sources.list.d/viri.list
+        type: config
+      - src: deploy/entrypoint.sh
+        dst: /usr/share/viri/entrypoint.sh
+    overrides:
+      rpm:
+        file_name_template: "{{ .ProjectName }}-{{ .Version }}-{{ .Arch }}"
+
+dockers:
+  - image_templates:
+      - "ghcr.io/viri-chain/viri:{{ .Version }}"
+      - "ghcr.io/viri-chain/viri:latest"
+    dockerfile: Dockerfile
+    build_flag_templates:
+      - "--label=org.opencontainers.image.title=Viri"
+      - "--label=org.opencontainers.image.description=Viri blockchain node"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.source={{ .GitURL }}"
+
+signs:
+  - artifacts: checksum
+    args:
+      - "--batch"
+      - "--local-user"
+      - "{{ .Env.GPG_FINGERPRINT }}"
+      - "--output"
+      - "${signature}"
+      - "--detach-sign"
+      - "${artifact}"

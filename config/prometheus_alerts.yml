@@ -1,0 +1,106 @@
+# Viri Public Testnet — Prometheus Alerting Rules
+# Deploy alongside prometheus.yml for testnet monitoring.
+
+groups:
+  - name: viri-testnet
+    interval: 30s
+    rules:
+      - alert: ValidatorDown
+        expr: up{job="viri-validator"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          network: testnet
+        annotations:
+          summary: "Validator {{ $labels.instance }} is down"
+          description: "Validator {{ $labels.instance }} has been unreachable for 1 minute."
+
+      - alert: InsufficientValidators
+        expr: viri_consensus_validators < 3
+        for: 2m
+        labels:
+          severity: critical
+          network: testnet
+        annotations:
+          summary: "Insufficient validators for consensus"
+          description: "Only {{ $value }} validators active (need ≥ 3 for BFT supermajority)."
+
+      - alert: ChainStalled
+        expr: increase(viri_consensus_height[5m]) == 0
+        for: 5m
+        labels:
+          severity: critical
+          network: testnet
+        annotations:
+          summary: "Testnet block production stalled"
+          description: "No new blocks produced in the last 5 minutes at height {{ $value }}."
+
+      - alert: LowPeerCount
+        expr: viri_p2p_peers < 2
+        for: 5m
+        labels:
+          severity: warning
+          network: testnet
+        annotations:
+          summary: "Validator has low peer count"
+          description: "{{ $labels.instance }} has only {{ $value }} peers."
+
+      - alert: HighViewChangeRate
+        expr: rate(viri_consensus_view_changes_total[5m]) > 5
+        for: 5m
+        labels:
+          severity: warning
+          network: testnet
+        annotations:
+          summary: "High view change rate"
+          description: "Node experiencing {{ $value }} view changes/sec — possible network issues."
+
+      - alert: DroppedConnections
+        expr: rate(viri_p2p_errors_total{error="connection_reset"}[5m]) > 1
+        for: 5m
+        labels:
+          severity: warning
+          network: testnet
+        annotations:
+          summary: "Elevated dropped connection rate"
+          description: "Dropping {{ $value }} connections/sec on {{ $labels.instance }}."
+
+      - alert: MemoryPressure
+        expr: go_memstats_alloc_bytes / go_memstats_sys_bytes > 0.9
+        for: 5m
+        labels:
+          severity: warning
+          network: testnet
+        annotations:
+          summary: "Node under memory pressure"
+          description: "{{ $labels.instance }} using >90% of allocated memory."
+
+      - alert: HighConsensusLatency
+        expr: histogram_quantile(0.95, rate(viri_consensus_round_duration_seconds_bucket[10m])) > 10
+        for: 5m
+        labels:
+          severity: warning
+          network: testnet
+        annotations:
+          summary: "High consensus round latency"
+          description: "P95 consensus round duration is {{ $value }}s on {{ $labels.instance }}."
+
+      - alert: ConsensusViewTimeout
+        expr: increase(viri_consensus_timeouts_total[10m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+          network: testnet
+        annotations:
+          summary: "Consensus view timeouts increasing"
+          description: "{{ $value }} timeouts in 10 minutes on {{ $labels.instance }}."
+
+      - alert: EpochRotationFailure
+        expr: rate(viri_consensus_epoch_errors_total[30m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+          network: testnet
+        annotations:
+          summary: "Epoch rotation failures detected"
+          description: "{{ $value }} epoch rotation errors on {{ $labels.instance }}."

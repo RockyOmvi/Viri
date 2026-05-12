@@ -118,6 +118,9 @@ func (sm *StakingModule) Unstake(validator []byte, amount uint64) error {
 	if amount > record.Stake {
 		return fmt.Errorf("insufficient stake")
 	}
+	if amount > record.SelfStake {
+		return fmt.Errorf("insufficient self stake")
+	}
 
 	record.Stake -= amount
 	record.SelfStake -= amount
@@ -149,7 +152,11 @@ func (sm *StakingModule) Slash(validator []byte, fraction float64) (uint64, erro
 		return 0, fmt.Errorf("validator not found")
 	}
 
-	slashAmount := uint64(float64(record.Stake) * fraction)
+	// Use integer arithmetic to avoid float64 precision loss for large stakes.
+	// fraction is expected in [0,1] range, e.g. 0.1 = 10%.
+	num := uint64(fraction * 1e9)
+	denom := uint64(1e9)
+	slashAmount := record.Stake * num / denom
 	if slashAmount > record.Stake {
 		slashAmount = record.Stake
 	}

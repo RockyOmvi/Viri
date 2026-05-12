@@ -474,6 +474,20 @@ func RateLimitMiddleware(rl *RateLimiter, getClientID func(*http.Request) string
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			clientID := getClientID(r)
 
+			rl.mu.RLock()
+			bucket, exists := rl.clientBuckets[clientID]
+			rl.mu.RUnlock()
+
+			limit := float64(rl.burst)
+			remaining := limit
+			if exists {
+				remaining = bucket.tokens
+			}
+
+			w.Header().Set("X-RateLimit-Limit", fmt.Sprintf("%.0f", limit))
+			w.Header().Set("X-RateLimit-Remaining", fmt.Sprintf("%.0f", remaining))
+			w.Header().Set("X-RateLimit-Reset", fmt.Sprintf("%d", time.Now().Add(time.Second).Unix()))
+
 			if !rl.Allow(clientID) {
 				w.Header().Set("Retry-After", "60")
 				http.Error(w, "Rate limit exceeded", http.StatusTooManyRequests)
@@ -517,6 +531,25 @@ func ConnectionLimitMiddleware(cl *ConnectionLimiter, getClientID func(*http.Req
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// HTTPSRedirectMiddleware redirects HTTP requests to HTTPS when tlsEnabled is true.
+func HTTPSRedirectMiddleware(tlsEnabled bool, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if tlsEnabled && r.TLS == nil {
+			host := r.Host
+			if host == "" {
+				host = r.URL.Host
+			}
+			if host == "" {
+				host = "localhost"
+			}
+			redirectURL := "https://" + host + r.URL.RequestURI()
+			http.Redirect(w, r, redirectURL, http.StatusMovedPermanently)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // Helper function

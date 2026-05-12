@@ -243,6 +243,27 @@ func (sm *StateManager) AllAccounts() ([]*Account, error) {
 	return sm.accountState.AllAccounts()
 }
 
+// DeleteBefore prunes state data before the given epoch for light client mode.
+// For the current in-memory state model, this resets the state to force re-sync
+// from full nodes. Returns the number of accounts pruned.
+func (sm *StateManager) DeleteBefore(epoch uint64) (uint64, error) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	accounts, err := sm.accountState.AllAccounts()
+	if err != nil {
+		return 0, err
+	}
+	count := uint64(len(accounts))
+
+	// Reset state — light client will re-fetch from full nodes
+	sm.accountState = NewAccountState(sm.db)
+	sm.blockHeight = 0
+	sm.stateRoot = crypto.SHA256([]byte("empty-state"))
+
+	return count, sm.saveState()
+}
+
 func (sm *StateManager) Close() error {
 	return sm.db.Close()
 }

@@ -1,0 +1,14 @@
+{
+  "chain_id": 1337,
+  "network_name": "dev-testnet",
+  "validators": [
+    {
+      "address": "0x6353613afc0358eba5d6bccfcea58dd368f523f5",
+      "public_key": "04c7cc84a47214265693700c4b63193c7eb01a6b752589f1c251d4735f2c708a9aaa5208b258d678a12493ea25af0c66975a1ce3b01c6df8050c163e76f09eb58a",
+      "stake": 1000000,
+      "name": "validator-0"
+    }
+  ],
+  "total_stake": 1000000,
+  "version": "0.1.0"
+}

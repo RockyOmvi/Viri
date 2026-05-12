@@ -110,6 +110,7 @@ func TestSingleNodeBlockProduction(t *testing.T) {
 	config := DefaultConsensusConfig()
 	config.BlockTime = 100 * time.Millisecond
 	config.ViewTimeout = 200 * time.Millisecond
+	config.MinValidators = 1
 
 	auditLog := &noopAuditLogger2{}
 	engine := NewHotStuffEngine(config, vs, bp, staking, nil, auditLog)

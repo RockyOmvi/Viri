@@ -1,0 +1,43 @@
+---
+# Viri Public Testnet — Full Deployment Playbook
+#
+# Usage:
+#   1. Set environment variables:
+#      export BOOTSTRAP_PUBLIC_IP="..."
+#      export VALIDATOR_0_IP="..."
+#      export VALIDATOR_1_IP="..."
+#      export VALIDATOR_2_IP="..."
+#      export VALIDATOR_3_IP="..."
+#      export FAUCET_PUBLIC_IP="..."
+#      export BOOTSTRAP_PEER_ID="..."
+#      export DOMAIN="viri-testnet.io"
+#
+#   2. Run:
+#      ansible-playbook -i inventory/oracle-cloud.yml deploy-testnet.yml
+#
+#   3. Or one-command:
+#      ./one-command-provision.sh
+
+- name: Bootstrap — Entry point node
+  hosts: bootstrap
+  gather_facts: yes
+  roles:
+    - role: common
+    - role: bootstrap
+  tags: [bootstrap, always]
+
+- name: Validators — Block producers
+  hosts: validators
+  gather_facts: yes
+  roles:
+    - role: common
+    - role: validator
+  tags: [validator, always]
+
+- name: Faucet + Explorer — Public services
+  hosts: faucet
+  gather_facts: yes
+  roles:
+    - role: common
+    - role: faucet
+  tags: [faucet, always]

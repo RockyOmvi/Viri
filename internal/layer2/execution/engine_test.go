@@ -6,6 +6,7 @@ import (
 
 	"github.com/viri-chain/viri/internal/layer1/crypto"
 	"github.com/viri-chain/viri/internal/layer1/ledger"
+	"github.com/viri-chain/viri/internal/layer2/zk"
 )
 
 func TestExecuteTransfer(t *testing.T) {
@@ -232,6 +233,164 @@ func TestExecuteContractDeploy(t *testing.T) {
 
 	if result.Status != 1 {
 		t.Errorf("expected contract deploy to succeed, got error: %v", result.Err)
+	}
+}
+
+func TestPrecompileGnarkVerify(t *testing.T) {
+	engine := NewExecutionEngine()
+
+	circuit := zk.NewCircuit("test_add", 2, 1, zk.FieldTypePrime)
+	circuit.AddAddConstraint(0, 1, 2)
+
+	gp := zk.NewGnarkProver()
+	gv := zk.NewGnarkVerifier()
+	engine.SetGnarkVerifier(gv, circuit)
+
+	senderKey, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	senderPubKey := senderKey.PubKey().Bytes()
+	senderAddr := senderKey.PubKey().Address()
+
+	accounts := make(map[string]*AccountState)
+	accounts[string(senderAddr)] = &AccountState{
+		Address: senderAddr,
+		Balance: big.NewInt(1000000),
+		Nonce:   0,
+		Storage: make(map[string][]byte),
+	}
+	getAccount := func(addr []byte) (*AccountState, error) {
+		acc, exists := accounts[string(addr)]
+		if !exists {
+			return nil, nil
+		}
+		return acc, nil
+	}
+	setAccount := func(addr []byte, ac *AccountState) error {
+		accounts[string(addr)] = ac
+		return nil
+	}
+
+	witness := &zk.Witness{
+		Public: []*big.Int{big.NewInt(3), big.NewInt(5)},
+		Secret: []*big.Int{big.NewInt(15)},
+	}
+	validProof, err := gp.Prove(circuit, witness)
+	if err != nil {
+		t.Fatalf("prove failed: %v", err)
+	}
+
+	data := make([]byte, 96+64)
+	validProof.A[0].FillBytes(data[:32])
+	validProof.B[0].FillBytes(data[32:64])
+	validProof.C[0].FillBytes(data[64:96])
+	big.NewInt(3).FillBytes(data[96:128])
+	big.NewInt(5).FillBytes(data[128:160])
+
+	tx := &ledger.Transaction{
+		Nonce:    0,
+		From:     senderPubKey,
+		To:       addrZKVerify,
+		Data:     data,
+		GasLimit: 100000,
+		GasPrice: 1,
+	}
+	payload := tx.SigningPayload()
+	sig, err := senderKey.Sign(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx.Signature = &ledger.TxSignature{R: sig.R.Bytes(), S: sig.S.Bytes()}
+	tx.Hash = tx.ComputeHash()
+
+	result, err := engine.ExecuteTransaction(tx, 1, getAccount, setAccount)
+	if err != nil {
+		t.Fatalf("ExecuteTransaction failed: %v", err)
+	}
+	if result.Status != 1 {
+		t.Fatalf("expected gnark verify success, got error: %v", result.Err)
+	}
+}
+
+func TestPrecompileGnarkVerifyTamperedProof(t *testing.T) {
+	engine := NewExecutionEngine()
+
+	circuit := zk.NewCircuit("test_add", 2, 1, zk.FieldTypePrime)
+	circuit.AddAddConstraint(0, 1, 2)
+
+	gv := zk.NewGnarkVerifier()
+	engine.SetGnarkVerifier(gv, circuit)
+
+	senderKey, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	senderPubKey := senderKey.PubKey().Bytes()
+	senderAddr := senderKey.PubKey().Address()
+
+	accounts := make(map[string]*AccountState)
+	accounts[string(senderAddr)] = &AccountState{
+		Address: senderAddr,
+		Balance: big.NewInt(1000000),
+		Nonce:   0,
+		Storage: make(map[string][]byte),
+	}
+
+	getAccount := func(addr []byte) (*AccountState, error) {
+		acc, exists := accounts[string(addr)]
+		if !exists {
+			return nil, nil
+		}
+		return acc, nil
+	}
+	setAccount := func(addr []byte, acc *AccountState) error {
+		accounts[string(addr)] = acc
+		return nil
+	}
+
+	gp := zk.NewGnarkProver()
+	witness := &zk.Witness{
+		Public: []*big.Int{big.NewInt(3), big.NewInt(5)},
+		Secret: []*big.Int{big.NewInt(15)},
+	}
+	validProof, err := gp.Prove(circuit, witness)
+	if err != nil {
+		t.Fatalf("prove failed: %v", err)
+	}
+
+	// Tamper with C value
+	tamperedC := big.NewInt(999)
+
+	data := make([]byte, 96+64)
+	validProof.A[0].FillBytes(data[:32])
+	validProof.B[0].FillBytes(data[32:64])
+	tamperedC.FillBytes(data[64:96])
+	big.NewInt(3).FillBytes(data[96:128])
+	big.NewInt(5).FillBytes(data[128:160])
+
+	tx := &ledger.Transaction{
+		Nonce:    0,
+		From:     senderPubKey,
+		To:       addrZKVerify,
+		Data:     data,
+		GasLimit: 100000,
+		GasPrice: 1,
+	}
+	payload := tx.SigningPayload()
+	sig, err := senderKey.Sign(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx.Signature = &ledger.TxSignature{R: sig.R.Bytes(), S: sig.S.Bytes()}
+	tx.Hash = tx.ComputeHash()
+
+	result, err := engine.ExecuteTransaction(tx, 1, getAccount, setAccount)
+	if err != nil {
+		t.Fatalf("ExecuteTransaction failed: %v", err)
+	}
+	if result.Status != 0 {
+		t.Fatal("expected tampered proof to fail verification")
 	}
 }
 

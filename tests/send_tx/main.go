@@ -15,6 +15,7 @@ import (
 
 func main() {
 	rpcURL := "http://localhost:8545"
+	// WARNING: This is a publicly known test key. Do NOT use on any network with real value.
 	faucetKeyHex := "a4d0b548f43c7034987abda0db71c715c123c1a521a9f53f482e45f0853ea1a2"
 
 	keyBytes, _ := hex.DecodeString(faucetKeyHex)

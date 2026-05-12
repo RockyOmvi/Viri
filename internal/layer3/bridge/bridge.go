@@ -166,6 +166,10 @@ func (bs *BridgeState) AddSignature(msgID []byte, validatorIdx int, signature []
 		return fmt.Errorf("validator set not found for source chain")
 	}
 
+	if validatorIdx < 0 || validatorIdx >= len(vs.Validators) {
+		return fmt.Errorf("validator index out of bounds")
+	}
+
 	for _, idx := range msg.ValidatorIdx {
 		if idx == validatorIdx {
 			return fmt.Errorf("validator already signed")
@@ -177,9 +181,7 @@ func (bs *BridgeState) AddSignature(msgID []byte, validatorIdx int, signature []
 
 	totalStake := uint64(0)
 	for _, idx := range msg.ValidatorIdx {
-		if idx < len(vs.Validators) {
-			totalStake += vs.Validators[idx].Stake
-		}
+		totalStake += vs.Validators[idx].Stake
 	}
 
 	requiredStake := uint64(0)
@@ -188,7 +190,7 @@ func (bs *BridgeState) AddSignature(msgID []byte, validatorIdx int, signature []
 			requiredStake += v.Stake
 		}
 	}
-	requiredStake = requiredStake * 2 / 3
+	requiredStake = requiredStake / 3 * 2
 
 	if totalStake >= requiredStake {
 		msg.Status = Confirmed
@@ -302,13 +304,17 @@ func (bs *BridgeState) GetTotalUnlocked(chain ChainID, token []byte) *big.Int {
 
 func computeMessageID(source, dest ChainID, sender, receiver, token []byte, amount *big.Int, nonce uint64) []byte {
 	h := sha256.New()
-	binary.Write(h, binary.BigEndian, source)
-	binary.Write(h, binary.BigEndian, dest)
+	var buf [8]byte
+	binary.BigEndian.PutUint64(buf[:], uint64(source))
+	h.Write(buf[:])
+	binary.BigEndian.PutUint64(buf[:], uint64(dest))
+	h.Write(buf[:])
 	h.Write(sender)
 	h.Write(receiver)
 	h.Write(token)
 	h.Write(amount.Bytes())
-	binary.Write(h, binary.BigEndian, nonce)
+	binary.BigEndian.PutUint64(buf[:], nonce)
+	h.Write(buf[:])
 	return h.Sum(nil)
 }
 
@@ -355,11 +361,12 @@ func (bc *BridgeContract) ProcessOutbound(msg *BridgeMessage) error {
 		bc.LastDayReset = day
 	}
 
-	if bc.CurrentDayUsed.Add(bc.CurrentDayUsed, msg.Amount).Cmp(bc.DailyLimit) > 0 {
+	newTotal := new(big.Int).Add(bc.CurrentDayUsed, msg.Amount)
+	if bc.DailyLimit != nil && newTotal.Cmp(bc.DailyLimit) > 0 {
 		return fmt.Errorf("daily limit exceeded")
 	}
 
-	bc.CurrentDayUsed.Add(bc.CurrentDayUsed, msg.Amount)
+	bc.CurrentDayUsed = newTotal
 	return nil
 }
 

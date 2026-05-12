@@ -281,8 +281,8 @@ func (p *chainBlockProducer) CommitBlock(blockHash []byte, height uint64) error 
 	// Set the consensus hash so Block.Hash() returns the agreed-upon hash
 	block.ConsensusHash = blockHash
 
-	// If we're not the proposer, execute L2 now for our local state
-	if block.Header.StateRoot == nil && p.execEngine != nil && len(block.Transactions) > 0 {
+	// Execute L2 transactions for local state tracking
+	if p.execEngine != nil && len(block.Transactions) > 0 && len(receipts) == 0 {
 		localReceipts := p.executeBlockTxs(block, height)
 		if receipts == nil {
 			receipts = localReceipts
@@ -298,6 +298,11 @@ func (p *chainBlockProducer) CommitBlock(blockHash []byte, height uint64) error 
 
 	if err := p.blockchain.AddBlock(block); err != nil {
 		return fmt.Errorf("failed to add block: %w", err)
+	}
+
+	// Remove confirmed transactions from the pool to avoid stale re-inclusion
+	if len(block.Transactions) > 0 {
+		p.blockchain.TxPool().RemoveConfirmed(block.Transactions)
 	}
 
 	// Clean up old pending blocks

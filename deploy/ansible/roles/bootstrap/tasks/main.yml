@@ -1,0 +1,48 @@
+---
+# Bootstrap node — the entry point for all peers on the testnet
+
+- name: Generate bootstrap node key (first run only)
+  shell: |
+    docker run --rm \
+      -v "{{ viri_home }}/config:/config" \
+      viri-node:latest \
+      virid --generate-node-key --key-file /config/bootstrap.key
+  args:
+    creates: "{{ viri_home }}/config/bootstrap.key"
+  become: yes
+
+- name: Read bootstrap peer ID
+  shell: |
+    cat "{{ viri_home }}/config/bootstrap.key" | grep -oP 'peer_id:\s*\K\S+'
+  register: bootstrap_peer_id_result
+  become: yes
+
+- name: Set bootstrap peer ID fact
+  set_fact:
+    bootstrap_peer_id: "{{ bootstrap_peer_id_result.stdout }}"
+
+- name: Deploy docker-compose for bootstrap
+  template:
+    src: docker-compose.bootstrap.yml.j2
+    dest: "{{ viri_home }}/docker-compose.yml"
+    owner: "{{ viri_user }}"
+    group: "{{ viri_user }}"
+    mode: 0644
+  become: yes
+
+- name: Create systemd service for bootstrap
+  template:
+    src: virid.service.j2
+    dest: /etc/systemd/system/virid.service
+    owner: root
+    group: root
+    mode: 0644
+  become: yes
+
+- name: Start bootstrap node
+  systemd:
+    name: virid
+    enabled: yes
+    state: started
+    daemon_reload: yes
+  become: yes

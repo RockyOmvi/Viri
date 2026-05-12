@@ -1,0 +1,39 @@
+# Viri Faucet Configuration
+# The faucet distributes free test tokens to developers.
+
+server:
+  port: 8081
+  host: "0.0.0.0"
+  tls_enabled: true
+  tls_cert: "/etc/viri/tls/cert.pem"
+  tls_key: "/etc/viri/tls/key.pem"
+
+rate_limits:
+  per_claim: 100          # VIRI tokens per claim
+  daily_limit: 500        # VIRI tokens per address per day
+  cooldown: 60            # Seconds between claims from same address
+  max_claims_per_day: 10  # Max claims per address per day
+
+captcha:
+  enabled: false           # Enable for production (requires hCaptcha/Cloudflare)
+  site_key: ""
+  secret_key: ""
+
+security:
+  require_tls: true
+  allowed_origins:
+    - "https://faucet.viri-testnet.io"
+    - "https://explorer.viri-testnet.io"
+  rate_limit_burst: 5
+  rate_limit_per_second: 1
+
+funding:
+  wallet_key_path: "/etc/viri/faucet.key"
+  min_balance_warning: 10000  # Warn when balance drops below this
+  max_daily_dispense: 5000    # Max total dispensed per day
+
+ui:
+  title: "Viri Testnet Faucet"
+  description: "Get free VIRI tokens for testing your dApps"
+  brand_color: "#6366f1"
+  footer_text: "Powered by Viri Blockchain"

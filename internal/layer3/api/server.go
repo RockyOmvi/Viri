@@ -5,12 +5,58 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/viri-chain/viri/internal/layer3/bridge"
 	"github.com/viri-chain/viri/internal/layer3/governance"
 	"github.com/viri-chain/viri/internal/layer3/intent"
 	"github.com/viri-chain/viri/internal/layer3/interop"
 )
+
+type rateLimiter struct {
+	mu       sync.Mutex
+	requests map[string]*tokenBucket
+	rate     float64
+	burst    int
+}
+
+type tokenBucket struct {
+	tokens    float64
+	lastCheck time.Time
+}
+
+func newRateLimiter(rate float64, burst int) *rateLimiter {
+	return &rateLimiter{
+		requests: make(map[string]*tokenBucket),
+		rate:     rate,
+		burst:    burst,
+	}
+}
+
+func (rl *rateLimiter) Allow(key string) bool {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	bucket, exists := rl.requests[key]
+	if !exists {
+		bucket = &tokenBucket{tokens: float64(rl.burst), lastCheck: time.Now()}
+		rl.requests[key] = bucket
+	}
+
+	now := time.Now()
+	elapsed := now.Sub(bucket.lastCheck).Seconds()
+	bucket.tokens += elapsed * rl.rate
+	if bucket.tokens > float64(rl.burst) {
+		bucket.tokens = float64(rl.burst)
+	}
+	bucket.lastCheck = now
+
+	if bucket.tokens >= 1 {
+		bucket.tokens--
+		return true
+	}
+	return false
+}
 
 type L3APIServer struct {
 	mu         sync.Mutex
@@ -20,15 +66,19 @@ type L3APIServer struct {
 	interop    *interop.InteropProtocol
 	intent     *intent.IntentSolver
 	server     *http.Server
+	apiKeys    map[string]bool
+	rateLimiter   *rateLimiter
 }
 
 func NewL3APIServer(port int, gov *governance.GovernanceDAO, br *bridge.ChainBridge, ip *interop.InteropProtocol, is *intent.IntentSolver) *L3APIServer {
 	return &L3APIServer{
-		port:       port,
-		governance: gov,
-		bridge:     br,
-		interop:    ip,
-		intent:     is,
+		port:        port,
+		governance:  gov,
+		bridge:      br,
+		interop:     ip,
+		intent:      is,
+		apiKeys:     make(map[string]bool),
+		rateLimiter: newRateLimiter(10, 20),
 	}
 }
 
@@ -66,14 +116,49 @@ func (s *L3APIServer) Stop() error {
 	return nil
 }
 
+func (s *L3APIServer) SetAPIKey(key string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if key != "" {
+		s.apiKeys[key] = true
+	}
+}
+
+func (s *L3APIServer) SetRateLimit(rate float64, burst int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rateLimiter = newRateLimiter(rate, burst)
+}
+
 func (s *L3APIServer) corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-API-Key")
 
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		if len(s.apiKeys) > 0 {
+			key := r.Header.Get("X-API-Key")
+			if key == "" {
+				key = r.URL.Query().Get("api_key")
+			}
+			s.mu.Lock()
+			valid := s.apiKeys[key]
+			s.mu.Unlock()
+			if !valid {
+				s.sendError(w, http.StatusUnauthorized, "invalid or missing API key")
+				return
+			}
+		}
+
+		ip := r.RemoteAddr
+		if !s.rateLimiter.Allow(ip) {
+			w.Header().Set("Retry-After", "1")
+			s.sendError(w, http.StatusTooManyRequests, "rate limit exceeded")
 			return
 		}
 

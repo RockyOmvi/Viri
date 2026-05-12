@@ -1,6 +1,7 @@
 package consensus
 
 import (
+	"encoding/json"
 	"sync"
 	"testing"
 	"time"
@@ -36,7 +37,11 @@ func (p *testBP) CreateBlock(proposer []byte, height uint64) ([]byte, []byte, er
 		proposer: proposer,
 	}
 	p.mu.Unlock()
-	return block.Hash(), proposer, nil
+	blockData, err := json.Marshal(block)
+	if err != nil {
+		return nil, nil, err
+	}
+	return blockData, block.Hash(), nil
 }
 
 func (p *testBP) ValidateBlock(blockData []byte, blockHash []byte, height uint64) error {
@@ -180,7 +185,8 @@ func TestMultiNodeBlockProduction(t *testing.T) {
 			for j := 0; j < n; j++ {
 				if j != idx {
 					if engines[j].IsRunning() {
-						engines[j].HandleMessage(msg)
+						j := j
+						go engines[j].HandleMessage(msg)
 					}
 				}
 			}

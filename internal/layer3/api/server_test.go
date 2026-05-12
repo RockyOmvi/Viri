@@ -170,3 +170,94 @@ func TestHealthHandler(t *testing.T) {
 		t.Fatalf("health status: %d", w.Code)
 	}
 }
+
+func TestAPIKeyAuth(t *testing.T) {
+	s := newTestServer()
+	s.SetAPIKey("test-key-123")
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v3/health", s.handleHealth)
+	handler := s.corsMiddleware(mux)
+
+	t.Run("missing key returns 401", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v3/health", nil)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("expected 401, got %d", w.Code)
+		}
+	})
+
+	t.Run("invalid key returns 401", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v3/health", nil)
+		req.Header.Set("X-API-Key", "wrong-key")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("expected 401, got %d", w.Code)
+		}
+	})
+
+	t.Run("valid key in header passes", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v3/health", nil)
+		req.Header.Set("X-API-Key", "test-key-123")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", w.Code)
+		}
+	})
+
+	t.Run("valid key in query string passes", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v3/health?api_key=test-key-123", nil)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", w.Code)
+		}
+	})
+}
+
+func TestRateLimiter(t *testing.T) {
+	s := newTestServer()
+	s.SetRateLimit(1000, 5)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v3/health", s.handleHealth)
+	handler := s.corsMiddleware(mux)
+
+	for i := 0; i < 5; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/api/v3/health", nil)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code == http.StatusTooManyRequests {
+			t.Fatalf("unexpected rate limit on request %d", i+1)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v3/health", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 on 6th request, got %d", w.Code)
+	}
+}
+
+func TestSetAPIKeyEmpty(t *testing.T) {
+	s := newTestServer()
+	s.SetAPIKey("")
+	s.SetAPIKey("key1")
+	s.SetAPIKey("key2")
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v3/health", s.handleHealth)
+	handler := s.corsMiddleware(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v3/health", nil)
+	req.Header.Set("X-API-Key", "key2")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+}

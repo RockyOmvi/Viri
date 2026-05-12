@@ -51,6 +51,7 @@ func TestGetDefaultDataDir(t *testing.T) {
 }
 
 func TestLoadKeyGeneratesAndLoads(t *testing.T) {
+	os.Setenv("VIRI_KEY_PASSPHRASE", "test-key-passphrase-67890")
 	root := t.TempDir()
 	flags := nodeFlags{dataDir: root}
 	log := logging.NewLogger("test", logging.INFO, "text")

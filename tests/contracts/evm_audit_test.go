@@ -22,6 +22,8 @@ func newAuditState() *auditState {
 	}
 }
 
+func (a *auditState) GetNonce(addr []byte) uint64 { return 0 }
+
 func (a *auditState) GetBalance(addr []byte) *big.Int {
 	if b, ok := a.balance[string(addr)]; ok {
 		return b

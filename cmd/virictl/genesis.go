@@ -78,9 +78,26 @@ func genesisInit() {
 		os.Exit(1)
 	}
 
+	chainID := uint64(1)
+	networkName := "viri-mainnet"
+	for i := 2; i < len(os.Args); i++ {
+		switch os.Args[i] {
+		case "--chain-id":
+			if i+1 < len(os.Args) {
+				fmt.Sscanf(os.Args[i+1], "%d", &chainID)
+				i++
+			}
+		case "--network":
+			if i+1 < len(os.Args) {
+				networkName = os.Args[i+1]
+				i++
+			}
+		}
+	}
+
 	config := map[string]interface{}{
-		"chain_id":       1,
-		"network_name":   "viri-mainnet",
+		"chain_id":       chainID,
+		"network_name":   networkName,
 		"genesis_time":   time.Now().UTC().Format(time.RFC3339),
 		"min_validators": 3,
 		"initial_supply": 1000000000,
@@ -93,8 +110,8 @@ func genesisInit() {
 	}
 
 	manifest := GenesisManifestEntry{
-		ChainID:     1,
-		NetworkName: "viri-mainnet",
+		ChainID:     chainID,
+		NetworkName: networkName,
 		GenesisTime: config["genesis_time"].(string),
 		Complete:    false,
 	}
@@ -632,7 +649,21 @@ func genesisExport() {
 }
 
 func computeManifestHash(manifest GenesisManifestEntry) []byte {
-	data, _ := json.Marshal(manifest.Validators)
+	// Include all identifying fields so the hash is unique per network config.
+	sig := struct {
+		ChainID     uint64                 `json:"chain_id"`
+		NetworkName string                 `json:"network_name"`
+		GenesisTime string                 `json:"genesis_time"`
+		Validators  []GenesisValidatorEntry `json:"validators"`
+		TotalStake  uint64                 `json:"total_stake"`
+	}{
+		ChainID:     manifest.ChainID,
+		NetworkName: manifest.NetworkName,
+		GenesisTime: manifest.GenesisTime,
+		Validators:  manifest.Validators,
+		TotalStake:  manifest.TotalStake,
+	}
+	data, _ := json.Marshal(sig)
 	h := sha256.Sum256(data)
 	return h[:]
 }

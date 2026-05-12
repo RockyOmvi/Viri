@@ -8,6 +8,103 @@
 - **Disk**: 100 GB SSD (NVMe preferred for validator nodes)
 - **Network**: 100 Mbps+ with low latency (< 50ms to peers)
 
+## Public Testnet Launch
+
+### Bootstrap Peers
+
+Before the testnet goes live, you need at least 2-3 bootstrap nodes with static IPs.
+
+**Setting up a bootstrap node:**
+```bash
+# On each bootstrap machine:
+virid --rpc --api \
+  --config configs/node-testnet.json \
+  --name "bootstrap-1"
+
+# Note the peer ID printed at startup:
+# PeerID: 16Uiu2HAm...
+```
+
+**Updating bootstrap peers in config:**
+Edit `configs/node-testnet.json` and replace the placeholder values:
+```json
+"bootstrap_peers": [
+  "/ip4/BOOTSTRAP_NODE_1_IP/tcp/30303/p2p/16Uiu2HAm...",
+  "/ip4/BOOTSTRAP_NODE_2_IP/tcp/30303/p2p/16Uiu2HAm..."
+]
+```
+
+### Genesis Ceremony
+
+The genesis ceremony creates the initial validator set and chain configuration.
+
+**On the coordinator node:**
+```bash
+# Initialize ceremony directory
+virictl genesis init --dir .viri/genesis
+
+# Add initial validators (run on each validator node)
+virictl genesis contribute --dir .viri/genesis \
+  --validator-key /path/to/validator.key
+
+# Collect contributions and finalize
+virictl genesis collect --dir .viri/genesis
+
+# Export genesis file
+virictl genesis export --dir .viri/genesis > genesis.json
+
+# Distribute genesis.json to all testnet participants
+```
+
+**On each participant node:**
+```bash
+# Place genesis file
+cp genesis.json configs/genesis/testnet.json
+
+# Start node with testnet config
+virid --config configs/node-testnet.json
+```
+
+### Testnet Quick Start
+
+```bash
+# 1. Build
+git clone https://github.com/viri-chain/viri.git
+cd viri
+go build -o virid ./cmd/virid
+go build -o virictl ./cmd/virictl
+
+# 2. Set passphrase (required for first run)
+export VIRI_KEY_PASSPHRASE=$(openssl rand -hex 32)
+
+# 3. Generate genesis (or use distributed genesis file)
+# See "Genesis Ceremony" above
+
+# 4. Start node
+./virid --config configs/node-testnet.json --rpc --api
+
+# 5. Verify it's syncing
+curl -s http://localhost:8545/health
+```
+
+### Auto-generated API Key
+
+If `api_key_hash` is left empty in config and `--rpc` or `--api` is enabled, the node will:
+1. Generate a random 32-byte API key
+2. Save it to `{data_dir}/api_key.txt` (persisted across restarts)
+3. Print the key on stderr at startup
+
+```
+=== API KEY ===
+a1b2c3d4e5f6...
+===============
+```
+
+This key never changes unless you delete `api_key.txt`. Set via header:
+```bash
+curl -H "X-API-Key: a1b2c3d4e5f6..." http://localhost:8545/ -X POST ...
+```
+
 ## Quick Install
 
 ### 1. Build from Source

@@ -129,11 +129,11 @@ func TestRateLimiterByteLimit(t *testing.T) {
 func TestDefaultRateLimiterConfig(t *testing.T) {
 	config := DefaultRateLimiterConfig()
 
-	if config.MaxMessagesPerSecond != 100 {
-		t.Errorf("Expected MaxMessagesPerSecond 100, got %d", config.MaxMessagesPerSecond)
+	if config.MaxMessagesPerSecond != 500 {
+		t.Errorf("Expected MaxMessagesPerSecond 500, got %d", config.MaxMessagesPerSecond)
 	}
 
-	if config.MaxBytesPerSecond != 10*1024*1024 {
-		t.Errorf("Expected MaxBytesPerSecond 10MB, got %d", config.MaxBytesPerSecond)
+	if config.MaxBytesPerSecond != 50*1024*1024 {
+		t.Errorf("Expected MaxBytesPerSecond 50MB, got %d", config.MaxBytesPerSecond)
 	}
 }

@@ -1298,6 +1298,10 @@ func (n *ViriNetwork) DoSProtector() *security.DoSProtector {
 	return n.dosProtector
 }
 
+func (n *ViriNetwork) GetDoSProtector() *security.DoSProtector {
+	return n.dosProtector
+}
+
 func (n *ViriNetwork) SetSecurityLimiter(sl *security.RateLimiter) {
 	n.securityLimiter = sl
 }
@@ -1359,6 +1363,31 @@ func (n *ViriNetwork) OnValidatorDiscovered(fn func(pubKey []byte, addr []byte, 
 
 func (n *ViriNetwork) Host() host.Host {
 	return n.host
+}
+
+func (n *ViriNetwork) Drain(ctx context.Context) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	if !n.running {
+		return nil
+	}
+
+	n.logger.Info("Starting graceful P2P connection drain...")
+
+	// Close all tracked connections
+	n.connManager.Close()
+
+	// Wait for context or give time for in-flight operations to complete
+	select {
+	case <-ctx.Done():
+		n.logger.Warn("P2P drain timed out")
+		return ctx.Err()
+	case <-time.After(500 * time.Millisecond):
+	}
+
+	n.logger.Info("P2P connections drained")
+	return nil
 }
 
 func (n *ViriNetwork) Close() error {

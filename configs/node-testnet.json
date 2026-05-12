@@ -17,6 +17,7 @@
     "bootstrap_peers": [
       "/ip4/TESTNET_BOOTSTRAP_IP/tcp/30303/p2p/BOOTSTRAP_PEER_ID"
     ],
+    "bootstrap_peers_comment": "Replace TESTNET_BOOTSTRAP_IP and BOOTSTRAP_PEER_ID with actual bootstrap node info, or set up your own bootstrap nodes before launching the public testnet. See DEPLOYMENT.md.",
     "max_peers": 50,
     "enable_dht": true,
     "enable_nat": true

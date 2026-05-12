@@ -76,14 +76,14 @@ func (p *TxPool) Add(tx *Transaction) error {
 		return ErrGasPriceTooLow
 	}
 
-	sender := string(tx.From)
-	accountTxs := p.countAccountTxs(sender)
+	sender := tx.SenderAddress()
+	accountTxs := p.countAccountTxs(string(sender))
 	if accountTxs >= p.config.MaxAccountTxs {
 		return ErrAccountTxLimit
 	}
 
 	if p.state != nil {
-		nonce, err := p.state.GetNonce(tx.From)
+		nonce, err := p.state.GetNonce(sender)
 		if err == nil && tx.Nonce < nonce {
 			return ErrNonceTooLow
 		}
@@ -121,7 +121,7 @@ func (p *TxPool) GetPendingByAccount(account []byte) []*Transaction {
 
 	var txs []*Transaction
 	for _, tx := range p.pending {
-		if string(tx.From) == string(account) {
+		if string(tx.SenderAddress()) == string(account) {
 			txs = append(txs, tx)
 		}
 	}
@@ -210,7 +210,7 @@ func (p *TxPool) removeLocked(txHash string) {
 func (p *TxPool) countAccountTxs(account string) int {
 	count := 0
 	for _, tx := range p.pending {
-		if string(tx.From) == account {
+		if string(tx.SenderAddress()) == account {
 			count++
 		}
 	}

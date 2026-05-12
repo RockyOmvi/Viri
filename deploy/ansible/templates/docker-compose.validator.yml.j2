@@ -1,0 +1,35 @@
+version: "3.8"
+
+services:
+  virid:
+    image: ghcr.io/viri-chain/viri:latest
+    container_name: virid-validator-{{ validator_id }}
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - {{ viri_data_dir }}:/data
+      - {{ viri_home }}/config/validator-{{ validator_id }}:/config
+      - {{ viri_home }}/logs:/logs
+    environment:
+      - VIRI_CHAIN_ID={{ chain_id }}
+      - VIRI_NETWORK_NAME={{ network_name }}
+      - VIRI_LISTEN_ADDR=0.0.0.0:{{ p2p_port }}
+      - VIRI_DATA_DIR=/data
+      - VIRI_LOG_DIR=/logs
+      - VIRI_LOG_LEVEL=info
+      - VIRI_METRICS_ENABLED=true
+      - VIRI_METRICS_PORT={{ prometheus_port }}
+      - VIRI_KEY_PASSPHRASE_FILE=/config/validator.pass
+      - VIRI_BOOTSTRAP_PEERS={{ bootstrap_multiaddr }}
+      - VIRI_VALIDATOR=true
+      - VIRI_VALIDATOR_KEY=/config/validator.key
+      - VIRI_BLOCK_TIME={{ block_time }}
+    command: >
+      --rpc --rpc-port {{ rpc_port }}
+      --api --api-port {{ api_port }}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:{{ rpc_port }}/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

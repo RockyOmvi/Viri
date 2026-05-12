@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Viri Block Explorer</title>
+<style>
+  :root {
+    --bg: #0f1116;
+    --panel: #171a21;
+    --accent: #f5b95c;
+    --text: #f2f3f5;
+    --muted: #a0a6b5;
+    --success: #3ddc97;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  .header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 1rem 2rem; background: var(--panel);
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+  }
+  .header h1 { margin: 0; color: var(--accent); font-size: 1.2rem; }
+  .header .config { display: flex; gap: 0.5rem; align-items: center; }
+  .header input { background: #1f2430; border: 1px solid rgba(255,255,255,0.05);
+    color: var(--text); border-radius: 8px; padding: 0.4rem 0.7rem; font-size: 0.85rem; }
+  .header button { background: var(--accent); color: #121212; border: none;
+    border-radius: 8px; padding: 0.4rem 1rem; cursor: pointer; font-weight: 600; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px,1fr));
+    gap: 1rem; padding: 1.5rem 2rem; }
+  .stat { background: var(--panel); border-radius: 12px; padding: 1rem; text-align: center; }
+  .stat .value { font-size: 1.8rem; font-weight: 700; color: var(--accent); }
+  .stat .label { font-size: 0.75rem; color: var(--muted); margin-top: 0.3rem; }
+  .content { display: grid; grid-template-columns: 2fr 1fr; gap: 1.5rem;
+    padding: 0 2rem 2rem; }
+  @media (max-width: 768px) { .content { grid-template-columns: 1fr; } }
+  .card { background: var(--panel); border-radius: 12px; padding: 1rem; }
+  .card h2 { margin: 0 0 0.8rem; font-size: 1rem; color: var(--muted); }
+  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  th { text-align: left; color: var(--muted); font-weight: 500; padding: 0.4rem 0; }
+  td { padding: 0.4rem 0; border-top: 1px solid rgba(255,255,255,0.03); }
+  .hash { font-family: monospace; color: #7bd7ff; font-size: 0.8rem; }
+  .tx-count { background: #1f3f2b; color: var(--success); border-radius: 999px;
+    padding: 0.1rem 0.5rem; font-size: 0.75rem; }
+  .error { background: #4a1d1d; border: 1px solid #ff6b6b; color: #ff6b6b;
+    border-radius: 8px; padding: 0.5rem; text-align: center; margin: 1rem 2rem; }
+  .loading { text-align: center; color: var(--muted); padding: 2rem; }
+  pre { margin: 0; white-space: pre-wrap; word-break: break-all; font-size: 0.8rem; }
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>⧫ Viri Block Explorer</h1>
+  <div class="config">
+    <input id="baseUrl" type="text" value="http://localhost:8080" placeholder="Node URL">
+    <input id="apiKey" type="password" placeholder="API Key" style="width:120px">
+    <button onclick="refreshAll()">Refresh</button>
+  </div>
+</div>
+
+<div id="errorBar" class="error" style="display:none"></div>
+
+<div class="stats" id="statsRow">
+  <div class="stat"><div class="value" id="statBlock">—</div><div class="label">Block Height</div></div>
+  <div class="stat"><div class="value" id="statPeers">—</div><div class="label">Peers</div></div>
+  <div class="stat"><div class="value" id="statUptime">—</div><div class="label">Uptime (s)</div></div>
+  <div class="stat"><div class="value" id="statChainId">—</div><div class="label">Chain ID</div></div>
+</div>
+
+<div class="content">
+  <div class="card">
+    <h2>Latest Blocks</h2>
+    <table><thead><tr><th>Height</th><th>Hash</th><th>Txs</th><th>Time</th></tr></thead>
+      <tbody id="blocksBody"></tbody></table>
+  </div>
+  <div class="card">
+    <h2>Peers</h2>
+    <table><thead><tr><th>Peer ID</th><th>Status</th></tr></thead>
+      <tbody id="peersBody"></tbody></table>
+  </div>
+</div>
+
+<script>
+const baseUrl = () => document.getElementById('baseUrl').value.trim();
+const apiKey = () => document.getElementById('apiKey').value.trim();
+const headers = () => {
+  const h = {'Content-Type': 'application/json'};
+  if (apiKey()) h['X-API-Key'] = apiKey();
+  return h;
+};
+
+async function api(endpoint, body) {
+  const res = await fetch(baseUrl() + endpoint, body ? {method:'POST',headers:headers(),body:JSON.stringify(body)} : {headers:headers()});
+  const text = await res.text();
+  try { return {ok:res.ok, data: JSON.parse(text)}; } catch(e) { return {ok:false, data:text}; }
+}
+
+async function rpc(method, params) {
+  return api('/', {jsonrpc:'2.0', id:Date.now(), method, params:params||[]});
+}
+
+function showError(msg) {
+  const el = document.getElementById('errorBar');
+  el.textContent = msg;
+  el.style.display = msg ? 'block' : 'none';
+}
+
+async function refreshAll() {
+  showError('');
+  const [status, blockNum, peers, latestBlocks] = await Promise.all([
+    api('/api/v1/status').catch(e=>({ok:false,data:e.message})),
+    rpc('eth_blockNumber').catch(e=>({ok:false,data:e.message})),
+    api('/api/v1/peers').catch(e=>({ok:false,data:e.message})),
+    api('/api/v1/blocks?limit=10').catch(e=>({ok:false,data:e.message}))
+  ]);
+
+  if (!status.ok && !blockNum.ok) { showError('Cannot connect to node at ' + baseUrl()); return; }
+
+  let height = 0, chainId = '—', peersCount = 0, uptime = 0;
+
+  if (status.ok && status.data) {
+    const d = status.data.data || status.data;
+    height = d.height || d.block_height || 0;
+    peersCount = d.peers || d.peer_count || 0;
+    uptime = d.uptime_sec || 0;
+    chainId = d.chain_id || d.chainId || '—';
+  }
+  if (blockNum.ok && blockNum.data && blockNum.data.result) {
+    const h = parseInt(blockNum.data.result);
+    if (!isNaN(h)) height = h;
+  }
+
+  document.getElementById('statBlock').textContent = height.toLocaleString();
+  document.getElementById('statPeers').textContent = peersCount;
+  document.getElementById('statUptime').textContent = uptime;
+  document.getElementById('statChainId').textContent = chainId;
+
+  const peersBody = document.getElementById('peersBody');
+  peersBody.innerHTML = '';
+  if (peers.ok && peers.data && (peers.data.peers||peers.data.data?.peers)) {
+    const list = peers.data.peers || peers.data.data.peers;
+    list.forEach(p => {
+      peersBody.innerHTML += `<tr><td class="hash">${(p.peer_id||p.id||'').slice(0,20)}</td><td>${p.status||'connected'}</td></tr>`;
+    });
+  } else {
+    peersBody.innerHTML = '<tr><td colspan="2" style="color:var(--muted)">No peers</td></tr>';
+  }
+
+  const blocksBody = document.getElementById('blocksBody');
+  blocksBody.innerHTML = '';
+  if (latestBlocks.ok && latestBlocks.data) {
+    const blocks = latestBlocks.data.blocks || latestBlocks.data.data?.blocks || [];
+    if (blocks.length === 0) { blocksBody.innerHTML = '<tr><td colspan="4" style="color:var(--muted)">No blocks</td></tr>'; }
+    blocks.slice(0, 15).forEach(b => {
+      const h = b.hash ? b.hash.slice(0, 16) + '…' : (b.block_hash||'').slice(0, 16) + '…';
+      const txCount = b.tx_count || b.txCount || (b.transactions ? b.transactions.length : 0);
+      const ts = b.timestamp || b.block_time || '';
+      blocksBody.innerHTML += `<tr><td>${b.height||b.block_number||'?'}</td>
+        <td class="hash">${h}</td>
+        <td><span class="tx-count">${txCount}</span></td>
+        <td style="color:var(--muted);font-size:0.75rem">${ts}</td></tr>`;
+    });
+  } else {
+    blocksBody.innerHTML = '<tr><td colspan="4" style="color:var(--muted)">Could not fetch blocks</td></tr>';
+  }
+}
+
+refreshAll();
+setInterval(refreshAll, 10000);
+</script>
+</body>
+</html>

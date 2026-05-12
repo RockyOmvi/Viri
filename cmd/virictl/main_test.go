@@ -64,7 +64,13 @@ func TestApiGet(t *testing.T) {
 	})
 }
 
+func setPassphrase(t *testing.T) {
+	t.Helper()
+	os.Setenv("VIRI_WALLET_PASSPHRASE", "test-passphrase-12345")
+}
+
 func TestWalletCreate(t *testing.T) {
+	setPassphrase(t)
 	output := captureStdout(t, func() {
 		walletCreate()
 	})
@@ -74,6 +80,7 @@ func TestWalletCreate(t *testing.T) {
 }
 
 func TestWalletExportAndImport(t *testing.T) {
+	setPassphrase(t)
 	root := t.TempDir()
 	oldCwd, err := os.Getwd()
 	if err != nil {

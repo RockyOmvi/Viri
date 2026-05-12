@@ -148,6 +148,22 @@ func (am *AccountManager) AccountCount() int {
 	return len(am.accounts)
 }
 
+// SetAccountDirect writes an account directly (used by EntryPoint and Recovery).
+func (am *AccountManager) SetAccountDirect(address []byte, acc *Account) error {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	am.accounts[string(address)] = acc
+	return nil
+}
+
+// HasAccount checks whether an account exists.
+func (am *AccountManager) HasAccount(address []byte) bool {
+	am.mu.RLock()
+	defer am.mu.RUnlock()
+	_, exists := am.accounts[string(address)]
+	return exists
+}
+
 func (a *Account) Clone() *Account {
 	cloned := &Account{
 		Address:   append([]byte(nil), a.Address...),

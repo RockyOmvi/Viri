@@ -15,12 +15,36 @@ import (
 	"github.com/viri-chain/viri/internal/pkg/security"
 )
 
+func wsCheckOrigin(r *http.Request) bool {
+	allowedOrigins := map[string]bool{
+		"http://localhost":          true,
+		"http://localhost:3000":     true,
+		"http://localhost:8080":     true,
+		"http://localhost:8545":     true,
+		"https://localhost":         true,
+		"https://localhost:3000":    true,
+		"https://localhost:8080":    true,
+		"https://localhost:8545":    true,
+		"http://127.0.0.1":          true,
+		"http://127.0.0.1:3000":     true,
+		"http://127.0.0.1:8080":     true,
+		"http://127.0.0.1:8545":     true,
+		"https://127.0.0.1":         true,
+		"https://127.0.0.1:3000":    true,
+		"https://127.0.0.1:8080":    true,
+		"https://127.0.0.1:8545":    true,
+	}
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	return allowedOrigins[origin]
+}
+
 var wsUpgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
-	CheckOrigin: func(r *http.Request) bool {
-		return true
-	},
+	CheckOrigin:     wsCheckOrigin,
 }
 
 type WSServer struct {
@@ -63,12 +87,16 @@ func (s *WSServer) Start() error {
 	mux.HandleFunc("/ws", s.handleWS)
 	mux.HandleFunc("/health", s.handleHealth)
 
+	if s.apiKeyHash == "" {
+		s.logger.Warn("WebSocket API key auth is disabled")
+	}
+
 	getClientID := func(r *http.Request) string {
 		return r.RemoteAddr
 	}
 
-	rateLimiter := security.NewRateLimiter(10.0, 20)
-	connLimiter := security.NewConnectionLimiter(500, 10)
+	rateLimiter := security.NewRateLimiter(5.0, 10)
+	connLimiter := security.NewConnectionLimiter(100, 10)
 
 	handler := security.ConnectionLimitMiddleware(connLimiter, getClientID)(
 		security.RateLimitMiddleware(rateLimiter, getClientID)(

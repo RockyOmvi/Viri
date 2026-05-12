@@ -8,7 +8,7 @@ GO_FILES = $(shell find . -name "*.go")
 
 LDFLAGS = -ldflags "-X main.Version=$(VERSION) -s -w"
 
-.PHONY: all build build-all clean test lint release install
+.PHONY: all build build-all clean test lint release install bench bench-ci fuzz smoke-test
 
 all: build
 
@@ -57,6 +57,27 @@ test:
 lint:
 	@echo "Running linter..."
 	golangci-lint run ./...
+
+bench:
+	@echo "Running benchmarks..."
+	go test -bench=. -benchmem -count=1 -run=^$$ ./tests/benchmarks/... -timeout 10m
+	go test -bench=. -benchmem -count=1 -run=^$$ ./internal/layer2/vm/... -timeout 5m
+
+bench-ci:
+	@echo "Running CI-style benchmarks (short)..."
+	go test -bench=. -benchmem -count=1 -benchtime=1x -run=^$$ ./tests/benchmarks/... -timeout 5m
+
+fuzz:
+	@echo "Running fuzz tests (30s each)..."
+	go test -fuzz=FuzzHasSuperMajority -fuzztime=30s ./internal/layer1/consensus/...
+	go test -fuzz=FuzzSignatureVerification -fuzztime=30s ./tests/fuzz/...
+	go test -fuzz=FuzzTransactionHash -fuzztime=30s ./tests/fuzz/...
+	go test -fuzz=FuzzMerkleTree -fuzztime=30s ./tests/fuzz/...
+	go test -fuzz=FuzzECDSASignVerify -fuzztime=30s ./tests/fuzz/...
+
+smoke-test:
+	@echo "Running Docker testnet smoke test..."
+	@cd testnet && bash smoke_test.sh
 
 clean:
 	@echo "Cleaning build directory..."

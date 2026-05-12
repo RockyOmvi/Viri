@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"io"
 	"math/big"
-	mathrand "math/rand"
 )
 
 type ProofSystem string
@@ -83,8 +82,11 @@ func (p *Prover) Prove(assignment *Assignment) (*Proof, error) {
 		} else if i-len(assignment.Inputs) < len(assignment.Witness) {
 			val = new(big.Int).Set(assignment.Witness[i-len(assignment.Inputs)])
 		} else {
-			rng := mathrand.New(mathrand.NewSource(mathrand.Int63()))
-			val = new(big.Int).Rand(rng, new(big.Int).Lsh(big.NewInt(1), 64))
+			var err error
+			val, err = rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 256))
+			if err != nil {
+				return nil, err
+			}
 		}
 
 		if p.circuit.Prime != nil && val.Cmp(p.circuit.Prime) >= 0 {
@@ -140,15 +142,15 @@ func (p *Proof) ComputeCommitment() []byte {
 }
 
 func GenerateTestAssignment(circuit *Circuit) *Assignment {
-	rng := mathrand.New(mathrand.NewSource(mathrand.Int63()))
+	bound := new(big.Int).Lsh(big.NewInt(1), 256)
 	inputs := make([]*big.Int, circuit.NumInputs)
 	for i := 0; i < circuit.NumInputs; i++ {
-		inputs[i] = new(big.Int).Rand(rng, new(big.Int).Lsh(big.NewInt(1), 64))
+		inputs[i], _ = rand.Int(rand.Reader, bound)
 	}
 
 	witness := make([]*big.Int, circuit.NumWitness)
 	for i := 0; i < circuit.NumWitness; i++ {
-		witness[i] = new(big.Int).Rand(rng, new(big.Int).Lsh(big.NewInt(1), 64))
+		witness[i], _ = rand.Int(rand.Reader, bound)
 	}
 
 	return &Assignment{
@@ -157,12 +159,18 @@ func GenerateTestAssignment(circuit *Circuit) *Assignment {
 	}
 }
 
+func randBytes(n int) []byte {
+	b := make([]byte, n)
+	rand.Read(b)
+	return b
+}
+
 func GenerateProvingKey(circuit *Circuit) *ProvingKey {
-	rng := mathrand.New(mathrand.NewSource(mathrand.Int63()))
+	bound := new(big.Int).Lsh(big.NewInt(1), 256)
 	totalLen := circuit.NumInputs + circuit.NumWitness
 	icElements := make([]*big.Int, circuit.NumInputs)
 	for i := range icElements {
-		icElements[i] = new(big.Int).Rand(rng, new(big.Int).Lsh(big.NewInt(1), 64))
+		icElements[i], _ = rand.Int(rand.Reader, bound)
 	}
 
 	g1Elements := make([][]byte, totalLen)
@@ -172,18 +180,18 @@ func GenerateProvingKey(circuit *Circuit) *ProvingKey {
 		g2Elements[i] = make([]byte, 64)
 	}
 
-	alpha := make([]byte, 32)
-	beta := make([]byte, 64)
-	gamma := make([]byte, 64)
-	delta := make([]byte, 64)
+	alpha := randBytes(32)
+	beta := randBytes(32)
+	gamma := randBytes(32)
+	delta := randBytes(32)
 
 	return &ProvingKey{
 		Data:       circuit.serializeConstraints(),
 		CircuitID:  []byte(circuit.Name),
 		Alpha:      alpha,
-		Beta:       beta[:32],
-		Gamma:      gamma[:32],
-		Delta:      delta[:32],
+		Beta:       beta,
+		Gamma:      gamma,
+		Delta:      delta,
 		G1Elements: g1Elements,
 		G2Elements: g2Elements,
 		VK: &VerifyingKey{

@@ -128,7 +128,13 @@ func (vs *ValidatorSet) selectProposer(height uint64, view uint64) int {
 }
 
 func (vs *ValidatorSet) GetNextProposer(height uint64) *Validator {
-	idx := vs.selectProposer(height + 1, 0)
+	if len(vs.validators) == 0 {
+		return nil
+	}
+	idx := vs.selectProposer(height+1, 0)
+	if idx >= len(vs.validators) {
+		return nil
+	}
 	return vs.validators[idx]
 }
 
@@ -246,7 +252,12 @@ type QC struct {
 
 func (qc *QC) IsValid(vs *ValidatorSet) bool {
 	var signedStake uint64
+	seen := make(map[string]bool)
 	for _, addr := range qc.ValidatorAddrs {
+		if seen[addr] {
+			continue
+		}
+		seen[addr] = true
 		if _, signed := qc.Signatures[addr]; !signed {
 			continue
 		}
@@ -292,6 +303,12 @@ func (qc *QC) Encode() ([]byte, error) {
 }
 
 func DecodeQC(data []byte) (*QC, error) {
+	const (
+		maxAddrCount = 1000
+		maxHashLen   = 64
+		maxSigLen    = 66
+		maxAddrStr   = 128
+	)
 	buf := bytes.NewReader(data)
 	qc := &QC{
 		Signatures: make(map[string]crypto.Signature),
@@ -314,6 +331,9 @@ func DecodeQC(data []byte) (*QC, error) {
 	if err := binary.Read(buf, binary.BigEndian, &hashLen); err != nil {
 		return nil, err
 	}
+	if hashLen > maxHashLen {
+		return nil, fmt.Errorf("block hash length %d exceeds max %d", hashLen, maxHashLen)
+	}
 	qc.BlockHash = make([]byte, hashLen)
 	if _, err := buf.Read(qc.BlockHash); err != nil {
 		return nil, err
@@ -323,11 +343,17 @@ func DecodeQC(data []byte) (*QC, error) {
 	if err := binary.Read(buf, binary.BigEndian, &addrCount); err != nil {
 		return nil, err
 	}
+	if addrCount > maxAddrCount {
+		return nil, fmt.Errorf("address count %d exceeds max %d", addrCount, maxAddrCount)
+	}
 
 	for i := uint32(0); i < addrCount; i++ {
 		var addrLen uint16
 		if err := binary.Read(buf, binary.BigEndian, &addrLen); err != nil {
 			return nil, err
+		}
+		if addrLen > maxAddrStr {
+			return nil, fmt.Errorf("address string length %d exceeds max %d", addrLen, maxAddrStr)
 		}
 		addr := make([]byte, addrLen)
 		if _, err := buf.Read(addr); err != nil {
@@ -340,12 +366,18 @@ func DecodeQC(data []byte) (*QC, error) {
 		if err := binary.Read(buf, binary.BigEndian, &rLen); err != nil {
 			return nil, err
 		}
+		if rLen > maxSigLen {
+			return nil, fmt.Errorf("signature R length %d exceeds max %d", rLen, maxSigLen)
+		}
 		rBytes := make([]byte, rLen)
 		if _, err := buf.Read(rBytes); err != nil {
 			return nil, err
 		}
 		if err := binary.Read(buf, binary.BigEndian, &sLen); err != nil {
 			return nil, err
+		}
+		if sLen > maxSigLen {
+			return nil, fmt.Errorf("signature S length %d exceeds max %d", sLen, maxSigLen)
 		}
 		sBytes := make([]byte, sLen)
 		if _, err := buf.Read(sBytes); err != nil {

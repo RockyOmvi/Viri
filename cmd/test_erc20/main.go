@@ -20,6 +20,7 @@ const erc20Bin = "60c0604052600860809081526726b4b72a37b5b2b760c11b60a0525f906100
 func main() {
 	faucetKeyHex := os.Getenv("FAUCET_WALLET_KEY")
 	if faucetKeyHex == "" {
+		// WARNING: This is a publicly known test key. Do NOT use on any network with real value.
 		faucetKeyHex = "a4d0b548f43c7034987abda0db71c715c123c1a521a9f53f482e45f0853ea1a2"
 	}
 
@@ -38,7 +39,10 @@ func main() {
 	fmt.Printf("=== ERC-20 Deploy & Test ===\n")
 	fmt.Printf("Deployer: %s\n", deployerHex)
 
-	rpcURL := "http://localhost:8545"
+	rpcURL := os.Getenv("RPC_URL")
+	if rpcURL == "" {
+		rpcURL = "http://localhost:8545"
+	}
 
 	// 1. Get Nonce
 	nonce := getNonce(rpcURL, deployerHex)

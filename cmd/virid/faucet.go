@@ -27,13 +27,17 @@ type FaucetServer struct {
 	perClaim    uint64
 	dailyLimit  uint64
 	cooldown    time.Duration
+	globalRate  time.Duration
 	claims      map[string]time.Time // address -> last claim time
+	ipClaims    map[string]time.Time // ip -> last claim time
 	dailyTotal  uint64
 	dailyReset  time.Time
 	server      *http.Server
+	tlsCert     string
+	tlsKey      string
 }
 
-func NewFaucetServer(port int, rpcURL string, key *crypto.PrivateKey, perClaim, dailyLimit uint64, cooldown time.Duration) *FaucetServer {
+func NewFaucetServer(port int, rpcURL string, key *crypto.PrivateKey, perClaim, dailyLimit uint64, cooldown time.Duration, tlsCert, tlsKey string) *FaucetServer {
 	return &FaucetServer{
 		port:       port,
 		rpcURL:     rpcURL,
@@ -41,8 +45,12 @@ func NewFaucetServer(port int, rpcURL string, key *crypto.PrivateKey, perClaim, 
 		perClaim:   perClaim,
 		dailyLimit: dailyLimit,
 		cooldown:   cooldown,
+		globalRate: time.Second,
 		claims:     make(map[string]time.Time),
+		ipClaims:   make(map[string]time.Time),
 		dailyReset: time.Now().Add(24 * time.Hour),
+		tlsCert:    tlsCert,
+		tlsKey:     tlsKey,
 	}
 }
 
@@ -59,11 +67,18 @@ func (f *FaucetServer) Start() error {
 		WriteTimeout: 15 * time.Second,
 	}
 
-	fmt.Printf("Faucet running at http://localhost:%d\n", f.port)
 	fmt.Printf("Faucet address: 0x%x\n", f.walletKey.PubKey().Address())
 	fmt.Printf("Per claim: %d | Daily limit: %d | Cooldown: %s\n", f.perClaim, f.dailyLimit, f.cooldown)
 
-	return f.server.ListenAndServe()
+	var err error
+	if f.tlsCert != "" && f.tlsKey != "" {
+		fmt.Printf("Faucet running at https://localhost:%d (TLS)\n", f.port)
+		err = f.server.ListenAndServeTLS(f.tlsCert, f.tlsKey)
+	} else {
+		fmt.Printf("Faucet running at http://localhost:%d\n", f.port)
+		err = f.server.ListenAndServe()
+	}
+	return err
 }
 
 func (f *FaucetServer) rpcCall(method string, params []interface{}) (interface{}, error) {
@@ -167,7 +182,33 @@ func (f *FaucetServer) handleClaim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check cooldown
+	// Global rate limit: at most one claim per globalRate
+	now := time.Now()
+	if f.globalRate > 0 && !f.dailyReset.IsZero() {
+		lastGlobal := f.dailyReset // reuse dailyReset as approximate global timestamp
+		if since := now.Sub(lastGlobal); since < f.globalRate {
+			wait := f.globalRate - since
+			json.NewEncoder(w).Encode(ClaimResponse{
+				Error: "Too many requests. Please wait.",
+				Wait:  wait.Round(time.Millisecond).String(),
+			})
+			return
+		}
+	}
+
+	// IP-based rate limit: max 1 claim per 30s per IP
+	clientIP := r.RemoteAddr
+	if lastIP, exists := f.ipClaims[clientIP]; exists {
+		if time.Since(lastIP) < 30*time.Second {
+			json.NewEncoder(w).Encode(ClaimResponse{
+				Error: "Too many requests from this IP. Please wait.",
+				Wait:  (30*time.Second - time.Since(lastIP)).Round(time.Second).String(),
+			})
+			return
+		}
+	}
+
+	// Per-address cooldown
 	normalizedAddr := strings.ToLower(addr)
 	if lastClaim, exists := f.claims[normalizedAddr]; exists {
 		remaining := f.cooldown - time.Since(lastClaim)
@@ -183,9 +224,18 @@ func (f *FaucetServer) handleClaim(w http.ResponseWriter, r *http.Request) {
 	// Get nonce for the faucet wallet
 	faucetAddr := hex.EncodeToString(f.walletKey.PubKey().Address())
 	var nonce uint64
-	if result, err := f.rpcCall("eth_getTransactionCount", []interface{}{"0x" + faucetAddr, "latest"}); err == nil {
-		if nonceHex, ok := result.(string); ok {
-			fmt.Sscanf(nonceHex, "0x%x", &nonce)
+	if result, err := f.rpcCall("eth_getTransactionCount", []interface{}{"0x" + faucetAddr, "latest"}); err != nil {
+		json.NewEncoder(w).Encode(ClaimResponse{Error: "Failed to get nonce: " + err.Error()})
+		return
+	} else {
+		nonceHex, ok := result.(string)
+		if !ok {
+			json.NewEncoder(w).Encode(ClaimResponse{Error: "Invalid nonce response"})
+			return
+		}
+		if _, err := fmt.Sscanf(nonceHex, "0x%x", &nonce); err != nil {
+			json.NewEncoder(w).Encode(ClaimResponse{Error: "Failed to parse nonce: " + err.Error()})
+			return
 		}
 	}
 
@@ -213,6 +263,7 @@ func (f *FaucetServer) handleClaim(w http.ResponseWriter, r *http.Request) {
 
 	// Record the claim
 	f.claims[normalizedAddr] = time.Now()
+	f.ipClaims[clientIP] = time.Now()
 	f.dailyTotal += f.perClaim
 
 	json.NewEncoder(w).Encode(ClaimResponse{
@@ -273,6 +324,10 @@ func RunFaucet() {
 		rpcURL = "http://validator-0:8545"
 	}
 
+	// TLS support
+	tlsCert := os.Getenv("VIRI_TLS_CERT")
+	tlsKey := os.Getenv("VIRI_TLS_KEY")
+
 	// Load faucet wallet key
 	keyHex := os.Getenv("FAUCET_WALLET_KEY")
 	if keyHex == "" {
@@ -321,7 +376,7 @@ func RunFaucet() {
 	fmt.Printf("Viri Faucet v%s\n", Version)
 	fmt.Printf("RPC: %s | Port: %d\n", rpcURL, port)
 
-	faucet := NewFaucetServer(port, rpcURL, key, perClaim, dailyLimit, cooldown)
+	faucet := NewFaucetServer(port, rpcURL, key, perClaim, dailyLimit, cooldown, tlsCert, tlsKey)
 	if err := faucet.Start(); err != nil && err != http.ErrServerClosed {
 		fmt.Fprintf(os.Stderr, "Faucet error: %v\n", err)
 		os.Exit(1)

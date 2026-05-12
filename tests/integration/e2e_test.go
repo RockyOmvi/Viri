@@ -61,7 +61,7 @@ func TestMultiNodeValidatorSet(t *testing.T) {
 }
 
 func TestGovernanceFlow(t *testing.T) {
-	dao := governance.NewGovernanceDAO(10, 1000, 0.5)
+	dao := governance.NewGovernanceDAO(10*time.Millisecond, 1000, 0.5)
 
 	key1, _ := crypto.GenerateKey()
 	key2, _ := crypto.GenerateKey()

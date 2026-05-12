@@ -13,8 +13,8 @@ func TestDefaultConfig(t *testing.T) {
 		t.Errorf("Expected chain_id 1, got %d", cfg.Chain.ChainID)
 	}
 
-	if cfg.Chain.BlockTime != Duration(time.Second) {
-		t.Errorf("Expected block_time 1s, got %v", cfg.Chain.BlockTime)
+	if cfg.Chain.BlockTime != Duration(3*time.Second) {
+		t.Errorf("Expected block_time 3s, got %v", cfg.Chain.BlockTime)
 	}
 
 	if cfg.Network.MaxPeers != 50 {

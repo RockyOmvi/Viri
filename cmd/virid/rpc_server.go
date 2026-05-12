@@ -21,6 +21,7 @@ import (
 	"github.com/viri-chain/viri/internal/layer1/p2p"
 	"github.com/viri-chain/viri/internal/layer1/state"
 	nodesync "github.com/viri-chain/viri/internal/layer1/sync"
+	"github.com/viri-chain/viri/internal/layer2/accounts"
 	"github.com/viri-chain/viri/internal/layer2/execution"
 	"github.com/viri-chain/viri/internal/layer2/vm"
 	"github.com/viri-chain/viri/internal/pkg/observability"
@@ -47,6 +48,7 @@ type RPCServer struct {
 	syncer     *nodesync.Syncer
 	filters    sync.Map
 	drainer    *security.ConnectionDrainer
+	entryPoint *accounts.EntryPoint
 }
 
 type RPCHandler func(ctx context.Context, params json.RawMessage) (interface{}, error)
@@ -90,7 +92,7 @@ type FilterLog struct {
 	TxIndex     string   `json:"transactionIndex"`
 }
 
-func NewRPCServer(port int, bc *ledger.PersistentBlockchain, sm *state.StateManager, net *p2p.ViriNetwork, engine *consensus.HotStuffEngine, log *logging.Logger, chainID uint64, validator bool, coinbase []byte, tlsCert, tlsKey, apiKeyHash string, auditLog *observability.AuditLogger, syncer *nodesync.Syncer) *RPCServer {
+func NewRPCServer(port int, bc *ledger.PersistentBlockchain, sm *state.StateManager, net *p2p.ViriNetwork, engine *consensus.HotStuffEngine, log *logging.Logger, chainID uint64, validator bool, coinbase []byte, tlsCert, tlsKey, apiKeyHash string, auditLog *observability.AuditLogger, syncer *nodesync.Syncer, ep *accounts.EntryPoint) *RPCServer {
 	s := &RPCServer{
 		port:       port,
 		chainID:    chainID,
@@ -108,6 +110,7 @@ func NewRPCServer(port int, bc *ledger.PersistentBlockchain, sm *state.StateMana
 		auditLog:   auditLog,
 		syncer:     syncer,
 		drainer:    security.NewConnectionDrainer(30 * time.Second),
+		entryPoint: ep,
 	}
 
 	s.registerMethods()
@@ -141,6 +144,8 @@ func (s *RPCServer) registerMethods() {
 	s.methods["eth_getBlockReceipts"] = s.getBlockReceipts
 	s.methods["eth_call"] = s.call
 	s.methods["eth_estimateGas"] = s.estimateGas
+	s.methods["eth_sendUserOperation"] = s.sendUserOperation
+	s.methods["eth_estimateUserOperationGas"] = s.estimateUserOperationGas
 	s.methods["eth_getCode"] = s.getCode
 	s.methods["eth_getStorageAt"] = s.getStorageAt
 	s.methods["debug_traceTransaction"] = s.traceTransaction
@@ -162,6 +167,10 @@ func (s *RPCServer) Start() error {
 	mux.HandleFunc("/ready", s.handleReady)
 	mux.Handle("/metrics", observability.LocalOnly(observability.MetricsHandler()))
 
+	if s.apiKeyHash == "" {
+		s.logger.Warn("RPC server API key auth is disabled")
+	}
+
 	getClientID := func(r *http.Request) string {
 		if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
 			parts := strings.Split(forwarded, ",")
@@ -170,9 +179,9 @@ func (s *RPCServer) Start() error {
 		return r.RemoteAddr
 	}
 
-	rateLimiter := security.NewRateLimiter(20.0, 40)
-	ddosDetector := security.NewDDoSDetector(10*time.Second, 200, 2*time.Minute)
-	connLimiter := security.NewConnectionLimiter(200, 50)
+	rateLimiter := security.NewRateLimiter(10.0, 20)
+	ddosDetector := security.NewDDoSDetector(10*time.Second, 100, 5*time.Minute)
+	connLimiter := security.NewConnectionLimiter(100, 25)
 
 	methodLimits := map[string]security.MethodLimit{
 		"eth_getBlockByNumber":  {RPS: 5.0, Burst: 10},
@@ -189,13 +198,17 @@ func (s *RPCServer) Start() error {
 		observability.UpdateReadiness(s.network.PeerCount(), s.blockchain.Height())
 	})
 
+	tlsEnabled := s.tlsCert != "" && s.tlsKey != ""
+
 	handler := observability.RequestIDMiddleware(
-		security.ConnectionLimitMiddleware(connLimiter, getClientID)(
-			security.DDoSProtectionMiddleware(ddosDetector, getClientID)(
-				security.RateLimitMiddleware(rateLimiter, getClientID)(
-					methodRateLimiter.Middleware(getClientID)(
-						slowQueryDetector.Middleware(getClientID)(
-							observability.ErrorLoggingMiddleware(baseHandler, s.logger),
+		security.HTTPSRedirectMiddleware(tlsEnabled,
+			security.ConnectionLimitMiddleware(connLimiter, getClientID)(
+				security.DDoSProtectionMiddleware(ddosDetector, getClientID)(
+					security.RateLimitMiddleware(rateLimiter, getClientID)(
+						methodRateLimiter.Middleware(getClientID)(
+							slowQueryDetector.Middleware(getClientID)(
+								observability.ErrorLoggingMiddleware(baseHandler, s.logger),
+							),
 						),
 					),
 				),
@@ -319,8 +332,11 @@ func (s *RPCServer) handleRequest(w http.ResponseWriter, r *http.Request) {
 
 	sensitiveMethods := map[string]bool{
 		"eth_sendRawTransaction": true,
+		"eth_sendUserOperation":  true,
+		"debug_traceTransaction": true,
 		"viri_addPeer":           true,
 		"viri_removePeer":        true,
+		"viri_getConsensusState": true,
 	}
 
 	if sensitiveMethods[req.Method] && s.apiKeyHash != "" {
@@ -1031,7 +1047,7 @@ func (s *RPCServer) getTransactionReceipt(ctx context.Context, params json.RawMe
 	if len(tx.To) == 0 && len(tx.Data) > 0 {
 		nonceBytes := make([]byte, 8)
 		binary.BigEndian.PutUint64(nonceBytes, tx.Nonce)
-		contractAddr := crypto.SHA256(append(tx.SenderAddress(), nonceBytes...))[:20]
+		contractAddr := crypto.Keccak256(append(tx.SenderAddress(), nonceBytes...))[12:]
 		result["contractAddress"] = fmt.Sprintf("0x%x", contractAddr)
 	}
 
@@ -1558,9 +1574,145 @@ func formatBlock(block *ledger.Block) map[string]interface{} {
 	}
 }
 
+func (s *RPCServer) sendUserOperation(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	if s.entryPoint == nil {
+		return nil, fmt.Errorf("account abstraction not enabled")
+	}
+
+	var rawArgs []map[string]interface{}
+	if err := json.Unmarshal(params, &rawArgs); err != nil || len(rawArgs) == 0 {
+		return nil, fmt.Errorf("invalid params")
+	}
+
+	opMap := rawArgs[0]
+	op, err := parseUserOpFromMap(opMap)
+	if err != nil {
+		return nil, err
+	}
+
+	// Validate and execute the operation
+	result, err := s.entryPoint.HandleOps([]accounts.UserOperation{*op}, s.coinbase)
+	if err != nil {
+		return nil, fmt.Errorf("handle op: %w", err)
+	}
+
+	if len(result) == 0 {
+		return nil, fmt.Errorf("no result")
+	}
+
+	userOpHash := fmt.Sprintf("0x%x", accounts.UserOpHash(op, s.chainID))
+
+	return map[string]interface{}{
+		"userOpHash": userOpHash,
+		"success":    result[0].Success,
+		"gasUsed":    fmt.Sprintf("0x%x", result[0].GasUsed),
+		"returnData": fmt.Sprintf("0x%x", result[0].ReturnData),
+	}, nil
+}
+
+func (s *RPCServer) estimateUserOperationGas(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	if s.entryPoint == nil {
+		return nil, fmt.Errorf("account abstraction not enabled")
+	}
+
+	var rawArgs []map[string]interface{}
+	if err := json.Unmarshal(params, &rawArgs); err != nil || len(rawArgs) == 0 {
+		return nil, fmt.Errorf("invalid params")
+	}
+
+	opMap := rawArgs[0]
+	op, err := parseUserOpFromMap(opMap)
+	if err != nil {
+		return nil, err
+	}
+
+	// Simulate execution to estimate gas
+	result, err := s.entryPoint.HandleOps([]accounts.UserOperation{*op}, s.coinbase)
+	if err != nil {
+		return nil, fmt.Errorf("estimate failed: %w", err)
+	}
+
+	gasEstimate := uint64(21000)
+	if len(result) > 0 {
+		gasEstimate = result[0].GasUsed
+	}
+
+	return map[string]interface{}{
+		"gasLimit":          fmt.Sprintf("0x%x", gasEstimate),
+		"maxFeePerGas":      fmt.Sprintf("0x%x", op.MaxFee),
+		"maxPriorityFeePerGas": fmt.Sprintf("0x%x", op.MaxPriorityFee),
+		"preVerificationGas":   "0x5208",
+	}, nil
+}
+
+// parseUserOpFromMap parses a UserOperation from a JSON-RPC parameter map.
+func parseUserOpFromMap(m map[string]interface{}) (*accounts.UserOperation, error) {
+	op := &accounts.UserOperation{}
+
+	if v, ok := m["sender"]; ok {
+		s, _ := v.(string)
+		s = strings.TrimPrefix(s, "0x")
+		op.Sender, _ = hex.DecodeString(s)
+	}
+	if v, ok := m["nonce"]; ok {
+		n, _ := v.(string)
+		n = strings.TrimPrefix(n, "0x")
+		fmt.Sscanf(n, "%x", &op.Nonce)
+	}
+	if v, ok := m["initCode"]; ok {
+		s, _ := v.(string)
+		s = strings.TrimPrefix(s, "0x")
+		op.InitCode, _ = hex.DecodeString(s)
+	}
+	if v, ok := m["callData"]; ok {
+		s, _ := v.(string)
+		s = strings.TrimPrefix(s, "0x")
+		op.CallData, _ = hex.DecodeString(s)
+	}
+	if v, ok := m["gasLimit"]; ok {
+		s, _ := v.(string)
+		s = strings.TrimPrefix(s, "0x")
+		fmt.Sscanf(s, "%x", &op.GasLimit)
+	}
+	if v, ok := m["maxFeePerGas"]; ok {
+		s, _ := v.(string)
+		s = strings.TrimPrefix(s, "0x")
+		fmt.Sscanf(s, "%x", &op.MaxFee)
+	}
+	if v, ok := m["maxPriorityFeePerGas"]; ok {
+		s, _ := v.(string)
+		s = strings.TrimPrefix(s, "0x")
+		fmt.Sscanf(s, "%x", &op.MaxPriorityFee)
+	}
+	if v, ok := m["paymaster"]; ok {
+		s, _ := v.(string)
+		s = strings.TrimPrefix(s, "0x")
+		op.Paymaster, _ = hex.DecodeString(s)
+	}
+	if v, ok := m["signature"]; ok {
+		s, _ := v.(string)
+		s = strings.TrimPrefix(s, "0x")
+		op.Signature, _ = hex.DecodeString(s)
+	}
+
+	if len(op.Sender) == 0 {
+		return nil, fmt.Errorf("missing sender")
+	}
+
+	return op, nil
+}
+
 type evmCallStateAdapter struct {
 	getAccount func([]byte) (*execution.AccountState, error)
 	setAccount func([]byte, *execution.AccountState) error
+}
+
+func (s *evmCallStateAdapter) GetNonce(addr []byte) uint64 {
+	acct, err := s.getAccount(addr)
+	if err != nil || acct == nil {
+		return 0
+	}
+	return acct.Nonce
 }
 
 func (s *evmCallStateAdapter) GetBalance(addr []byte) *big.Int {

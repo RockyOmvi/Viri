@@ -1,0 +1,27 @@
+all:
+  children:
+    bootstrap:
+      hosts:
+        bootstrap-node:
+          ansible_host: "{{ BOOTSTRAP_PUBLIC_IP }}"
+    validators:
+      hosts:
+        validator-0:
+          ansible_host: "{{ VALIDATOR_0_IP }}"
+          validator_id: 0
+        validator-1:
+          ansible_host: "{{ VALIDATOR_1_IP }}"
+          validator_id: 1
+        validator-2:
+          ansible_host: "{{ VALIDATOR_2_IP }}"
+          validator_id: 2
+        validator-3:
+          ansible_host: "{{ VALIDATOR_3_IP }}"
+          validator_id: 3
+    faucet:
+      hosts:
+        faucet-node:
+          ansible_host: "{{ FAUCET_PUBLIC_IP }}"
+  vars:
+    ansible_user: ubuntu
+    ansible_ssh_private_key_file: ~/.ssh/oracle_cloud_key

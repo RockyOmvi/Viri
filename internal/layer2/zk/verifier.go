@@ -99,6 +99,7 @@ func (v *Verifier) verifyPairing(proof *Proof) error {
 	proofElements := new(big.Int).SetUint64(0)
 	for i := 0; i < len(proof.A) && i < len(proof.B) && i < len(proof.C); i++ {
 		if proof.A[i] != nil && proof.B[i] != nil && proof.C[i] != nil {
+			// Simulation: A * B == C (placeholder for real bilinear pairing e(A,B)==e(C,G))
 			ab := new(big.Int).Mul(proof.A[i], proof.B[i])
 			ab.Mod(ab, v.circuit.Prime)
 

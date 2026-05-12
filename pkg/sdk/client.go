@@ -35,7 +35,9 @@ func (c *Client) GetBlockNumber() (uint64, error) {
 	if res, exists := result["result"]; exists {
 		if hexStr, ok := res.(string); ok {
 			var num uint64
-			fmt.Sscanf(hexStr, "0x%x", &num)
+			if _, err := fmt.Sscanf(hexStr, "0x%x", &num); err != nil {
+				num = 0
+			}
 			return num, nil
 		}
 	}

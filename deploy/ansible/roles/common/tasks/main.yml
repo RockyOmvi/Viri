@@ -1,0 +1,171 @@
+---
+# Common setup for all Viri testnet nodes
+
+- name: Update apt cache
+  apt:
+    update_cache: yes
+    cache_valid_time: 3600
+  become: yes
+
+- name: Install core dependencies
+  apt:
+    name:
+      - curl
+      - wget
+      - git
+      - ufw
+      - jq
+      - unzip
+      - ca-certificates
+      - gnupg
+      - lsb-release
+      - python3-pip
+    state: present
+  become: yes
+
+- name: Create viri system user
+  user:
+    name: "{{ viri_user }}"
+    home: "{{ viri_home }}"
+    system: yes
+    shell: /bin/bash
+  become: yes
+
+- name: Create data directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ viri_user }}"
+    group: "{{ viri_user }}"
+    mode: 0755
+  loop:
+    - "{{ viri_home }}"
+    - "{{ viri_data_dir }}"
+    - "{{ viri_home }}/logs"
+    - "{{ viri_home }}/config"
+  become: yes
+
+# --- Install Docker ---
+
+- name: Install Docker prerequisites
+  apt:
+    name:
+      - apt-transport-https
+      - software-properties-common
+    state: present
+  become: yes
+
+- name: Add Docker GPG key
+  apt_key:
+    url: https://download.docker.com/linux/ubuntu/gpg
+    state: present
+  become: yes
+
+- name: Add Docker repository
+  apt_repository:
+    repo: "deb [arch=arm64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+    state: present
+  become: yes
+  when: ansible_architecture == "aarch64"
+
+- name: Add Docker repository (AMD64)
+  apt_repository:
+    repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+    state: present
+  become: yes
+  when: ansible_architecture == "x86_64"
+
+- name: Install Docker
+  apt:
+    name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+    state: present
+  become: yes
+
+- name: Add viri user to docker group
+  user:
+    name: "{{ viri_user }}"
+    groups: docker
+    append: yes
+  become: yes
+
+- name: Enable and start Docker
+  systemd:
+    name: docker
+    enabled: yes
+    state: started
+  become: yes
+
+# --- Firewall ---
+
+- name: Configure UFW defaults
+  ufw:
+    direction: "{{ item.dir }}"
+    policy: "{{ item.policy }}"
+  loop:
+    - { dir: incoming, policy: deny }
+    - { dir: outgoing, policy: allow }
+  become: yes
+
+- name: Allow SSH
+  ufw:
+    rule: allow
+    port: "22"
+    proto: tcp
+  become: yes
+
+- name: Allow P2P port
+  ufw:
+    rule: allow
+    port: "{{ p2p_port }}"
+    proto: "{{ p2p_protocol }}"
+  become: yes
+
+- name: Allow Prometheus metrics
+  ufw:
+    rule: allow
+    port: "{{ prometheus_port }}"
+    proto: tcp
+  become: yes
+
+- name: Enable UFW
+  ufw:
+    state: enabled
+  become: yes
+
+# --- acme.sh for Let's Encrypt TLS ---
+
+- name: Clone acme.sh
+  git:
+    repo: https://github.com/acmesh-official/acme.sh.git
+    dest: /opt/acme.sh
+    depth: 1
+  become: yes
+
+- name: Install acme.sh
+  shell: /opt/acme.sh/acme.sh --install --home /root/.acme.sh --accountemail "{{ acme_email }}" --force
+  args:
+    creates: /root/.acme.sh/acme.sh
+  become: yes
+
+- name: Issue TLS certificate
+  shell: |
+    /root/.acme.sh/acme.sh --issue --standalone -d "{{ inventory_hostname }}.{{ domain }}" \
+      --keylength ec-384 \
+      --cert-home "{{ viri_home }}/tls" \
+      --force
+  args:
+    creates: "{{ viri_home }}/tls/{{ inventory_hostname }}.{{ domain }}_ecc"
+  become: yes
+  when: tls_enabled and domain != "viri-testnet.io"
+
+- name: Install certificate
+  shell: |
+    /root/.acme.sh/acme.sh --install-cert -d "{{ inventory_hostname }}.{{ domain }}" \
+      --cert-file "{{ viri_home }}/tls/cert.pem" \
+      --key-file "{{ viri_home }}/tls/key.pem" \
+      --fullchain-file "{{ viri_home }}/tls/fullchain.pem"
+  become: yes
+  when: tls_enabled and domain != "viri-testnet.io"

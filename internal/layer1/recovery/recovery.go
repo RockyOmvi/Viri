@@ -167,7 +167,19 @@ func (rs *RecoveryState) DetectFork(head1, head2 *ForkHead) (*ForkHead, error) {
 	rs.forkResolver.mu.Lock()
 	defer rs.forkResolver.mu.Unlock()
 
-	rs.forkResolver.forkHeads = append(rs.forkResolver.forkHeads, head1, head2)
+	// Deduplicate: only append heads not already present (by hash).
+	for _, h := range []*ForkHead{head1, head2} {
+		found := false
+		for _, existing := range rs.forkResolver.forkHeads {
+			if existing.Hash == h.Hash {
+				found = true
+				break
+			}
+		}
+		if !found {
+			rs.forkResolver.forkHeads = append(rs.forkResolver.forkHeads, h)
+		}
+	}
 
 	sort.Slice(rs.forkResolver.forkHeads, func(i, j int) bool {
 		return rs.forkResolver.forkHeads[i].Weight > rs.forkResolver.forkHeads[j].Weight
@@ -236,8 +248,8 @@ func (rs *RecoveryState) ImportSnapshot(path string) (*Snapshot, error) {
 
 func (rs *RecoveryState) VerifyChainIntegrity(checkpoints []*Checkpoint) error {
 	for i := 1; i < len(checkpoints); i++ {
-		if checkpoints[i].BlockNumber >= checkpoints[i-1].BlockNumber {
-			return fmt.Errorf("checkpoints not in order")
+		if checkpoints[i].BlockNumber <= checkpoints[i-1].BlockNumber {
+			return fmt.Errorf("checkpoints not in ascending order")
 		}
 	}
 

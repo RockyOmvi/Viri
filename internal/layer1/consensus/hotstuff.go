@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/viri-chain/viri/internal/layer1/crypto"
+	"github.com/viri-chain/viri/internal/layer1/ledger"
 	"github.com/viri-chain/viri/internal/layer1/logging"
 	"github.com/viri-chain/viri/internal/pkg/audit"
 	"github.com/viri-chain/viri/internal/pkg/metrics"
@@ -247,10 +248,14 @@ func (hs *HotStuffEngine) Start(height uint64) error {
 		hs.state.ProtocolVersion = hs.config.ProtocolVersion
 	}
 
-	proposer, _ := hs.validatorSet.GetProposer(hs.state.Height)
-	hs.logInfo(fmt.Sprintf("Consensus started height=%d validators=%d leader=%x me=%x",
+	proposer, err := hs.validatorSet.GetProposer(hs.state.Height)
+	leaderStr := "unknown"
+	if err == nil && proposer != nil {
+		leaderStr = fmt.Sprintf("%x", proposer.Address)
+	}
+	hs.logInfo(fmt.Sprintf("Consensus started height=%d validators=%d leader=%s me=%x",
 		hs.state.Height, hs.validatorSet.Size(),
-		proposer.Address, hs.blockProducer.GetValidatorAddress()))
+		leaderStr, hs.blockProducer.GetValidatorAddress()))
 
 	if hs.metrics != nil {
 		hs.metrics.SetConsensusHeight(hs.state.Height)
@@ -267,7 +272,7 @@ func (hs *HotStuffEngine) Start(height uint64) error {
 	go hs.livenessLoop()
 	go hs.applyLoop()
 
-	if bytes.Equal(hs.blockProducer.GetValidatorAddress(), proposer.Address) {
+	if proposer != nil && bytes.Equal(hs.blockProducer.GetValidatorAddress(), proposer.Address) {
 		go hs.doPropose()
 	}
 
@@ -418,6 +423,12 @@ func (hs *HotStuffEngine) proposeLocked() error {
 
 	if _, exists := hs.pendingBlocks[hs.state.Height]; exists {
 		hs.logDebug(fmt.Sprintf("Already has pending block for height=%d, skipping proposal", hs.state.Height))
+		return nil
+	}
+
+	activeValidators := hs.staking.GetActiveValidators()
+	if len(activeValidators) < hs.config.MinValidators {
+		hs.logWarn(fmt.Sprintf("Skipping proposal: insufficient active validators (%d < %d)", len(activeValidators), hs.config.MinValidators))
 		return nil
 	}
 
@@ -611,13 +622,15 @@ func (hs *HotStuffEngine) HandleMessage(msg *ConsensusMessage) {
 
 	if msg.Type == MsgBlockResponse {
 		hs.mu.Lock()
-		if hs.stateSyncer != nil && hs.stateSyncer.IsSyncing() && len(msg.Payload) > 0 {
+		stateSyncer := hs.stateSyncer
+		isSyncing := stateSyncer != nil && stateSyncer.IsSyncing()
+		hs.mu.Unlock()
+		if isSyncing && len(msg.Payload) > 0 {
 			blockData := prependHeightToPayload(msg.Payload, msg.Height)
-			if err := hs.stateSyncer.ReceiveBlock(blockData); err != nil {
+			if err := stateSyncer.ReceiveBlock(blockData); err != nil {
 				hs.logWarn(fmt.Sprintf("Sync block apply failed height=%d error=%v", msg.Height, err))
 			}
 		}
-		hs.mu.Unlock()
 		return
 	}
 
@@ -631,8 +644,9 @@ func (hs *HotStuffEngine) HandleMessage(msg *ConsensusMessage) {
 	height := hs.curHeight.Load()
 
 	if msg.Height > height+1 {
-		if hs.stateSyncer != nil && !hs.stateSyncer.IsSyncing() {
-			hs.stateSyncer.StartSync(msg.Height)
+		// stateSyncer is set-once in constructor, safe to read without lock
+		if syncer := hs.stateSyncer; syncer != nil && !syncer.IsSyncing() {
+			syncer.StartSync(msg.Height)
 		}
 		select {
 		case hs.syncMsgCh <- msg:
@@ -664,14 +678,8 @@ func (hs *HotStuffEngine) handleMessageLocked(msg *ConsensusMessage) {
 		hs.handleBlockRequest(msg)
 		return
 	case MsgBlockResponse:
-		if hs.stateSyncer != nil && hs.stateSyncer.IsSyncing() {
-			if len(msg.Payload) > 0 {
-				blockData := prependHeightToPayload(msg.Payload, msg.Height)
-				if err := hs.stateSyncer.ReceiveBlock(blockData); err != nil {
-					hs.logWarn(fmt.Sprintf("Sync block apply failed height=%d error=%v", msg.Height, err))
-				}
-			}
-		}
+		// MsgBlockResponse is handled directly in HandleMessage (without the mutex)
+		// to avoid deadlock with applyLoop. This path should not be reached.
 		return
 	}
 
@@ -766,9 +774,7 @@ func (hs *HotStuffEngine) handleProposal(msg *ConsensusMessage) {
 		hs.state.LockedQC = msg.JustifyQC
 	}
 
-	hs.mu.Unlock()
 	validationErr := hs.blockProducer.ValidateBlock(msg.Payload, msg.BlockHash, msg.Height)
-	hs.mu.Lock()
 	if validationErr != nil {
 		hs.logInfo(fmt.Sprintf("handleProposal: block validation failed: %v", validationErr))
 		return
@@ -1266,13 +1272,9 @@ func (hs *HotStuffEngine) decide(blockHash []byte, height uint64) {
 	validatorAddrs := hs.getValidatorAddresses()
 	isEpochRotation := height >= hs.epochStartHeight+hs.config.EpochLength
 
-	hs.mu.Unlock()
-
-	var commitErr error
-	commitErr = hs.blockProducer.CommitBlock(blockHash, height)
+	commitErr := hs.blockProducer.CommitBlock(blockHash, height)
 	if commitErr != nil {
 		hs.logError(fmt.Sprintf("Failed to commit block height=%d error=%v", height, commitErr))
-		hs.mu.Lock()
 		return
 	}
 
@@ -1298,10 +1300,7 @@ func (hs *HotStuffEngine) decide(blockHash []byte, height uint64) {
 
 	hs.stateStore.Save(hs.state, validatorAddrs)
 
-	hs.mu.Lock()
-
 	if hs.state.Height != height {
-		hs.mu.Unlock()
 		return
 	}
 
@@ -1808,7 +1807,7 @@ func (hs *HotStuffEngine) ExportState() ([]byte, error) {
 func (hs *HotStuffEngine) syncLoop() {
 	defer hs.wg.Done()
 	if hs.auditLog != nil {
-		hs.auditLog.LogSync("start", hs.state.Height, 0, 0)
+		hs.auditLog.LogSync("start", hs.curHeight.Load(), 0, 0)
 	}
 
 	for {
@@ -1817,7 +1816,7 @@ func (hs *HotStuffEngine) syncLoop() {
 			hs.processSyncMessage(msg)
 		case <-hs.done:
 			if hs.auditLog != nil {
-				hs.auditLog.LogSync("complete", hs.state.Height, 0, 100)
+				hs.auditLog.LogSync("complete", hs.curHeight.Load(), 0, 100)
 			}
 			return
 		}
@@ -1906,16 +1905,21 @@ func (hs *HotStuffEngine) defaultBlockApplier(blockData []byte) error {
 		return nil
 	}
 
-	hash := crypto.SHA256(payload)
+	// Validate the block and get the actual block hash (DoubleSHA256 of signing payload)
+	var block ledger.Block
+	if err := json.Unmarshal(payload, &block); err != nil {
+		return fmt.Errorf("failed to unmarshal block: %w", err)
+	}
+	blockHash := block.Hash()
 
-	if err := hs.blockProducer.ValidateBlock(payload, hash, height); err != nil {
+	if err := hs.blockProducer.ValidateBlock(payload, blockHash, height); err != nil {
 		return fmt.Errorf("block validation failed: %w", err)
 	}
 
 	resultCh := make(chan error, 1)
 	req := &blockApplyRequest{
 		height:   height,
-		hash:     hash,
+		hash:     blockHash,
 		resultCh: resultCh,
 	}
 	select {

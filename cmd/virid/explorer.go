@@ -18,12 +18,16 @@ type ExplorerServer struct {
 	port    int
 	rpcURL  string
 	server  *http.Server
+	tlsCert string
+	tlsKey  string
 }
 
-func NewExplorerServer(port int, rpcURL string) *ExplorerServer {
+func NewExplorerServer(port int, rpcURL string, tlsCert, tlsKey string) *ExplorerServer {
 	return &ExplorerServer{
-		port:   port,
-		rpcURL: rpcURL,
+		port:    port,
+		rpcURL:  rpcURL,
+		tlsCert: tlsCert,
+		tlsKey:  tlsKey,
 	}
 }
 
@@ -44,6 +48,10 @@ func (e *ExplorerServer) Start() error {
 		WriteTimeout: 15 * time.Second,
 	}
 
+	if e.tlsCert != "" && e.tlsKey != "" {
+		fmt.Printf("Block Explorer running at https://localhost:%d (TLS)\n", e.port)
+		return e.server.ListenAndServeTLS(e.tlsCert, e.tlsKey)
+	}
 	fmt.Printf("Block Explorer running at http://localhost:%d\n", e.port)
 	return e.server.ListenAndServe()
 }
@@ -340,10 +348,13 @@ func RunExplorer() {
 		rpcURL = "http://localhost:8545"
 	}
 
+	tlsCert := os.Getenv("VIRI_TLS_CERT")
+	tlsKey := os.Getenv("VIRI_TLS_KEY")
+
 	fmt.Printf("Viri Block Explorer v%s\n", Version)
 	fmt.Printf("RPC: %s | Port: %d\n", rpcURL, port)
 
-	explorer := NewExplorerServer(port, rpcURL)
+	explorer := NewExplorerServer(port, rpcURL, tlsCert, tlsKey)
 	if err := explorer.Start(); err != nil && err != http.ErrServerClosed {
 		fmt.Fprintf(os.Stderr, "Explorer error: %v\n", err)
 		os.Exit(1)

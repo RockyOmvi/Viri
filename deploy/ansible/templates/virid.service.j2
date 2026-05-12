@@ -1,0 +1,22 @@
+[Unit]
+Description=Viri Testnet Node
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User={{ viri_user }}
+Group={{ viri_user }}
+WorkingDirectory={{ viri_home }}
+ExecStart=/usr/bin/docker compose -f {{ viri_home }}/docker-compose.yml up -d
+ExecStop=/usr/bin/docker compose -f {{ viri_home }}/docker-compose.yml down
+ExecReload=/usr/bin/docker compose -f {{ viri_home }}/docker-compose.yml restart
+StandardOutput=journal
+StandardError=journal
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

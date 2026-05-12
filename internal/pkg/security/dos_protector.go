@@ -228,6 +228,25 @@ func (d *DoSProtector) triggerEmergencyShutdown() {
 	}
 }
 
+// Restart resets the DoS protector state and allows new connections after emergency shutdown
+func (d *DoSProtector) Restart() {
+	d.ipDataMu.Lock()
+	d.ipData = make(map[string]*IPRateData)
+	d.totalConns = nil
+	d.ipDataMu.Unlock()
+
+	d.totalConnsMu.Lock()
+	d.totalConns = nil
+	d.totalConnsMu.Unlock()
+
+	d.connRecordsMu.Lock()
+	d.connRecords = make([]connectionRecord, 0, 100)
+	d.connRecordsMu.Unlock()
+
+	d.circuitBreaker = NewCircuitBreaker(d.config.CircuitBreakerThreshold, d.config.CircuitBreakerTimeout)
+	atomic.StoreInt32(&d.shutdownActive, 0)
+}
+
 func (d *DoSProtector) IsUnderAttack() bool {
 	return d.circuitBreaker.IsOpen()
 }
@@ -237,6 +256,10 @@ func (d *DoSProtector) RecordAttack() {
 	if d.circuitBreaker.IsOpen() {
 		d.triggerEmergencyShutdown()
 	}
+}
+
+func (d *DoSProtector) SetEmergencyHandler(handler func()) {
+	d.emergencyShutdown = handler
 }
 
 func (d *DoSProtector) Cleanup() {

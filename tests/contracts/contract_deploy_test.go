@@ -26,6 +26,7 @@ type mockState struct {
 	storage map[string][]byte
 }
 
+func (m *mockState) GetNonce(addr []byte) uint64          { return 0 }
 func (m *mockState) GetBalance(addr []byte) *big.Int     { return big.NewInt(0) }
 func (m *mockState) GetCode(addr []byte) []byte           { return nil }
 func (m *mockState) GetStorage(addr, key []byte) []byte   { return m.storage[string(key)] }
