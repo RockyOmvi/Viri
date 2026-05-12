@@ -1,0 +1,149 @@
+#cloud-config
+package_update: true
+package_upgrade: true
+
+packages:
+  - docker.io
+  - docker-compose-v2
+  - curl
+  - jq
+  - ufw
+
+runcmd:
+  # --- Docker setup ---
+  - systemctl enable docker
+  - systemctl start docker
+  - usermod -aG docker ubuntu
+
+  # --- Firewall ---
+  - ufw --force disable
+  - iptables -P INPUT ACCEPT
+  - iptables -P FORWARD ACCEPT
+  - iptables -P OUTPUT ACCEPT
+
+  # --- Pull image ---
+  - docker pull ghcr.io/viri-chain/viri:latest
+
+  # --- Create directories ---
+  - mkdir -p /opt/viri/{config,data,logs,genesis}
+
+  # --- Role-specific setup ---
+  %{ if instance_name == "bootstrap" ~}
+
+  # Bootstrap node: generate key + run bootstrap
+  - |
+    if [ ! -f /opt/viri/config/bootstrap.key ]; then
+      docker run --rm -v /opt/viri/config:/config ghcr.io/viri-chain/viri:latest \
+        virid --generate-node-key --key-file /config/bootstrap.key
+    fi
+  - |
+    PEER_ID=$(grep -oP 'peer_id:\s*\K\S+' /opt/viri/config/bootstrap.key || echo "")
+    echo "Bootstrap Peer ID: $PEER_ID" > /opt/viri/logs/bootstrap-info.txt
+
+  # --- Bootstrap docker-compose ---
+  - |
+    cat > /opt/viri/docker-compose.yml << 'COMPOSE'
+services:
+  bootstrap:
+    image: ghcr.io/viri-chain/viri:latest
+    container_name: viri-bootstrap
+    ports:
+      - "30303:30303"
+      - "8545:8545"
+      - "8546:8546"
+    volumes:
+      - /opt/viri/config:/home/viri/config:ro
+      - /opt/viri/genesis:/home/viri/data:ro
+      - /opt/viri/data:/home/viri/.viri
+      - /opt/viri/logs:/home/viri/logs
+    environment:
+      - VIRI_NODE_NAME=bootstrap-0
+      - VIRI_LOG_LEVEL=info
+      - VIRI_TESTNET=true
+      - VIRI_RPC_PORT=8545
+      - VIRI_API_PORT=8546
+    restart: unless-stopped
+    command: ["virid", "--config", "/home/viri/config/config.json"]
+COMPOSE
+
+  %{ else if instance_name == "faucet" ~}
+
+  # Faucet node: run faucet service
+  - |
+    cat > /opt/viri/docker-compose.yml << 'COMPOSE'
+services:
+  faucet:
+    image: ghcr.io/viri-chain/viri:latest
+    container_name: viri-faucet
+    ports:
+      - "8081:8081"
+      - "30303:30303"
+      - "8545:8545"
+      - "8546:8546"
+    volumes:
+      - /opt/viri/config:/home/viri/config:ro
+      - /opt/viri/genesis:/home/viri/data:ro
+    environment:
+      - VIRI_LOG_LEVEL=info
+      - FAUCET_PORT=8081
+      - FAUCET_WALLET_KEY=${FAUCET_WALLET_KEY}
+      - FAUCET_DAILY_LIMIT=1000000000000000000000
+      - FAUCET_PER_CLAIM=10000000000000000000
+      - FAUCET_COOLDOWN=86400
+      - VIRI_RPC_URL=http://bootstrap:8545
+    restart: unless-stopped
+    command: ["virid", "--faucet"]
+
+  explorer:
+    image: ghcr.io/viri-chain/viri:latest
+    container_name: viri-explorer
+    ports:
+      - "8080:8080"
+    volumes:
+      - /opt/viri/config:/home/viri/config:ro
+    environment:
+      - EXPLORER_PORT=8080
+      - VIRI_RPC_URL=http://bootstrap:8545
+    restart: unless-stopped
+    command: ["virid", "--explorer"]
+COMPOSE
+
+  %{ else ~}
+
+  # Validator node
+  - |
+    cat > /opt/viri/docker-compose.yml << 'COMPOSE'
+services:
+  validator:
+    image: ghcr.io/viri-chain/viri:latest
+    container_name: viri-${instance_name}
+    ports:
+      - "30303:30303"
+      - "8545:8545"
+      - "8546:8546"
+      - "9090:9090"
+    volumes:
+      - /opt/viri/config:/home/viri/config:ro
+      - /opt/viri/genesis:/home/viri/data:ro
+      - /opt/viri/data:/home/viri/.viri
+      - /opt/viri/logs:/home/viri/logs
+    environment:
+      - VIRI_NODE_NAME=${instance_name}
+      - VIRI_LOG_LEVEL=info
+      - VIRI_TESTNET=true
+      - VIRI_VALIDATOR_MODE=true
+      - VIRI_VALIDATOR_KEY=/home/viri/config/validator.key
+      - VIRI_RPC_PORT=8545
+      - VIRI_API_PORT=8546
+      - VIRI_CONSENSUS_DELAY=60s
+    restart: unless-stopped
+    command: ["virid", "--config", "/home/viri/config/config.json"]
+COMPOSE
+
+  %{ endif ~}
+
+  # --- Start services ---
+  - docker compose -f /opt/viri/docker-compose.yml up -d
+
+final_message:
+  "Viri node '%s' provisioning complete"

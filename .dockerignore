@@ -1,0 +1,13 @@
+.git
+.gitignore
+.github
+.cache
+*.md
+*.log
+testnet_data/
+deploy/terraform/.terraform*
+deploy/terraform/*.tfstate*
+deploy/ansible/*.retry
+node_modules/
+build/
+dist/

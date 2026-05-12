@@ -1,0 +1,22 @@
+# Oracle Cloud Infrastructure credentials
+# Copy this file to terraform.tfvars and fill in your values
+tenancy_ocid     = "ocid1.tenancy.oc1..aaaaaaaa..."
+user_ocid        = "ocid1.user.oc1..aaaaaaaa..."
+fingerprint      = "aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99"
+private_key_path = "~/.oci/oci_api_key.pem"
+compartment_ocid = "ocid1.compartment.oc1..aaaaaaaa..."
+region           = "ap-mumbai-1"
+
+# SSH public key for VM access (required)
+ssh_public_key = "ssh-ed25519 AAAA..."
+
+# Optional: domain for TLS (leave empty if not using TLS)
+domain = ""
+
+# Optional: faucet wallet private key (required if running faucet)
+faucet_wallet_key = ""
+
+# Optional: instance sizing
+# instance_shape   = "VM.Standard.A1.Flex"
+# instance_ocpus   = 4
+# instance_memory_gb = 24
