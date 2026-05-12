@@ -23,6 +23,7 @@ type Proof struct {
 	Public    []*big.Int
 	ProofHash []byte
 	System    ProofSystem
+	Raw       []byte // serialized gnark proof (groth16 binary encoding)
 }
 
 type VerifyingKey struct {
@@ -127,6 +128,9 @@ func computeProofHash(p *Proof) []byte {
 		if pub != nil {
 			h.Write(pub.Bytes())
 		}
+	}
+	if p.Raw != nil {
+		h.Write(p.Raw)
 	}
 	return h.Sum(nil)
 }

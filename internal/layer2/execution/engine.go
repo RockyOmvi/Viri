@@ -628,29 +628,10 @@ func (e *ExecutionEngine) precompileZKVerify(tx *ledger.Transaction, getAccount 
 }
 
 func (e *ExecutionEngine) precompileGnarkVerify(tx *ledger.Transaction) *ExecutionResult {
-	if len(tx.Data) < 96 {
-		return &ExecutionResult{Status: 0, Err: fmt.Errorf("invalid verify data: need A(32)+B(32)+C(32)+publicWitnesses")}
+	proof, publicWitness, err := zk.DeserializeProofFromTx(tx.Data, e.gnarkCircuit)
+	if err != nil {
+		return &ExecutionResult{Status: 0, Err: fmt.Errorf("invalid verify data: %w", err)}
 	}
-	proof := &zk.Proof{
-		A: []*big.Int{new(big.Int).SetBytes(tx.Data[:32])},
-		B: []*big.Int{new(big.Int).SetBytes(tx.Data[32:64])},
-		C: []*big.Int{new(big.Int).SetBytes(tx.Data[64:96])},
-	}
-	numPublic := e.gnarkCircuit.NumInputs
-	publicWitness := &zk.Witness{
-		Public: make([]*big.Int, numPublic),
-		Secret: []*big.Int{},
-	}
-	for i := 0; i < numPublic; i++ {
-		offset := 96 + i*32
-		if offset+32 > len(tx.Data) {
-			publicWitness.Public[i] = big.NewInt(0)
-			continue
-		}
-		publicWitness.Public[i] = new(big.Int).SetBytes(tx.Data[offset : offset+32])
-	}
-	proof.CircuitID = []byte(e.gnarkCircuit.Name)
-	proof.Public = publicWitness.Public
 	if err := e.gnarkVerifier.Verify(proof, e.gnarkCircuit, publicWitness); err != nil {
 		return &ExecutionResult{Status: 0, Err: fmt.Errorf("gnark proof verification failed: %v", err)}
 	}

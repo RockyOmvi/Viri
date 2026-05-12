@@ -3,6 +3,9 @@ module github.com/viri-chain/viri
 go 1.25.7
 
 require (
+	github.com/consensys/gnark v0.12.0
+	github.com/consensys/gnark-crypto v0.15.0
+	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1
 	github.com/libp2p/go-libp2p v0.48.0
 	github.com/libp2p/go-libp2p-kad-dht v0.39.1
 	github.com/libp2p/go-libp2p-pubsub v0.16.0
@@ -11,15 +14,29 @@ require (
 )
 
 require (
+	github.com/bits-and-blooms/bitset v1.20.0 // indirect
+	github.com/blang/semver/v4 v4.0.0 // indirect
+	github.com/consensys/bavard v0.1.27 // indirect
+	github.com/fxamacker/cbor/v2 v2.7.0 // indirect
+	github.com/google/pprof v0.0.0-20250202011525-fc3143867406 // indirect
+	github.com/ingonyama-zk/icicle/v3 v3.1.1-0.20241118092657-fccdb2f0921b // indirect
+	github.com/mattn/go-colorable v0.1.13 // indirect
+	github.com/mmcloughlin/addchain v0.4.0 // indirect
+	github.com/ronanh/intcomp v1.1.0 // indirect
+	github.com/rs/zerolog v1.33.0 // indirect
+	github.com/x448/float16 v0.8.4 // indirect
+	rsc.io/tmplfunc v0.0.3 // indirect
+)
+
+require (
 	filippo.io/bigmod v0.1.1-0.20260103110540-f8a47775ebe5 // indirect
 	filippo.io/keygen v0.0.0-20260114151900-8e2790ea4c5b // indirect
 	github.com/benbjohnson/clock v1.3.5 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/cloudflare/circl v1.6.3 // indirect
+	github.com/cloudflare/circl v1.6.3
 	github.com/davidlazar/go-crypto v0.0.0-20200604182044-b73af7476f6c // indirect
-	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1 // indirect
-	github.com/dgraph-io/badger/v4 v4.9.1 // indirect
+	github.com/dgraph-io/badger/v4 v4.9.1
 	github.com/dgraph-io/ristretto/v2 v2.2.0 // indirect
 	github.com/dunglas/httpsfv v1.1.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
@@ -31,7 +48,7 @@ require (
 	github.com/google/flatbuffers v25.2.10+incompatible // indirect
 	github.com/google/gopacket v1.1.19 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/gorilla/websocket v1.5.3 // indirect
+	github.com/gorilla/websocket v1.5.3
 	github.com/hashicorp/golang-lru v1.0.2 // indirect
 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
 	github.com/huin/goupnp v1.3.0 // indirect
@@ -93,7 +110,7 @@ require (
 	github.com/pion/turn/v4 v4.0.2 // indirect
 	github.com/pion/webrtc/v4 v4.1.2 // indirect
 	github.com/polydawn/refmt v0.89.1-0.20231129105047-37766d95467a // indirect
-	github.com/prometheus/client_golang v1.23.2 // indirect
+	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.67.5 // indirect
 	github.com/prometheus/procfs v0.20.1 // indirect

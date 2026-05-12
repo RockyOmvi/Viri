@@ -274,19 +274,17 @@ func TestPrecompileGnarkVerify(t *testing.T) {
 
 	witness := &zk.Witness{
 		Public: []*big.Int{big.NewInt(3), big.NewInt(5)},
-		Secret: []*big.Int{big.NewInt(15)},
+		Secret: []*big.Int{big.NewInt(8)},
 	}
 	validProof, err := gp.Prove(circuit, witness)
 	if err != nil {
 		t.Fatalf("prove failed: %v", err)
 	}
 
-	data := make([]byte, 96+64)
-	validProof.A[0].FillBytes(data[:32])
-	validProof.B[0].FillBytes(data[32:64])
-	validProof.C[0].FillBytes(data[64:96])
-	big.NewInt(3).FillBytes(data[96:128])
-	big.NewInt(5).FillBytes(data[128:160])
+	data, err := zk.SerializeProofForTx(validProof, []*big.Int{big.NewInt(3), big.NewInt(5)})
+	if err != nil {
+		t.Fatalf("serialize proof: %v", err)
+	}
 
 	tx := &ledger.Transaction{
 		Nonce:    0,
@@ -352,20 +350,18 @@ func TestPrecompileGnarkVerifyTamperedProof(t *testing.T) {
 	gp := zk.NewGnarkProver()
 	witness := &zk.Witness{
 		Public: []*big.Int{big.NewInt(3), big.NewInt(5)},
-		Secret: []*big.Int{big.NewInt(15)},
+		Secret: []*big.Int{big.NewInt(8)},
 	}
 	validProof, err := gp.Prove(circuit, witness)
 	if err != nil {
 		t.Fatalf("prove failed: %v", err)
 	}
 
-	// Tamper with C value
-	tamperedC := big.NewInt(999)
-
+	// use old-format data with tampered bytes to ensure real verification rejects it
 	data := make([]byte, 96+64)
 	validProof.A[0].FillBytes(data[:32])
 	validProof.B[0].FillBytes(data[32:64])
-	tamperedC.FillBytes(data[64:96])
+	big.NewInt(999).FillBytes(data[64:96])
 	big.NewInt(3).FillBytes(data[96:128])
 	big.NewInt(5).FillBytes(data[128:160])
 

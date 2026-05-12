@@ -1,212 +1,258 @@
 package zk
 
 import (
-	"crypto/sha256"
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"math/big"
 	"sync"
+
+	"github.com/consensys/gnark-crypto/ecc"
+	"github.com/consensys/gnark/backend/groth16"
+	"github.com/consensys/gnark/constraint"
+	"github.com/consensys/gnark/frontend"
+	"github.com/consensys/gnark/frontend/cs/r1cs"
 )
 
-var bn254Order = new(big.Int)
+var (
+	schemesMu sync.RWMutex
+	schemes   = make(map[string]*groth16Scheme)
+)
 
-func init() {
-	bn254Order, _ = new(big.Int).SetString("21888242871839275222246405745257275088548364400416034343698204186575808495617", 10)
+type groth16Scheme struct {
+	ccs  constraint.ConstraintSystem
+	pk   groth16.ProvingKey
+	vk   groth16.VerifyingKey
+	name string
 }
 
-// GnarkProver replaces the simulated prover with a structurally correct
-// constraint-system-based prover. In production, this calls gnark's
-// groth16.Prove() with real R1CS circuits. For this implementation, the
-// constraint system is verified structurally.
-type GnarkProver struct {
-	mu        sync.Mutex
-	provingKey []byte
-	verifiedCount int
-}
-
-// NewGnarkProver creates a prover that generates real constraint-system proofs.
-func NewGnarkProver() *GnarkProver {
-	return &GnarkProver{
-		provingKey: make([]byte, 32),
+func getOrCreateScheme(circuit *Circuit) (*groth16Scheme, error) {
+	circuitType := detectGnarkCircuit(circuit)
+	schemesMu.RLock()
+	sch, ok := schemes[circuitType]
+	schemesMu.RUnlock()
+	if ok {
+		return sch, nil
 	}
+
+	schemesMu.Lock()
+	defer schemesMu.Unlock()
+	if sch, ok := schemes[circuitType]; ok {
+		return sch, nil
+	}
+
+	var gnarkCircuit frontend.Circuit
+	switch circuitType {
+	case "add":
+		gnarkCircuit = &AddCircuit{}
+	case "mul":
+		gnarkCircuit = &MulCircuit{}
+	default:
+		return nil, fmt.Errorf("unsupported circuit type: %s", circuitType)
+	}
+
+	ccs, err := frontend.Compile(scalarField(), r1cs.NewBuilder, gnarkCircuit)
+	if err != nil {
+		return nil, fmt.Errorf("compile: %w", err)
+	}
+
+	pk, vk, err := groth16.Setup(ccs)
+	if err != nil {
+		return nil, fmt.Errorf("setup: %w", err)
+	}
+
+	sch = &groth16Scheme{ccs: ccs, pk: pk, vk: vk, name: circuitType}
+	schemes[circuitType] = sch
+	return sch, nil
 }
 
-// Prove generates a proof for the given witness using constraint-system logic.
+// GnarkProver generates real Groth16 zk-SNARK proofs using gnark.
+type GnarkProver struct {
+	mu sync.Mutex
+}
+
+// NewGnarkProver creates a prover that generates real Groth16 proofs.
+func NewGnarkProver() *GnarkProver {
+	return &GnarkProver{}
+}
+
+// Prove generates a real Groth16 proof for the given circuit and witness.
 func (gp *GnarkProver) Prove(circuit *Circuit, witness *Witness) (*Proof, error) {
 	gp.mu.Lock()
 	defer gp.mu.Unlock()
 
-	if err := gp.verifyCircuitStructure(circuit, witness); err != nil {
-		return nil, fmt.Errorf("circuit structure: %w", err)
-	}
-
-	// Generate a real proof using the circuit constraints
-	proof, err := gp.buildConstraintProof(circuit, witness)
+	scheme, err := getOrCreateScheme(circuit)
 	if err != nil {
-		return nil, fmt.Errorf("build proof: %w", err)
+		return nil, fmt.Errorf("scheme: %w", err)
 	}
 
-	gp.verifiedCount++
-	return proof, nil
-}
-
-func (gp *GnarkProver) verifyCircuitStructure(circuit *Circuit, witness *Witness) error {
-	if len(circuit.Constraints) == 0 {
-		return fmt.Errorf("empty circuit")
-	}
-	if len(witness.Public) == 0 {
-		return fmt.Errorf("empty public witness")
-	}
-	if len(witness.Secret) == 0 {
-		return fmt.Errorf("empty secret witness")
-	}
-	return nil
-}
-
-func (gp *GnarkProver) buildConstraintProof(circuit *Circuit, witness *Witness) (*Proof, error) {
-	transcript := sha256.New()
-
-	circuitID := []byte(circuit.Name)
-	transcript.Write(circuitID)
-
-	// Commit to public witness
-	for _, w := range witness.Public {
-		transcript.Write(w.Bytes())
+	gnarkAssignment := buildAssignment(scheme.name, witness)
+	if gnarkAssignment == nil {
+		return nil, fmt.Errorf("unsupported circuit type: %s", scheme.name)
 	}
 
-	// Commit to circuit structure (prevents cross-circuit replay)
-	buf := make([]byte, 4)
-	for _, c := range circuit.Constraints {
-		binary.BigEndian.PutUint32(buf, uint32(c.Type))
-		transcript.Write(buf)
-		binary.BigEndian.PutUint32(buf, uint32(c.Left))
-		transcript.Write(buf)
-		binary.BigEndian.PutUint32(buf, uint32(c.Right))
-		transcript.Write(buf)
-		binary.BigEndian.PutUint32(buf, uint32(c.Output))
-		transcript.Write(buf)
-		if c.Value != nil {
-			transcript.Write(c.Value.Bytes())
-		}
+	fullWitness, err := frontend.NewWitness(gnarkAssignment, scalarField())
+	if err != nil {
+		return nil, fmt.Errorf("new witness: %w", err)
 	}
 
-	// Generate Fiat-Shamir challenge
-	challenge := transcript.Sum(nil)
+	proof, err := groth16.Prove(scheme.ccs, scheme.pk, fullWitness)
+	if err != nil {
+		return nil, fmt.Errorf("prove: %w", err)
+	}
 
-	A := new(big.Int).SetBytes(challenge[:16])
-	B := new(big.Int).SetBytes(challenge[16:32])
-	C := new(big.Int).Mod(new(big.Int).Mul(A, B), bn254Order)
+	var buf bytes.Buffer
+	if _, err := proof.WriteTo(&buf); err != nil {
+		return nil, fmt.Errorf("write proof: %w", err)
+	}
 
-	publicInputs := make([]*big.Int, len(witness.Public))
-	for i, w := range witness.Public {
-		publicInputs[i] = new(big.Int).Set(w)
+	publicValues := make([]*big.Int, len(witness.Public))
+	for i, p := range witness.Public {
+		publicValues[i] = new(big.Int).Set(p)
 	}
 
 	return &Proof{
-		A:         []*big.Int{A},
-		B:         []*big.Int{B},
-		C:         []*big.Int{C},
-		CircuitID: circuitID,
-		Public:    publicInputs,
+		A:         []*big.Int{new(big.Int).Set(witness.Public[0])},
+		B:         []*big.Int{new(big.Int).Set(witness.Public[1])},
+		C:         []*big.Int{new(big.Int).Set(witness.Secret[0])},
+		CircuitID: []byte(circuit.Name),
+		Public:    publicValues,
+		System:    Groth16,
+		Raw:       buf.Bytes(),
+		ProofHash: nil,
 	}, nil
 }
 
-// GnarkVerifier replaces the simulated verifier with real constraint verification.
+// GnarkVerifier verifies real Groth16 zk-SNARK proofs using gnark.
 type GnarkVerifier struct {
-	mu           sync.Mutex
-	verifyingKey []byte
+	mu sync.Mutex
 }
 
-// NewGnarkVerifier creates a verifier that checks real constraint-system proofs.
+// NewGnarkVerifier creates a verifier that checks real Groth16 proofs.
 func NewGnarkVerifier() *GnarkVerifier {
-	return &GnarkVerifier{
-		verifyingKey: make([]byte, 32),
-	}
+	return &GnarkVerifier{}
 }
 
-// Verify checks a proof against a circuit and public witness.
-// Uses Fiat-Shamir transform: the verifier recomputes the challenge from
-// public inputs + circuit structure, then checks the prover's commitments
-// are correctly derived. This prevents trivial forgery (attackers cannot
-// pick arbitrary A,B,C since they must match the challenge).
-//
-// Security note: This is a structurally sound multi-round public-coin
-// argument but NOT a real zk-SNARK. Production use requires gnark's
-// groth16.Verify() with real BN254 pairings. This implementation:
-//   - Binds proof to circuit (prevents cross-circuit replay)
-//   - Binds proof to public inputs (prevents input malleability)
-//   - Uses Fiat-Shamir with SHA256 (random oracle model)
-//
-// TODO: Replace with gnark's groth16.Verify() for production
+// Verify checks a real Groth16 proof against a circuit and public witness.
 func (gv *GnarkVerifier) Verify(proof *Proof, circuit *Circuit, publicWitness *Witness) error {
 	gv.mu.Lock()
 	defer gv.mu.Unlock()
 
-	if len(proof.A) == 0 || len(proof.B) == 0 || len(proof.C) == 0 {
-		return fmt.Errorf("incomplete proof")
+	if proof.Raw == nil {
+		return fmt.Errorf("proof missing serialized raw data")
 	}
 
-	if circuit == nil {
-		return fmt.Errorf("nil circuit")
+	scheme, err := getOrCreateScheme(circuit)
+	if err != nil {
+		return fmt.Errorf("scheme: %w", err)
 	}
 
-	// Recompute challenge from public witness + circuit structure
-	transcript := sha256.New()
-
-	if proof.CircuitID != nil {
-		transcript.Write(proof.CircuitID)
+	groth16Proof := groth16.NewProof(ecc.BN254)
+	if _, err := groth16Proof.ReadFrom(bytes.NewReader(proof.Raw)); err != nil {
+		return fmt.Errorf("read proof: %w", err)
 	}
 
-	// Bind to public inputs (must match prover's order: public before constraints)
-	for _, pub := range proof.Public {
-		if pub != nil {
-			transcript.Write(pub.Bytes())
-		}
+	pubAssignment := buildPublicAssignment(scheme.name, publicWitness)
+	if pubAssignment == nil {
+		return fmt.Errorf("unsupported circuit type: %s", scheme.name)
 	}
 
-	// Bind to circuit constraints (prevents cross-circuit replay)
-	buf := make([]byte, 4)
-	for _, c := range circuit.Constraints {
-		binary.BigEndian.PutUint32(buf, uint32(c.Type))
-		transcript.Write(buf)
-		binary.BigEndian.PutUint32(buf, uint32(c.Left))
-		transcript.Write(buf)
-		binary.BigEndian.PutUint32(buf, uint32(c.Right))
-		transcript.Write(buf)
-		binary.BigEndian.PutUint32(buf, uint32(c.Output))
-		transcript.Write(buf)
-		if c.Value != nil {
-			transcript.Write(c.Value.Bytes())
-		}
+	pubWitness, err := frontend.NewWitness(pubAssignment, scalarField(), frontend.PublicOnly())
+	if err != nil {
+		return fmt.Errorf("new public witness: %w", err)
 	}
 
-	challenge := transcript.Sum(nil)
-
-	// Derive expected A, B from the challenge
-	expectedA := new(big.Int).SetBytes(challenge[:16])
-	expectedB := new(big.Int).SetBytes(challenge[16:32])
-
-	// Check prover's A and B match the derived challenge
-	if proof.A[0].Cmp(expectedA) != 0 {
-		return fmt.Errorf("proof verification failed: A commitment mismatch")
-	}
-	if proof.B[0].Cmp(expectedB) != 0 {
-		return fmt.Errorf("proof verification failed: B commitment mismatch")
-	}
-
-	// Verify the constraint: C must equal A * B mod bn254Order
-	expectedC := new(big.Int).Mul(expectedA, expectedB)
-	expectedC.Mod(expectedC, bn254Order)
-
-	if proof.C[0].Cmp(expectedC) != 0 {
-		return fmt.Errorf("proof verification failed: constraint mismatch")
+	if err := groth16.Verify(groth16Proof, scheme.vk, pubWitness); err != nil {
+		return fmt.Errorf("verify: %w", err)
 	}
 
 	return nil
 }
 
-// Witness provides public and secret inputs to a circuit.
-type Witness struct {
-	Public []*big.Int
-	Secret []*big.Int
+func buildAssignment(circuitType string, w *Witness) frontend.Circuit {
+	switch circuitType {
+	case "add":
+		return &AddCircuit{
+			X: assignFn(w.Public[0]),
+			Y: assignFn(w.Public[1]),
+			Z: assignFn(w.Secret[0]),
+		}
+	case "mul":
+		return &MulCircuit{
+			X: assignFn(w.Public[0]),
+			Y: assignFn(w.Public[1]),
+			Z: assignFn(w.Secret[0]),
+		}
+	default:
+		return nil
+	}
+}
+
+func buildPublicAssignment(circuitType string, w *Witness) frontend.Circuit {
+	switch circuitType {
+	case "add":
+		return &AddCircuit{
+			X: assignFn(w.Public[0]),
+			Y: assignFn(w.Public[1]),
+			Z: 0,
+		}
+	case "mul":
+		return &MulCircuit{
+			X: assignFn(w.Public[0]),
+			Y: assignFn(w.Public[1]),
+			Z: 0,
+		}
+	default:
+		return nil
+	}
+}
+
+// GnarkProofSize returns estimated serialized groth16 proof size on BN254.
+const GnarkProofSize = 256
+
+// SerializeProofForTx encodes a proof and its public inputs into transaction data.
+func SerializeProofForTx(proof *Proof, publicInputs []*big.Int) ([]byte, error) {
+	if proof.Raw == nil {
+		return nil, fmt.Errorf("proof missing raw data")
+	}
+	var buf bytes.Buffer
+	if err := binary.Write(&buf, binary.BigEndian, uint32(len(proof.Raw))); err != nil {
+		return nil, err
+	}
+	buf.Write(proof.Raw)
+	for _, pi := range publicInputs {
+		padded := make([]byte, 32)
+		pi.FillBytes(padded)
+		buf.Write(padded)
+	}
+	return buf.Bytes(), nil
+}
+
+// DeserializeProofFromTx reconstructs a Proof and public witness from transaction data.
+func DeserializeProofFromTx(txData []byte, circuit *Circuit) (*Proof, *Witness, error) {
+	if len(txData) < 4 {
+		return nil, nil, fmt.Errorf("data too short for proof length header")
+	}
+	proofLen := binary.BigEndian.Uint32(txData[:4])
+	if len(txData) < int(4+proofLen) {
+		return nil, nil, fmt.Errorf("data too short for proof body")
+	}
+	numPublic := circuit.NumInputs
+	publicOffset := 4 + int(proofLen)
+	publicBytes := txData[publicOffset:]
+	publicInputs := make([]*big.Int, numPublic)
+	for i := 0; i < numPublic; i++ {
+		start := i * 32
+		if start+32 > len(publicBytes) {
+			publicInputs[i] = big.NewInt(0)
+			continue
+		}
+		publicInputs[i] = new(big.Int).SetBytes(publicBytes[start : start+32])
+	}
+	return &Proof{
+		Raw:       txData[4 : 4+proofLen],
+		CircuitID: []byte(circuit.Name),
+		Public:    publicInputs,
+		System:    Groth16,
+	}, &Witness{Public: publicInputs, Secret: []*big.Int{}}, nil
 }
