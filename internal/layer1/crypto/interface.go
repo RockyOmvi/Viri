@@ -6,7 +6,7 @@ import "io"
 type Scheme uint8
 
 const (
-	SchemeECDSA   Scheme = 0 // NIST P-256 ECDSA (default)
+	SchemeECDSA   Scheme = 0 // secp256k1 ECDSA (default, EVM-compatible)
 	SchemeMLDSA44 Scheme = 1 // ML-DSA-44 (FIPS 204, NIST PQC Level 2)
 	SchemeMLDSA65 Scheme = 2 // ML-DSA-65 (FIPS 204, NIST PQC Level 3)
 	SchemeMLDSA87 Scheme = 3 // ML-DSA-87 (FIPS 204, NIST PQC Level 5)
@@ -16,7 +16,7 @@ const (
 func (s Scheme) String() string {
 	switch s {
 	case SchemeECDSA:
-		return "ecdsa-p256"
+		return "secp256k1"
 	case SchemeMLDSA44:
 		return "mldsa44"
 	case SchemeMLDSA65:
@@ -52,7 +52,7 @@ func (s Scheme) PrivateBytes() int {
 func (s Scheme) PublicBytes() int {
 	switch s {
 	case SchemeECDSA:
-		return 65 // uncompressed P-256
+		return 65 // uncompressed secp256k1
 	case SchemeMLDSA44:
 		return 1312
 	case SchemeMLDSA65:
@@ -153,7 +153,7 @@ func DecodeSignatureEnvelope(data []byte) (*SignatureEnvelope, error) {
 // ParseScheme parses a scheme name string.
 func ParseScheme(s string) (Scheme, bool) {
 	switch s {
-	case "ecdsa-p256", "ecdsa", "p256":
+	case "secp256k1", "ecdsa", "p256":
 		return SchemeECDSA, true
 	case "mldsa44", "mldsa-44":
 		return SchemeMLDSA44, true

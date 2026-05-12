@@ -58,7 +58,7 @@ func SetDefaultScheme(s Scheme) {
 	globalRegistry.defaultScheme = s
 }
 
-// ecdsaGenerator implements KeyGenerator for ECDSA P-256.
+// ecdsaGenerator implements KeyGenerator for secp256k1 ECDSA.
 type ecdsaGenerator struct{}
 
 func (g *ecdsaGenerator) GenerateKey(rand io.Reader) (KeyPair, error) {

@@ -62,7 +62,7 @@ func EncryptKey(key *PrivateKey, passphrase string, filePath string) error {
 		return fmt.Errorf("failed to generate nonce: %w", err)
 	}
 
-	plaintext := key.D.Bytes()
+	plaintext := key.key.Serialize()
 	// Left-pad to 32 bytes
 	paddedKey := make([]byte, 32)
 	copy(paddedKey[32-len(plaintext):], plaintext)

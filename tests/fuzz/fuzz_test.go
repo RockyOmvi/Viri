@@ -1,10 +1,6 @@
 package fuzz
 
 import (
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
-	"crypto/sha256"
 	"math/big"
 	"testing"
 
@@ -173,25 +169,28 @@ func FuzzECDSASignVerify(f *testing.F) {
 			return
 		}
 
-		privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		key, err := crypto.GenerateKey()
 		if err != nil {
 			t.Skip()
 		}
 
-		hash := sha256.Sum256(data)
+		hash := crypto.SHA256(data)
 
-		r, s, err := ecdsa.Sign(rand.Reader, privateKey, hash[:])
+		sig, err := key.SignHash(hash)
 		if err != nil {
 			t.Skip()
 		}
 
-		valid := ecdsa.Verify(&privateKey.PublicKey, hash[:], r, s)
+		valid := key.PubKey().VerifyHash(hash, sig)
 		if !valid {
 			t.Errorf("ECDSA verification failed for valid signature")
 		}
 
-		r = new(big.Int).Add(r, big.NewInt(1))
-		valid = ecdsa.Verify(&privateKey.PublicKey, hash[:], r, s)
+		tampered := &crypto.Signature{
+			R: new(big.Int).Add(sig.R, big.NewInt(1)),
+			S: sig.S,
+		}
+		valid = key.PubKey().VerifyHash(hash, tampered)
 		if valid {
 			t.Errorf("ECDSA verification passed for tampered signature")
 		}

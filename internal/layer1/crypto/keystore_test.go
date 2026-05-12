@@ -103,7 +103,7 @@ func TestLoadKeyOrGenerate_MigrateRawKey(t *testing.T) {
 	}
 
 	// Write raw hex key
-	rawData := hex.EncodeToString(key.D.Bytes())
+	rawData := hex.EncodeToString(key.PrivateBytes())
 	if err := os.WriteFile(keyFile, []byte(rawData), 0644); err != nil {
 		t.Fatal(err)
 	}

@@ -183,17 +183,17 @@ func TestCompressDecompressPubKeyRoundtrip(t *testing.T) {
 	privKey, _ := crypto.GenerateKey()
 	pubKey := privKey.PubKey()
 
-	compressed := compressPubKey(pubKey)
+	compressed := pubKey.Compressed()
 	if len(compressed) != CompressedPubKeyLen {
 		t.Errorf("expected compressed key length %d, got %d", CompressedPubKeyLen, len(compressed))
 	}
 
-	decompressed, err := decompressPubKey(compressed)
+	decompressed, err := crypto.DecompressPubKey(compressed)
 	if err != nil {
 		t.Fatalf("failed to decompress: %v", err)
 	}
 
-	if pubKey.X.Cmp(decompressed.X) != 0 || pubKey.Y.Cmp(decompressed.Y) != 0 {
+	if pubKey.Hex() != decompressed.Hex() {
 		t.Error("decompressed key does not match original")
 	}
 }

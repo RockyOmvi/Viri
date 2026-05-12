@@ -1,8 +1,6 @@
 package ledger
 
 import (
-	"crypto/ecdsa"
-	"crypto/elliptic"
 	"math/big"
 
 	"github.com/viri-chain/viri/internal/layer1/crypto"
@@ -87,18 +85,15 @@ func (tx *Transaction) ComputeHash() []byte {
 }
 
 func (tx *Transaction) SenderAddress() []byte {
-	pubKey := &crypto.PublicKey{
-		PublicKey: &ecdsa.PublicKey{
-			Curve: elliptic.P256(),
-			X:     new(big.Int).SetBytes(tx.From[1:33]),
-			Y:     new(big.Int).SetBytes(tx.From[33:]),
-		},
+	pubKey, err := crypto.PubKeyFromBytes(tx.From)
+	if err != nil {
+		return nil
 	}
 	return pubKey.Address()
 }
 
 func (tx *Transaction) Verify() bool {
-	if tx.Signature == nil || len(tx.From) < 65 {
+	if tx.Signature == nil || len(tx.From) < 2 {
 		return false
 	}
 
@@ -107,12 +102,9 @@ func (tx *Transaction) Verify() bool {
 		S: new(big.Int).SetBytes(tx.Signature.S),
 	}
 
-	pubKey := &crypto.PublicKey{
-		PublicKey: &ecdsa.PublicKey{
-			Curve: elliptic.P256(),
-			X:     new(big.Int).SetBytes(tx.From[1:33]),
-			Y:     new(big.Int).SetBytes(tx.From[33:]),
-		},
+	pubKey, err := crypto.PubKeyFromBytes(tx.From)
+	if err != nil {
+		return false
 	}
 
 	return pubKey.Verify(tx.SigningPayload(), sig)

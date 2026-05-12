@@ -1,9 +1,6 @@
 package crypto
 
 import (
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	crand "crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -11,23 +8,22 @@ import (
 	"io"
 	"math/big"
 
+	"github.com/decred/dcrd/dcrec/secp256k1/v4"
+	sececdsa "github.com/decred/dcrd/dcrec/secp256k1/v4/ecdsa"
 	"golang.org/x/crypto/sha3"
 )
 
-// Note: PrivateKey implements Signer/KeyPair via SignMessage, Scheme, PublicBytes, Seed, PrivateBytes.
-// PublicKey implements Verifier via VerifyMessage, Scheme, PublicBytes.
-// Compile-time interface assertions are omitted because Sign/Verify take concrete *Signature types
-// rather than []byte for backward compatibility.
-
-var ErrInvalidSignature = errors.New("invalid signature")
-var ErrInvalidKey = errors.New("invalid key")
+var (
+	ErrInvalidSignature = errors.New("invalid signature")
+	ErrInvalidKey       = errors.New("invalid key")
+)
 
 type PrivateKey struct {
-	*ecdsa.PrivateKey
+	key *secp256k1.PrivateKey
 }
 
 type PublicKey struct {
-	*ecdsa.PublicKey
+	key *secp256k1.PublicKey
 }
 
 type Signature struct {
@@ -35,37 +31,47 @@ type Signature struct {
 }
 
 func GenerateKey() (*PrivateKey, error) {
-	return GenerateKeyWithReader(crand.Reader)
+	k, err := secp256k1.GeneratePrivateKey()
+	if err != nil {
+		return nil, err
+	}
+	return &PrivateKey{key: k}, nil
 }
 
 func GenerateKeyWithReader(rand io.Reader) (*PrivateKey, error) {
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand)
-	if err != nil {
+	buf := make([]byte, 32)
+	if _, err := io.ReadFull(rand, buf); err != nil {
 		return nil, err
 	}
-	return &PrivateKey{PrivateKey: key}, nil
+	privKey := secp256k1.PrivKeyFromBytes(buf)
+	return &PrivateKey{key: privKey}, nil
 }
 
 func (k *PrivateKey) PubKey() *PublicKey {
-	return &PublicKey{PublicKey: &k.PrivateKey.PublicKey}
+	return &PublicKey{key: k.key.PubKey()}
 }
 
-// Sign returns the raw 64-byte ECDSA signature.
 func (k *PrivateKey) Sign(data []byte) (*Signature, error) {
-	hash := SHA256(data)
-	r, s, err := ecdsa.Sign(crand.Reader, k.PrivateKey, hash)
-	if err != nil {
-		return nil, err
-	}
-	return &Signature{R: r, S: s}, nil
+	hash := Keccak256(data)
+	return k.SignHash(hash)
 }
 
-// VerifyMessage implements the Verifier interface on PrivateKey (delegates to public key).
+func (k *PrivateKey) SignHash(hash []byte) (*Signature, error) {
+	sig := sececdsa.Sign(k.key, hash)
+	r := sig.R()
+	s := sig.S()
+	rBytes := r.Bytes()
+	sBytes := s.Bytes()
+	return &Signature{
+		R: new(big.Int).SetBytes(rBytes[:]),
+		S: new(big.Int).SetBytes(sBytes[:]),
+	}, nil
+}
+
 func (k *PrivateKey) VerifyMessage(data, sig []byte) bool {
 	return k.PubKey().VerifyMessage(data, sig)
 }
 
-// SignMessage implements the Signer interface.
 func (k *PrivateKey) SignMessage(data []byte) ([]byte, error) {
 	sig, err := k.Sign(data)
 	if err != nil {
@@ -74,59 +80,56 @@ func (k *PrivateKey) SignMessage(data []byte) ([]byte, error) {
 	return sig.Bytes(), nil
 }
 
-// Scheme returns SchemeECDSA for backward compatibility.
-func (k *PrivateKey) Scheme() Scheme { return SchemeECDSA }
-
-// PublicBytes returns the uncompressed public key bytes.
-func (k *PrivateKey) PublicBytes() []byte { return k.PubKey().Bytes() }
-
-// Seed returns the private key scalar as 32 bytes.
-func (k *PrivateKey) Seed() []byte { return k.D.Bytes() }
-
-// PrivateBytes returns the private key bytes.
-func (k *PrivateKey) PrivateBytes() []byte { return k.D.Bytes() }
+func (k *PrivateKey) Scheme() Scheme        { return SchemeECDSA }
+func (k *PrivateKey) PublicBytes() []byte   { return k.PubKey().Bytes() }
+func (k *PrivateKey) Seed() []byte          { return k.key.Serialize() }
+func (k *PrivateKey) PrivateBytes() []byte  { return k.key.Serialize() }
 
 func (k *PrivateKey) Hex() string {
-	return hex.EncodeToString(k.D.Bytes())
+	return hex.EncodeToString(k.key.Serialize())
 }
 
 func (pub *PublicKey) Verify(data []byte, sig *Signature) bool {
-	hash := SHA256(data)
-	return ecdsa.Verify(pub.PublicKey, hash, sig.R, sig.S)
+	hash := Keccak256(data)
+	return pub.VerifyHash(hash, sig)
 }
 
-// VerifyMessage implements the Verifier interface, accepting raw bytes.
+func (pub *PublicKey) VerifyHash(hash []byte, sig *Signature) bool {
+	sigObj := sececdsa.NewSignature(bigIntToModNScalar(sig.R), bigIntToModNScalar(sig.S))
+	return sigObj.Verify(hash, pub.key)
+}
+
 func (pub *PublicKey) VerifyMessage(data, sig []byte) bool {
 	if len(sig) != 64 {
 		return false
 	}
 	r := new(big.Int).SetBytes(sig[:32])
 	s := new(big.Int).SetBytes(sig[32:])
-	hash := SHA256(data)
-	return ecdsa.Verify(pub.PublicKey, hash, r, s)
+	return pub.Verify(data, &Signature{R: r, S: s})
 }
 
-// Scheme returns SchemeECDSA.
-func (pub *PublicKey) Scheme() Scheme { return SchemeECDSA }
-
-// PublicBytes returns the uncompressed public key bytes.
-func (pub *PublicKey) PublicBytes() []byte { return pub.Bytes() }
+func (pub *PublicKey) Scheme() Scheme      { return SchemeECDSA }
+func (pub *PublicKey) PublicBytes() []byte  { return pub.Bytes() }
 
 func (pub *PublicKey) Address() []byte {
-	hash := Keccak256(pub.Bytes())
+	raw := pub.key.SerializeUncompressed()
+	hash := Keccak256(raw[1:])
 	return hash[12:]
 }
 
 func (pub *PublicKey) Hex() string {
-	return hex.EncodeToString(pub.Bytes())
+	return hex.EncodeToString(pub.key.SerializeUncompressed())
 }
 
 func (pub *PublicKey) Bytes() []byte {
-	return elliptic.Marshal(pub.PublicKey, pub.X, pub.Y)
+	return pub.key.SerializeUncompressed()
+}
+
+func (pub *PublicKey) Compressed() []byte {
+	return pub.key.SerializeCompressed()
 }
 
 func (sig *Signature) Bytes() []byte {
-	// Fixed 64-byte encoding: 32 bytes for R + 32 bytes for S, left zero-padded
 	combined := make([]byte, 64)
 	rBytes := sig.R.Bytes()
 	sBytes := sig.S.Bytes()
@@ -135,7 +138,6 @@ func (sig *Signature) Bytes() []byte {
 	return combined
 }
 
-// SignatureFromBytes deserializes a 64-byte signature (32B R + 32B S).
 func SignatureFromBytes(data []byte) (*Signature, error) {
 	if len(data) != 64 {
 		return nil, fmt.Errorf("invalid signature length: expected 64, got %d", len(data))
@@ -157,7 +159,6 @@ func DoubleSHA256(data []byte) []byte {
 	return second[:]
 }
 
-// Keccak256 computes the Keccak-256 hash (used for Ethereum-compatible addressing).
 func Keccak256(data []byte) []byte {
 	h := sha3.NewLegacyKeccak256()
 	h.Write(data)
@@ -173,24 +174,35 @@ func GenerateAddress() ([]byte, error) {
 }
 
 func PubKeyFromBytes(data []byte) (*PublicKey, error) {
-	x, y := elliptic.Unmarshal(elliptic.P256(), data)
-	if x == nil {
+	k, err := secp256k1.ParsePubKey(data)
+	if err != nil {
 		return nil, ErrInvalidKey
 	}
-	return &PublicKey{PublicKey: &ecdsa.PublicKey{Curve: elliptic.P256(), X: x, Y: y}}, nil
+	return &PublicKey{key: k}, nil
+}
+
+func DecompressPubKey(data []byte) (*PublicKey, error) {
+	return PubKeyFromBytes(data)
 }
 
 func PrivateKeyFromBytes(data []byte) (*PrivateKey, error) {
-	if len(data) < 32 {
+	if len(data) == 0 {
 		return nil, ErrInvalidKey
 	}
-	d := new(big.Int).SetBytes(data)
-	key := &ecdsa.PrivateKey{
-		PublicKey: ecdsa.PublicKey{
-			Curve: elliptic.P256(),
-		},
-		D: d,
-	}
-	key.PublicKey.X, key.PublicKey.Y = key.PublicKey.Curve.ScalarBaseMult(data)
-	return &PrivateKey{PrivateKey: key}, nil
+	privKey := secp256k1.PrivKeyFromBytes(data)
+	return &PrivateKey{key: privKey}, nil
+}
+
+func modNScalarToBigInt(s secp256k1.ModNScalar) *big.Int {
+	b := s.Bytes()
+	return new(big.Int).SetBytes(b[:])
+}
+
+func bigIntToModNScalar(n *big.Int) *secp256k1.ModNScalar {
+	var s secp256k1.ModNScalar
+	b := n.Bytes()
+	var arr [32]byte
+	copy(arr[32-len(b):], b)
+	s.SetBytes(&arr)
+	return &s
 }

@@ -1,24 +1,21 @@
 package p2p
 
 import (
-	"crypto/ecdsa"
-	"crypto/elliptic"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
-	"math/big"
 	"time"
 
 	"github.com/viri-chain/viri/internal/layer1/crypto"
 )
 
 var (
-	ErrInvalidSignature  = errors.New("invalid signature")
-	ErrSignatureExpired  = errors.New("message signature expired")
-	ErrChainIDMismatch   = errors.New("chain ID mismatch")
-	ErrInvalidPublicKey  = errors.New("invalid public key")
-	ErrInvalidTimestamp  = errors.New("invalid timestamp")
-	ErrSignedMessageTooLarge = errors.New("signed message exceeds maximum size")
+	ErrInvalidSignature       = errors.New("invalid signature")
+	ErrSignatureExpired       = errors.New("message signature expired")
+	ErrChainIDMismatch        = errors.New("chain ID mismatch")
+	ErrInvalidPublicKey       = errors.New("invalid public key")
+	ErrInvalidTimestamp       = errors.New("invalid timestamp")
+	ErrSignedMessageTooLarge  = errors.New("signed message exceeds maximum size")
 )
 
 const (
@@ -162,7 +159,7 @@ func SignMessage(msg *Message, privKey *crypto.PrivateKey, chainID uint64) (*Sig
 	}
 
 	pubKey := privKey.PubKey()
-	pubKeyBytes := compressPubKey(pubKey)
+	pubKeyBytes := pubKey.Compressed()
 
 	return &SignedMessage{
 		MessageBytes: msgBytes,
@@ -190,7 +187,7 @@ func VerifySignedMessage(sm *SignedMessage, chainID uint64, maxAge time.Duration
 		return ErrChainIDMismatch
 	}
 
-	pubKey, err := decompressPubKey(sm.PublicKey)
+	pubKey, err := crypto.DecompressPubKey(sm.PublicKey)
 	if err != nil {
 		return ErrInvalidPublicKey
 	}
@@ -213,7 +210,7 @@ func VerifySignedMessage(sm *SignedMessage, chainID uint64, maxAge time.Duration
 }
 
 func GetSenderAddress(sm *SignedMessage) ([]byte, error) {
-	pubKey, err := decompressPubKey(sm.PublicKey)
+	pubKey, err := crypto.DecompressPubKey(sm.PublicKey)
 	if err != nil {
 		return nil, ErrInvalidPublicKey
 	}
@@ -247,7 +244,7 @@ func (ma *MessageAuthenticator) Verify(sm *SignedMessage) error {
 
 func (ma *MessageAuthenticator) GetPeerID() string {
 	pubKey := ma.privKey.PubKey()
-	pubKeyBytes := compressPubKey(pubKey)
+	pubKeyBytes := pubKey.Compressed()
 	if len(pubKeyBytes) == 0 {
 		return "unknown"
 	}
@@ -268,72 +265,4 @@ func (ma *MessageAuthenticator) ValidatorAddress() []byte {
 
 func (ma *MessageAuthenticator) ChainID() uint64 {
 	return ma.chainID
-}
-
-func compressPubKey(pubKey *crypto.PublicKey) []byte {
-	if pubKey == nil || pubKey.PublicKey == nil {
-		return nil
-	}
-
-	compressed := make([]byte, CompressedPubKeyLen)
-	if pubKey.Y.Bit(0) == 0 {
-		compressed[0] = 0x02
-	} else {
-		compressed[0] = 0x03
-	}
-
-	paddedX := make([]byte, 32)
-	xBytes := pubKey.X.Bytes()
-	copy(paddedX[32-len(xBytes):], xBytes)
-	copy(compressed[1:], paddedX)
-
-	return compressed
-}
-
-func decompressPubKey(data []byte) (*crypto.PublicKey, error) {
-	if len(data) != CompressedPubKeyLen {
-		return nil, errors.New("invalid compressed public key length")
-	}
-
-	format := data[0]
-	if format != 0x02 && format != 0x03 {
-		return nil, errors.New("invalid compressed public key format")
-	}
-
-	x := new(big.Int).SetBytes(data[1:])
-	curve := elliptic.P256()
-
-	// y² = x³ - 3x + b (mod p) for P-256
-	// Since P-256 is in Weierstrass form: y² = x³ + ax + b where a = -3
-	three := big.NewInt(3)
-	a := new(big.Int).Neg(three)
-	a.Mod(a, curve.Params().P)
-
-	x3 := new(big.Int).Exp(x, three, curve.Params().P)
-	ax := new(big.Int).Mul(a, x)
-	ax.Mod(ax, curve.Params().P)
-	ySquared := new(big.Int).Add(x3, ax)
-	ySquared.Add(ySquared, curve.Params().B)
-	ySquared.Mod(ySquared, curve.Params().P)
-
-	y := new(big.Int).ModSqrt(ySquared, curve.Params().P)
-	if y == nil {
-		return nil, errors.New("invalid compressed public key")
-	}
-
-	if format == 0x03 && y.Bit(0) == 0 {
-		y.Neg(y)
-		y.Mod(y, curve.Params().P)
-	} else if format == 0x02 && y.Bit(0) == 1 {
-		y.Neg(y)
-		y.Mod(y, curve.Params().P)
-	}
-
-	return &crypto.PublicKey{
-		PublicKey: &ecdsa.PublicKey{
-			Curve: curve,
-			X:     x,
-			Y:     y,
-		},
-	}, nil
 }

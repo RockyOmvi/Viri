@@ -36,7 +36,7 @@ type HandshakeMessage struct {
 }
 
 func NewHandshakeMessage(chainID uint64, height uint64, nonce uint64, pubKey *crypto.PublicKey) *HandshakeMessage {
-	pubKeyBytes := compressPubKey(pubKey)
+	pubKeyBytes := pubKey.Compressed()
 	return &HandshakeMessage{
 		Version:   ProtocolVersion,
 		Magic:     MagicNumber,

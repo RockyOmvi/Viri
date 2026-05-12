@@ -4,10 +4,6 @@ package main
 
 import (
 	"bytes"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -17,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/crypto/ripemd160"
+	"github.com/viri-chain/viri/internal/layer1/crypto"
 )
 
 type ValidatorKey struct {
@@ -135,14 +131,13 @@ type DockerCompose struct {
 }
 
 func generateKey() (privHex, pubHex, address string) {
-	privKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	pubKey := privKey.PublicKey
-	pubKeyBytes := elliptic.Marshal(pubKey.Curve, pubKey.X, pubKey.Y)
-	hash := sha256.Sum256(pubKeyBytes)
-	ripemd := ripemd160.New()
-	ripemd.Write(hash[:])
-	address = hex.EncodeToString(ripemd.Sum(nil))
-	return hex.EncodeToString(privKey.D.Bytes()), hex.EncodeToString(pubKeyBytes), address
+	key, err := crypto.GenerateKey()
+	if err != nil {
+		panic(err)
+	}
+	pubKey := key.PubKey()
+	pubKeyBytes := pubKey.Bytes()
+	return key.Hex(), hex.EncodeToString(pubKeyBytes), hex.EncodeToString(pubKey.Address())
 }
 
 func writeJSON(path string, v interface{}) error {
