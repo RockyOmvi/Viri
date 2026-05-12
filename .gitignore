@@ -6,6 +6,9 @@ build/
 data/
 .viri/
 
+# Testnet data (badger DB files too large for git)
+testnet_data/
+
 # OS files
 .DS_Store
 Thumbs.db
