@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -480,13 +481,17 @@ type testValidator struct {
 	stopCh      chan struct{}
 	wg          sync.WaitGroup
 	db          state.KVStore
+	broadcastMu sync.RWMutex
 	broadcastFn func(msg *consensus.ConsensusMessage)
 }
 
 func (tv *testValidator) Start() {
 	tv.engine.SetBroadcast(func(msg *consensus.ConsensusMessage) {
-		if tv.broadcastFn != nil {
-			tv.broadcastFn(msg)
+		tv.broadcastMu.RLock()
+		fn := tv.broadcastFn
+		tv.broadcastMu.RUnlock()
+		if fn != nil {
+			fn(msg)
 		}
 	})
 	tv.wg.Add(1)
@@ -863,27 +868,43 @@ func TestStateSync(t *testing.T) {
 	}
 	t.Logf("Max height before late: %d", heightBeforeLate)
 
-	allValidators[3] = newTestValidator(t, dir, 3, keys[3], staking, validatorSet)
-	allValidators[3].broadcastFn = func(msg *consensus.ConsensusMessage) {
-		for j := 0; j < 4; j++ {
-			if j != 3 {
-				allValidators[j].HandleMessage(msg)
-			}
-		}
-	}
+	lateValidator := newTestValidator(t, dir, 3, keys[3], staking, validatorSet)
+
+	// Update validator 0-2 broadcast functions to include the late validator.
+	// Use a pointer indirection so the lateValidator reference can be updated atomically.
+	var latePtr atomic.Pointer[*testValidator]
+	latePtr.Store(&lateValidator)
 
 	for i := 0; i < 3; i++ {
 		idx := i
-		allValidators[i].broadcastFn = func(msg *consensus.ConsensusMessage) {
-			for j := 0; j < 4; j++ {
+		fn := func(msg *consensus.ConsensusMessage) {
+			for j := 0; j < 3; j++ {
 				if j != idx {
 					allValidators[j].HandleMessage(msg)
 				}
 			}
+			lv := *latePtr.Load()
+			if lv != nil && lv.engine.IsRunning() {
+				lv.HandleMessage(msg)
+			}
+		}
+		allValidators[i].broadcastMu.Lock()
+		allValidators[i].broadcastFn = fn
+		allValidators[i].broadcastMu.Unlock()
+	}
+
+	// Late validator broadcasts only to validators 0-2 (not back to itself)
+	fn := func(msg *consensus.ConsensusMessage) {
+		for j := 0; j < 3; j++ {
+			allValidators[j].HandleMessage(msg)
 		}
 	}
-	allValidators[3].Start()
-	defer allValidators[3].Stop()
+	lateValidator.broadcastMu.Lock()
+	lateValidator.broadcastFn = fn
+	lateValidator.broadcastMu.Unlock()
+
+	lateValidator.Start()
+	defer lateValidator.Stop()
 
 	deadline := time.Now().Add(12 * time.Second)
 	for time.Now().Before(deadline) {
