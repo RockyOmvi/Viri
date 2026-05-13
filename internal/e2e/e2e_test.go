@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"math/big"
+	"sync"
 	"testing"
 
 	"github.com/viri-chain/viri/internal/layer1/crypto"
@@ -445,6 +446,7 @@ func TestE2E_ParallelExecution(t *testing.T) {
 	}
 	nodes := make([]node, 5)
 	stateMap := map[string]*execution.AccountState{}
+	var stateMu sync.Mutex
 	for i := range nodes {
 		k, _ := crypto.GenerateKey()
 		nodes[i] = node{addr: k.PubKey().Address(), key: k}
@@ -454,12 +456,16 @@ func TestE2E_ParallelExecution(t *testing.T) {
 		}
 	}
 	getAcct := func(a []byte) (*execution.AccountState, error) {
+		stateMu.Lock()
+		defer stateMu.Unlock()
 		if ac, ok := stateMap[string(a)]; ok {
 			return ac, nil
 		}
 		return &execution.AccountState{Address: a, Balance: big.NewInt(0), Nonce: 0, Storage: make(map[string][]byte)}, nil
 	}
 	setAcct := func(a []byte, ac *execution.AccountState) error {
+		stateMu.Lock()
+		defer stateMu.Unlock()
 		stateMap[string(a)] = ac
 		return nil
 	}

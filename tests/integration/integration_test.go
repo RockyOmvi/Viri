@@ -598,15 +598,18 @@ func TestNetworkPartition(t *testing.T) {
 			}
 		}
 	}
+	var linksMu sync.RWMutex
 
 	for i := 0; i < 4; i++ {
 		idx := i
 		testValidators[idx].broadcastFn = func(msg *consensus.ConsensusMessage) {
+			linksMu.RLock()
 			for _, link := range links {
 				if link.from == idx && link.active {
 					testValidators[link.to].HandleMessage(msg)
 				}
 			}
+			linksMu.RUnlock()
 		}
 	}
 
@@ -636,11 +639,13 @@ func TestNetworkPartition(t *testing.T) {
 
 	heightBeforePartition := heights[0]
 
+	linksMu.Lock()
 	for i := range links {
 		if (links[i].from < 2 && links[i].to >= 2) || (links[i].from >= 2 && links[i].to < 2) {
 			links[i].active = false
 		}
 	}
+	linksMu.Unlock()
 
 	time.Sleep(2 * time.Second)
 

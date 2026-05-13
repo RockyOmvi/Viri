@@ -65,7 +65,7 @@ func (a *AccountState) GetTokenBalance(token []byte) *big.Int {
 // DeductTokenBalance subtracts amount from the specified token balance.
 func (a *AccountState) DeductTokenBalance(token []byte, amount *big.Int) {
 	if len(token) == 0 {
-		a.Balance.Sub(a.Balance, amount)
+		a.Balance = new(big.Int).Sub(a.Balance, amount)
 		return
 	}
 	if a.TokenBalances == nil {
@@ -75,14 +75,13 @@ func (a *AccountState) DeductTokenBalance(token []byte, amount *big.Int) {
 	if current == nil {
 		current = new(big.Int)
 	}
-	current.Sub(current, amount)
-	a.TokenBalances[string(token)] = current
+	a.TokenBalances[string(token)] = new(big.Int).Sub(current, amount)
 }
 
 // AddTokenBalance adds amount to the specified token balance.
 func (a *AccountState) AddTokenBalance(token []byte, amount *big.Int) {
 	if len(token) == 0 {
-		a.Balance.Add(a.Balance, amount)
+		a.Balance = new(big.Int).Add(a.Balance, amount)
 		return
 	}
 	if a.TokenBalances == nil {
@@ -92,8 +91,7 @@ func (a *AccountState) AddTokenBalance(token []byte, amount *big.Int) {
 	if current == nil {
 		current = new(big.Int)
 	}
-	current.Add(current, amount)
-	a.TokenBalances[string(token)] = current
+	a.TokenBalances[string(token)] = new(big.Int).Add(current, amount)
 }
 
 // Precompile addresses for built-in operations
@@ -285,7 +283,7 @@ func (e *ExecutionEngine) ExecuteTransaction(tx *ledger.Transaction, blockHeight
 
 	// Deduct value in native coin
 	if tx.Value > 0 {
-		sender.Balance.Sub(sender.Balance, new(big.Int).SetUint64(tx.Value))
+		sender.Balance = new(big.Int).Sub(sender.Balance, new(big.Int).SetUint64(tx.Value))
 	}
 
 	// Deduct fee in appropriate currency
@@ -370,7 +368,7 @@ func (e *ExecutionEngine) executeTransfer(tx *ledger.Transaction, getAccount fun
 		recipient.Balance = new(big.Int)
 	}
 
-	recipient.Balance.Add(recipient.Balance, new(big.Int).SetUint64(tx.Value))
+	recipient.Balance = new(big.Int).Add(recipient.Balance, new(big.Int).SetUint64(tx.Value))
 
 	if err := setAccount(tx.To, recipient); err != nil {
 		return &ExecutionResult{
