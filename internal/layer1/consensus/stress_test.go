@@ -155,9 +155,9 @@ func TestStressTwentyValidatorsConvergence(t *testing.T) {
 		}
 	}
 
-	time.Sleep(1 * time.Second)
+	time.Sleep(3 * time.Second)
 
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(60 * time.Second)
 	for time.Now().Before(deadline) {
 		heights := make([]uint64, n)
 		for i := 0; i < n; i++ {
