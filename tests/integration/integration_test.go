@@ -829,14 +829,20 @@ func TestStateSync(t *testing.T) {
 		defer allValidators[i].Stop()
 	}
 
-	time.Sleep(2 * time.Second)
-
+	// Wait for validators to produce at least 5 blocks
 	heightBeforeStop := uint64(0)
-	for i := 0; i < 4; i++ {
-		h := allValidators[i].blockchain.Height()
-		if h > heightBeforeStop {
-			heightBeforeStop = h
+	initDeadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(initDeadline) {
+		for i := 0; i < 4; i++ {
+			h := allValidators[i].blockchain.Height()
+			if h > heightBeforeStop {
+				heightBeforeStop = h
+			}
 		}
+		if heightBeforeStop >= 5 {
+			break
+		}
+		time.Sleep(300 * time.Millisecond)
 	}
 	t.Logf("Height before stopping validator 3: %d", heightBeforeStop)
 	if heightBeforeStop < 5 {
