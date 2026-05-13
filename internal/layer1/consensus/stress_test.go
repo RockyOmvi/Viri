@@ -126,6 +126,8 @@ func TestStressTwentyValidatorsConvergence(t *testing.T) {
 		config := DefaultConsensusConfig()
 		config.BlockTime = 500 * time.Millisecond
 		config.ViewTimeout = 3 * time.Second
+		config.TimeoutIncrease = 0
+		config.MaxViewTimeout = 3 * time.Second
 		config.MessageRateLimit = 10000
 		config.MessageRateWindow = 2 * time.Second
 
@@ -135,13 +137,15 @@ func TestStressTwentyValidatorsConvergence(t *testing.T) {
 	for i := 0; i < n; i++ {
 		idx := i
 		engines[i].SetBroadcast(func(msg *ConsensusMessage) {
-			for j := 0; j < n; j++ {
-				if j != idx {
-					if engines[j].IsRunning() {
-						engines[j].HandleMessage(msg)
+			go func() {
+				for j := 0; j < n; j++ {
+					if j != idx {
+						if engines[j].IsRunning() {
+							engines[j].HandleMessage(msg)
+						}
 					}
 				}
-			}
+			}()
 		})
 	}
 
@@ -180,10 +184,10 @@ func TestStressTwentyValidatorsConvergence(t *testing.T) {
 	minHeight := heights[0]
 	maxHeight := heights[n-1]
 
-	t.Logf("20-validator test: min_height=%d max_height=%d spread=%d", minHeight, maxHeight, maxHeight-minHeight)
+	t.Logf("%d-validator test: min_height=%d max_height=%d spread=%d", n, minHeight, maxHeight, maxHeight-minHeight)
 
 	if minHeight < 2 {
-		t.Errorf("expected min height >= 2 with 20 validators, got %d", minHeight)
+		t.Errorf("expected min height >= 2 with %d validators, got %d", n, minHeight)
 	}
 
 	if maxHeight-minHeight > 3 {
