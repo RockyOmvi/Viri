@@ -103,7 +103,7 @@ jobs:
         run: go test -fuzz=FuzzTransactionHash -fuzztime=30s ./tests/fuzz/... -timeout 5m
 
       - name: Fuzz merkle tree
-        run: go test -fuzz=FuzzMerkleTree -fuzztime=30s ./tests/fuzz/... -timeout 5m
+        run: go test -fuzz='^FuzzMerkleTree$' -fuzztime=30s ./tests/fuzz/... -timeout 5m
 
       - name: Fuzz ECDSA sign/verify
         run: go test -fuzz=FuzzECDSASignVerify -fuzztime=30s ./tests/fuzz/... -timeout 5m
