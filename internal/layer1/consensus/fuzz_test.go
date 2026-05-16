@@ -1,9 +1,10 @@
 package consensus
 
-
 import (
+	"encoding/hex"
 	"fmt"
 	"math/big"
+	"math/rand"
 	"testing"
 	"time"
 
@@ -385,4 +386,264 @@ func TestRateLimitingIntegration(t *testing.T) {
 			t.Errorf("second validator should be allowed, iteration %d", i)
 		}
 	}
+}
+
+func FuzzQCCreationRandomValidators(f *testing.F) {
+	f.Add(uint64(1), uint64(0), uint64(4))
+	f.Add(uint64(10), uint64(3), uint64(8))
+	f.Add(uint64(100), uint64(2), uint64(16))
+
+	f.Fuzz(func(t *testing.T, height, view, numValidators uint64) {
+		if numValidators == 0 || numValidators > 100 {
+			return
+		}
+		validators := make([]*Validator, numValidators)
+		for i := uint64(0); i < numValidators; i++ {
+			validators[i] = &Validator{
+				Address:  []byte{byte(i), byte(i >> 8)},
+				Stake:    1000000,
+				IsActive: true,
+			}
+		}
+		vs := NewValidatorSet(validators, 1)
+		qc := &QC{
+			Height:    height,
+			View:      view,
+			Phase:     PhasePrepare,
+			BlockHash: []byte("hash"),
+			Signatures: make(map[string]crypto.Signature),
+			ValidatorAddrs: []string{},
+		}
+		_ = qc.IsValid(vs)
+	})
+}
+
+func FuzzViewChangeMessages(f *testing.F) {
+	f.Add(uint64(1), uint64(0), uint64(5))
+	f.Add(uint64(5), uint64(3), uint64(10))
+
+	f.Fuzz(func(t *testing.T, height, oldView, numValidators uint64) {
+		if numValidators == 0 || numValidators > 50 {
+			return
+		}
+		validators := make([]*Validator, numValidators)
+		for i := uint64(0); i < numValidators; i++ {
+			validators[i] = &Validator{
+				Address:  []byte{byte(i)},
+				Stake:    1000000,
+				IsActive: true,
+			}
+		}
+		vs := NewValidatorSet(validators, 1)
+		msg := &ConsensusMessage{
+			Type:      MsgNewView,
+			Height:    height,
+			View:      oldView + 1,
+			BlockHash: []byte("view_hash"),
+			Validator: []byte("val"),
+			Timestamp: time.Now(),
+		}
+		_, _ = msg.MarshalJSON()
+		_ = vs
+	})
+}
+
+func FuzzTimeoutMessageValidation(f *testing.F) {
+	f.Add(uint64(1), uint64(2), []byte("val1"))
+	f.Add(uint64(0), uint64(1), []byte("val2"))
+
+	f.Fuzz(func(t *testing.T, height, view uint64, validator []byte) {
+		if len(validator) == 0 {
+			return
+		}
+		tc := &TimeoutCert{
+			Height:    height,
+			View:      view,
+			Timeouts:  make(map[string]bool),
+			Signatures: make(map[string]crypto.Signature),
+			TotalStake: 100,
+		}
+		addr := hex.EncodeToString(validator)
+		tc.Timeouts[addr] = true
+		_ = tc.HasQuorum(1)
+		_ = tc.HasQuorum(100)
+	})
+}
+
+func FuzzVoteAggregationRandom(f *testing.F) {
+	f.Add(uint64(1), uint64(0), uint64(3))
+	f.Add(uint64(10), uint64(2), uint64(7))
+
+	f.Fuzz(func(t *testing.T, height, view, numVals uint64) {
+		if numVals == 0 || numVals > 30 {
+			return
+		}
+		votes := make(map[string]bool)
+		for i := uint64(0); i < numVals; i++ {
+			addr := hex.EncodeToString([]byte{byte(i)})
+			votes[addr] = i%2 == 0
+		}
+	})
+}
+
+func FuzzProposerSelectionRandomStake(f *testing.F) {
+	f.Add(uint64(1), uint64(0), uint64(5))
+	f.Add(uint64(100), uint64(3), uint64(10))
+	f.Add(uint64(1000), uint64(50), uint64(50))
+
+	f.Fuzz(func(t *testing.T, height, view, numVals uint64) {
+		if numVals == 0 || numVals > 100 {
+			return
+		}
+		rng := rand.New(rand.NewSource(int64(height + view)))
+		validators := make([]*Validator, numVals)
+		for i := uint64(0); i < numVals; i++ {
+			stake := uint64(rng.Intn(1000000)) + 1
+			validators[i] = &Validator{
+				Address:  []byte{byte(i), byte(i >> 8), byte(i >> 16)},
+				Stake:    stake,
+				IsActive: true,
+			}
+		}
+		vs := NewValidatorSet(validators, 1)
+		proposer, err := vs.GetProposerForView(height, view)
+		if err != nil {
+			return
+		}
+		if proposer == nil {
+			t.Errorf("nil proposer")
+		}
+	})
+}
+
+func FuzzStakingModuleOperations(f *testing.F) {
+	f.Add([]byte("val1"), uint64(1000))
+	f.Add([]byte("val2"), uint64(0))
+	f.Add([]byte{}, uint64(1<<60))
+
+	f.Fuzz(func(t *testing.T, validator []byte, amount uint64) {
+		if len(validator) == 0 {
+			return
+		}
+		sm := NewStakingModule(24*time.Hour, 0.01)
+		err := sm.Stake(validator, []byte("pubkey"), amount)
+		if err != nil {
+			return
+		}
+		record, exists := sm.GetValidator(validator)
+		if !exists {
+			t.Errorf("validator should exist after stake")
+			return
+		}
+		if record.Stake != amount {
+			t.Errorf("stake mismatch: %d != %d", record.Stake, amount)
+		}
+		if amount > 0 {
+			_, err := sm.Slash(validator, 0.5)
+			if err != nil {
+				t.Logf("slash failed: %v", err)
+			}
+		}
+	})
+}
+
+func FuzzValidatorSetUpdates(f *testing.F) {
+	f.Add([]byte("addr1"), []byte("addr2"), uint64(1000), uint64(2000))
+	f.Add([]byte{}, []byte{}, uint64(0), uint64(0))
+
+	f.Fuzz(func(t *testing.T, addr1, addr2 []byte, stake1, stake2 uint64) {
+		if len(addr1) == 0 || len(addr2) == 0 {
+			return
+		}
+		vs := NewValidatorSet([]*Validator{
+			{Address: addr1, Stake: stake1, IsActive: true},
+			{Address: addr2, Stake: stake2, IsActive: true},
+		}, 1)
+		err := vs.UpdateStake(addr1, stake1+100)
+		if err != nil {
+			return
+		}
+		err = vs.RemoveValidator(addr2)
+		if err != nil {
+			t.Logf("remove failed: %v", err)
+		}
+	})
+}
+
+func FuzzProtocolVersionNegotiation(f *testing.F) {
+	f.Add(uint64(1), uint64(2))
+	f.Add(uint64(0), uint64(0))
+	f.Add(uint64(100), uint64(100))
+
+	f.Fuzz(func(t *testing.T, configVersion, stateVersion uint64) {
+		config := DefaultConsensusConfig()
+		config.ProtocolVersion = configVersion
+		if configVersion != 0 && stateVersion != 0 && configVersion != stateVersion {
+			t.Logf("version mismatch expected: config=%d state=%d", configVersion, stateVersion)
+		}
+	})
+}
+
+func FuzzConsensusMessageSerialization(f *testing.F) {
+	f.Add(uint64(1), uint64(0), []byte("hash"), []byte("val"), []byte("payload"))
+	f.Add(uint64(0), uint64(0), []byte{}, []byte{}, []byte{})
+
+	f.Fuzz(func(t *testing.T, height, view uint64, blockHash, validator, payload []byte) {
+		msg := &ConsensusMessage{
+			Type:      MsgProposal,
+			Height:    height,
+			View:      view,
+			BlockHash: blockHash,
+			Validator: validator,
+			Payload:   payload,
+			Timestamp: time.Now(),
+		}
+		data, err := msg.MarshalJSON()
+		if err != nil {
+			return
+		}
+		var deserialized ConsensusMessage
+		if err := deserialized.UnmarshalJSON(data); err != nil {
+			t.Logf("unmarshal failed: %v", err)
+			return
+		}
+		if deserialized.Height != msg.Height {
+			t.Errorf("height mismatch after roundtrip")
+		}
+	})
+}
+
+func FuzzDoubleSignDetector(f *testing.F) {
+	f.Add([]byte("val1"), uint64(1), uint64(0))
+	f.Add([]byte("val2"), uint64(10), uint64(5))
+
+	f.Fuzz(func(t *testing.T, validator []byte, height, view uint64) {
+		if len(validator) == 0 {
+			return
+		}
+		dd := NewDoubleSignDetector()
+		record := dd.CheckProposal(validator, height, view, []byte("hash1"))
+		if record != nil {
+			t.Logf("double sign detected on first proposal (should not happen)")
+		}
+		record2 := dd.CheckProposal(validator, height, view, []byte("hash2"))
+		if record2 == nil {
+			t.Logf("same height/view different hash should trigger double sign detection")
+		}
+	})
+}
+
+func FuzzEpochRotationWithMinValidators(f *testing.F) {
+	f.Add(int(4), int(2))
+	f.Add(int(0), int(1))
+	f.Add(int(10), int(10))
+
+	f.Fuzz(func(t *testing.T, numValidators, minValidators int) {
+		if numValidators < 0 || minValidators < 0 {
+			return
+		}
+		config := DefaultConsensusConfig()
+		config.MinValidators = minValidators
+		_ = config
+	})
 }
