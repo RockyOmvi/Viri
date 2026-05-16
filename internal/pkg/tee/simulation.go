@@ -173,13 +173,13 @@ func VerifyAttestation(quote *AttestationQuote, expectedMeasurement [32]byte, pu
 
 type EncryptedMemory struct {
 	mu      sync.Mutex
-	data    map[string][]byte
+	data    map[string]*SealedData
 	enclave *Enclave
 }
 
 func NewEncryptedMemory(enclave *Enclave) *EncryptedMemory {
 	return &EncryptedMemory{
-		data:    make(map[string][]byte),
+		data:    make(map[string]*SealedData),
 		enclave: enclave,
 	}
 }
@@ -193,7 +193,7 @@ func (em *EncryptedMemory) Store(key string, value []byte) error {
 		return err
 	}
 
-	em.data[key] = sealed.EnclaveID[:]
+	em.data[key] = sealed
 	return nil
 }
 
@@ -201,13 +201,10 @@ func (em *EncryptedMemory) Load(key string) ([]byte, error) {
 	em.mu.Lock()
 	defer em.mu.Unlock()
 
-	_, ok := em.data[key]
+	sealed, ok := em.data[key]
 	if !ok {
 		return nil, fmt.Errorf("key not found")
 	}
 
-	val := em.data[key]
-	out := make([]byte, len(val))
-	copy(out, val)
-	return out, nil
+	return em.enclave.Unseal(sealed)
 }

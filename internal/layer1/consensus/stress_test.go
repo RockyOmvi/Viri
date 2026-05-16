@@ -279,9 +279,11 @@ func TestStressMessageThroughput(t *testing.T) {
 	}
 
 	totalMsgs := 0
+	mu.Lock()
 	for _, c := range msgCounts {
 		totalMsgs += c
 	}
+	mu.Unlock()
 
 	msgsPerSec := float64(totalMsgs) / elapsed.Seconds()
 	blocksPerSec := float64(bcs[0].Height()) / elapsed.Seconds()

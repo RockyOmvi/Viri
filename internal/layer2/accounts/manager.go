@@ -2,6 +2,7 @@ package accounts
 
 import (
 	"fmt"
+	"math/big"
 	"sync"
 )
 
@@ -16,7 +17,7 @@ const (
 type Account struct {
 	Address    []byte
 	Type       AccountType
-	Balance    uint64
+	Balance    *big.Int
 	Nonce      uint64
 	Threshold  uint8
 	Signers    [][]byte
@@ -47,7 +48,7 @@ func (am *AccountManager) CreateAccount(address []byte, accountType AccountType,
 	account := &Account{
 		Address: address,
 		Type:    accountType,
-		Balance: balance,
+		Balance: new(big.Int).SetUint64(balance),
 		Storage: make(map[string][]byte),
 	}
 
@@ -79,7 +80,8 @@ func (am *AccountManager) Transfer(from, to []byte, amount uint64) error {
 		return fmt.Errorf("sender account not found")
 	}
 
-	if fromAcc.Balance < amount {
+	amtBig := new(big.Int).SetUint64(amount)
+	if fromAcc.Balance.Cmp(amtBig) < 0 {
 		return fmt.Errorf("insufficient balance")
 	}
 
@@ -87,14 +89,14 @@ func (am *AccountManager) Transfer(from, to []byte, amount uint64) error {
 	if !exists {
 		toAcc = &Account{
 			Address: to,
-			Balance: 0,
+			Balance: new(big.Int),
 			Storage: make(map[string][]byte),
 		}
 		am.accounts[toKey] = toAcc
 	}
 
-	fromAcc.Balance -= amount
-	toAcc.Balance += amount
+	fromAcc.Balance.Sub(fromAcc.Balance, amtBig)
+	toAcc.Balance.Add(toAcc.Balance, amtBig)
 
 	return nil
 }
@@ -168,7 +170,7 @@ func (a *Account) Clone() *Account {
 	cloned := &Account{
 		Address:   append([]byte(nil), a.Address...),
 		Type:      a.Type,
-		Balance:   a.Balance,
+		Balance:   new(big.Int).Set(a.Balance),
 		Nonce:     a.Nonce,
 		Threshold: a.Threshold,
 		CodeHash:  append([]byte(nil), a.CodeHash...),

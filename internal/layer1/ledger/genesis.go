@@ -3,6 +3,7 @@ package ledger
 import (
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"time"
@@ -37,10 +38,9 @@ type rawValidator struct {
 	Name      string `json:"name,omitempty"`
 }
 
-func hexDecode(s string) []byte {
+func hexDecode(s string) ([]byte, error) {
 	s = strings.TrimPrefix(s, "0x")
-	b, _ := hex.DecodeString(s)
-	return b
+	return hex.DecodeString(s)
 }
 
 func LoadGenesis(path string) (*GenesisConfig, error) {
@@ -64,7 +64,11 @@ func LoadGenesis(path string) (*GenesisConfig, error) {
 	}
 
 	if raw.BlockTime != "" {
-		config.BlockTime, _ = time.ParseDuration(raw.BlockTime)
+		parsed, err := time.ParseDuration(raw.BlockTime)
+		if err != nil {
+			return nil, fmt.Errorf("invalid block_time %q: %w", raw.BlockTime, err)
+		}
+		config.BlockTime = parsed
 	}
 	if config.BlockTime == 0 {
 		config.BlockTime = time.Second
@@ -77,9 +81,17 @@ func LoadGenesis(path string) (*GenesisConfig, error) {
 	}
 
 	for _, rv := range raw.Validators {
+		addr, err := hexDecode(rv.Address)
+		if err != nil {
+			return nil, fmt.Errorf("invalid validator address %q: %w", rv.Address, err)
+		}
+		pubKey, err := hexDecode(rv.PublicKey)
+		if err != nil {
+			return nil, fmt.Errorf("invalid validator public_key %q: %w", rv.PublicKey, err)
+		}
 		config.InitialValidators = append(config.InitialValidators, &ValidatorInfo{
-			Address:   hexDecode(rv.Address),
-			PublicKey: hexDecode(rv.PublicKey),
+			Address:   addr,
+			PublicKey: pubKey,
 			Stake:     rv.Stake,
 			Name:      rv.Name,
 		})

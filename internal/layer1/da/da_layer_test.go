@@ -15,7 +15,7 @@ func TestSubmitAndGetBlob(t *testing.T) {
 		t.Fatalf("submit failed: %v", err)
 	}
 
-	if blob.Size != uint32(len(data)) {
+	if blob.Size != uint64(len(data)) {
 		t.Fatalf("unexpected size: %d", blob.Size)
 	}
 

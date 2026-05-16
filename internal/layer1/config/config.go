@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -46,6 +47,7 @@ type Config struct {
 	Node      NodeConfig      `json:"node"`
 	Consensus ConsensusConfig `json:"consensus"`
 	Storage   StorageConfig   `json:"storage"`
+	DA        DAConfig        `json:"da"`
 	Logging   LoggingConfig   `json:"logging"`
 	Readiness ReadinessConfig `json:"readiness"`
 }
@@ -94,9 +96,15 @@ type StorageConfig struct {
 	Backend          string `json:"backend"`
 	Path             string `json:"path"`
 	MaxStateSize     int64  `json:"max_state_size"`
+	MaxBlobSize      int64  `json:"max_blob_size"`
 	PruningEnabled   bool   `json:"pruning_enabled"`
 	PruningKeepRecent uint64 `json:"pruning_keep_recent"`
 	ArchiveMode      bool   `json:"archive_mode"`
+}
+
+type DAConfig struct {
+	MaxBlobSize int64 `json:"max_blob_size"`
+	MaxBlobs    int   `json:"max_blobs"`
 }
 
 type LoggingConfig struct {
@@ -150,9 +158,14 @@ func DefaultConfig() *Config {
 			Backend:           "leveldb",
 			Path:              filepath.Join(defaultDataDir(), "chaindata"),
 			MaxStateSize:      10 * 1024 * 1024 * 1024,
+			MaxBlobSize:       10 * 1024 * 1024,
 			PruningEnabled:    true,
 			PruningKeepRecent: 100_000,
 			ArchiveMode:       false,
+		},
+		DA: DAConfig{
+			MaxBlobSize: 10 * 1024 * 1024,
+			MaxBlobs:    100_000,
 		},
 		Logging: LoggingConfig{
 			Level:      "info",
@@ -255,9 +268,11 @@ func LoadConfigOrDefault(path string) (*Config, error) {
 
 func (c *Config) ApplyEnvOverrides() {
 	if v := os.Getenv("VIRI_CHAIN_ID"); v != "" {
-		var chainID uint64
-		if _, err := fmt.Sscanf(v, "%d", &chainID); err == nil && chainID > 0 {
-			c.Chain.ChainID = chainID
+		n, err := strconv.ParseUint(v, 10, 64)
+		if err == nil && n > 0 {
+			c.Chain.ChainID = n
+		} else {
+			fmt.Fprintf(os.Stderr, "config: invalid VIRI_CHAIN_ID %q: %v\n", v, err)
 		}
 	}
 	if v := os.Getenv("VIRI_NETWORK_NAME"); v != "" {
@@ -270,47 +285,47 @@ func (c *Config) ApplyEnvOverrides() {
 		c.Node.DataDir = v
 	}
 	if v := os.Getenv("VIRI_RPC_PORT"); v != "" {
-		var p int
-		if _, err := fmt.Sscanf(v, "%d", &p); err == nil && p > 0 {
-			c.Node.RPCPort = p
+		n, err := strconv.Atoi(v)
+		if err == nil && n > 0 && n <= 65535 {
+			c.Node.RPCPort = n
+		} else {
+			fmt.Fprintf(os.Stderr, "config: invalid VIRI_RPC_PORT %q: %v\n", v, err)
 		}
 	}
 	if v := os.Getenv("VIRI_API_PORT"); v != "" {
-		var p int
-		if _, err := fmt.Sscanf(v, "%d", &p); err == nil && p > 0 {
-			c.Node.APIPort = p
+		n, err := strconv.Atoi(v)
+		if err == nil && n > 0 && n <= 65535 {
+			c.Node.APIPort = n
+		} else {
+			fmt.Fprintf(os.Stderr, "config: invalid VIRI_API_PORT %q: %v\n", v, err)
 		}
 	}
 	if v := os.Getenv("VIRI_LOG_LEVEL"); v != "" {
 		c.Logging.Level = v
 	}
 	if v := os.Getenv("VIRI_READINESS_MIN_PEERS"); v != "" {
-		var p int
-		if _, err := fmt.Sscanf(v, "%d", &p); err == nil && p >= 0 {
-			c.Readiness.MinPeers = p
+		n, err := strconv.Atoi(v)
+		if err == nil && n >= 0 {
+			c.Readiness.MinPeers = n
+		} else {
+			fmt.Fprintf(os.Stderr, "config: invalid VIRI_READINESS_MIN_PEERS %q: %v\n", v, err)
 		}
 	}
 	if v := os.Getenv("VIRI_READINESS_MIN_HEIGHT"); v != "" {
-		var h uint64
-		if _, err := fmt.Sscanf(v, "%d", &h); err == nil {
-			c.Readiness.MinBlockHeight = h
+		n, err := strconv.ParseUint(v, 10, 64)
+		if err == nil {
+			c.Readiness.MinBlockHeight = n
+		} else {
+			fmt.Fprintf(os.Stderr, "config: invalid VIRI_READINESS_MIN_HEIGHT %q: %v\n", v, err)
 		}
-	}
-	if v := os.Getenv("VIRI_READINESS_FORCE"); v != "" {
-		c.Readiness.ForceReady = v == "1" || v == "true"
-	}
-	if v := os.Getenv("VIRI_TLS_CERT"); v != "" {
-		c.Node.TLSCertPath = v
-	}
-	if v := os.Getenv("VIRI_TLS_KEY"); v != "" {
-		c.Node.TLSKeyPath = v
-	}
-	if v := os.Getenv("VIRI_API_KEY_HASH"); v != "" {
-		c.Node.APIKeyHash = v
 	}
 }
 
 func (c *Config) Save(path string) error {
+	if err := c.Validate(); err != nil {
+		return fmt.Errorf("cannot save invalid config: %w", err)
+	}
+
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return fmt.Errorf("failed to create config directory: %w", err)
 	}
@@ -320,7 +335,7 @@ func (c *Config) Save(path string) error {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
 
-	return os.WriteFile(path, data, 0644)
+	return os.WriteFile(path, data, 0600)
 }
 
 func (c *Config) Validate() error {
@@ -344,7 +359,21 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("max_peers must be greater than 0")
 	}
 
-	// Validator key may be provided via keystore/env; don't hard-require here.
+	if _, _, err := net.SplitHostPort(c.Network.ListenAddr); err != nil {
+		return fmt.Errorf("invalid listen_addr %q: %v", c.Network.ListenAddr, err)
+	}
+
+	if c.Node.RPCPort <= 0 || c.Node.RPCPort > 65535 {
+		return fmt.Errorf("rpc_port must be between 1 and 65535, got %d", c.Node.RPCPort)
+	}
+
+	if c.Node.APIPort <= 0 || c.Node.APIPort > 65535 {
+		return fmt.Errorf("api_port must be between 1 and 65535, got %d", c.Node.APIPort)
+	}
+
+	if c.Consensus.FinalityThreshold <= 0 {
+		return fmt.Errorf("finality_threshold must be positive")
+	}
 
 	if c.Consensus.MinStake == 0 {
 		return fmt.Errorf("min_stake must be greater than 0")
@@ -354,9 +383,18 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("max_validators must be greater than 0")
 	}
 
-	validLevels := map[string]bool{"debug": true, "info": true, "warn": true, "error": true}
+	validLevels := map[string]bool{"debug": true, "info": true, "warn": true, "error": true, "fatal": true}
 	if !validLevels[c.Logging.Level] {
 		return fmt.Errorf("invalid log level: %s", c.Logging.Level)
+	}
+
+	if c.Logging.Format != "" && c.Logging.Format != "text" && c.Logging.Format != "json" {
+		return fmt.Errorf("invalid log format %q, must be 'text' or 'json'", c.Logging.Format)
+	}
+
+	validBackends := map[string]bool{"leveldb": true, "rocksdb": true, "badger": true}
+	if !validBackends[c.Storage.Backend] {
+		return fmt.Errorf("unknown storage backend %q", c.Storage.Backend)
 	}
 
 	return nil
@@ -384,11 +422,32 @@ func (c *Config) applyDefaults() {
 	if c.Storage.Path == "" {
 		c.Storage.Path = filepath.Join(c.Node.DataDir, "chaindata")
 	}
+	if c.Storage.Backend == "" {
+		c.Storage.Backend = "leveldb"
+	}
 	if c.Logging.Level == "" {
 		c.Logging.Level = "info"
 	}
+	if c.Logging.Format == "" {
+		c.Logging.Format = "text"
+	}
 	if c.Consensus.EpochLength == 0 {
 		c.Consensus.EpochLength = 1000
+	}
+	if c.Consensus.FinalityThreshold == 0 {
+		c.Consensus.FinalityThreshold = Duration(2 * time.Second)
+	}
+	if c.Consensus.MinStake == 0 {
+		c.Consensus.MinStake = 10_000_000
+	}
+	if c.Consensus.MaxValidators == 0 {
+		c.Consensus.MaxValidators = 100
+	}
+	if c.Node.RPCPort == 0 {
+		c.Node.RPCPort = 8545
+	}
+	if c.Node.APIPort == 0 {
+		c.Node.APIPort = 8546
 	}
 }
 

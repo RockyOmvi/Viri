@@ -232,20 +232,13 @@ func NewShieldedTransferCircuit() *Circuit {
 }
 
 func NewRangeProofCircuit(bits int) *Circuit {
+	if bits < 1 {
+		bits = 1
+	}
 	circuit := NewCircuit(fmt.Sprintf("range_%d", bits), 1, bits, FieldTypePrime)
 
 	for i := 0; i < bits; i++ {
 		circuit.AddBoolConstraint(1 + i)
-	}
-
-	circuit.AddEqualConstraint(0, 1)
-
-	powerOfTwo := big.NewInt(1)
-	for i := 1; i < bits; i++ {
-		nextPower := new(big.Int).Lsh(powerOfTwo, 1)
-		witnessIdx := 1 + i
-		circuit.AddMulConstraint(witnessIdx, witnessIdx, witnessIdx)
-		powerOfTwo = nextPower
 	}
 
 	maxVal := new(big.Int).Lsh(big.NewInt(1), uint(bits))

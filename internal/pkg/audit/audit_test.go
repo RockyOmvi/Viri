@@ -416,7 +416,7 @@ func TestBatchFlush(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		logger.LogProposal(uint64(i+1), 0, "p", "h")
 	}
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(200 * time.Millisecond)
 
 	entry, err := logger.GetEntry(1)
 	if err != nil {

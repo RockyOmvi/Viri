@@ -296,7 +296,7 @@ func TestE2E_GnarkZKProof(t *testing.T) {
 
 func TestE2E_AccountAbstraction(t *testing.T) {
 	mgr := accounts.NewAccountManager()
-	ep := accounts.NewEntryPoint(mgr, 1337)
+	ep := accounts.NewEntryPoint(mgr, 1337, nil)
 
 	mgr.CreateAccount([]byte("faucet-aa"), accounts.AccountTypeNormal, 10000000)
 
@@ -359,7 +359,7 @@ func TestE2E_ShieldedPool(t *testing.T) {
 	}
 
 	pool := privacy.NewShieldedPool()
-	note, err := pool.CreateNote(1000, []byte("sender"), []byte("randomness"))
+	note, err := pool.CreateNote(1000, []byte("sender"), []byte("randomness_16_bytes"))
 	if err != nil {
 		t.Fatalf("create note: %v", err)
 	}
@@ -373,7 +373,7 @@ func TestE2E_ShieldedPool(t *testing.T) {
 		t.Fatalf("expected total shielded 1000, got %d", pool.TotalShielded())
 	}
 
-	if err := pool.SpendNote(note.Nullifier); err != nil {
+	if _, err := pool.SpendNote(note.Nullifier); err != nil {
 		t.Fatalf("spend note: %v", err)
 	}
 	if pool.HasNullifier(note.Nullifier) != true {

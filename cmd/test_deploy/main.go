@@ -60,7 +60,7 @@ func main() {
 
 	// 2. Create Deploy Transaction
 	code, _ := hex.DecodeString(contractBytecode)
-	tx, err := ledger.NewTransactionFromKey(nonce, nil, 0, 500000, 10, code, privKey)
+	tx, err := ledger.NewTransactionFromKey(nonce, nil, 0, 500000, 10, code, uint64(1), privKey)
 	if err != nil {
 		panic(err)
 	}

@@ -249,8 +249,6 @@ func TestZKShieldedTransaction(t *testing.T) {
 	pk := zk.GenerateProvingKey(circuit)
 	vk := zk.GenerateVerifyingKey(pk, circuit)
 
-	pool := zk.NewShieldedPool(circuit, vk)
-
 	prover := zk.NewProver(pk, circuit)
 	assignment := &zk.Assignment{
 		Inputs:  []*big.Int{big.NewInt(3), big.NewInt(5), big.NewInt(10)},
@@ -260,23 +258,6 @@ func TestZKShieldedTransaction(t *testing.T) {
 	proof, err := prover.Prove(assignment)
 	if err != nil {
 		t.Fatalf("failed to generate proof: %v", err)
-	}
-
-	tx, err := pool.ProcessDeposit(1000, []byte("sender1"), proof)
-	if err != nil {
-		t.Fatalf("failed to process deposit: %v", err)
-	}
-
-	if tx.Type != zk.ShieldedTxTypeDeposit {
-		t.Errorf("expected deposit type, got %v", tx.Type)
-	}
-
-	if pool.GetCommitmentCount() != 1 {
-		t.Errorf("expected 1 commitment, got %d", pool.GetCommitmentCount())
-	}
-
-	if pool.GetProofCount() != 1 {
-		t.Errorf("expected 1 proof, got %d", pool.GetProofCount())
 	}
 
 	verifier := zk.NewVerifier(vk, circuit)

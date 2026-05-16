@@ -3,6 +3,7 @@ package state
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"sort"
@@ -16,16 +17,20 @@ type MerkleTrie struct {
 }
 
 type TrieNode struct {
-	Key      []byte
-	Value    []byte
-	Children map[string][]byte
-	IsLeaf   bool
+	Key       []byte
+	Value     []byte
+	LeftHash  []byte
+	RightHash []byte
+	IsLeaf    bool
+}
+
+type entry struct {
+	key   []byte
+	value []byte
 }
 
 func NewMerkleTrie(db KVStore) *MerkleTrie {
-	return &MerkleTrie{
-		db: db,
-	}
+	return &MerkleTrie{db: db}
 }
 
 func (mt *MerkleTrie) Update(key, value []byte) error {
@@ -33,24 +38,23 @@ func (mt *MerkleTrie) Update(key, value []byte) error {
 	defer mt.mu.Unlock()
 
 	if len(value) == 0 {
-		return mt.delete(key)
+		return mt.deleteLocked(key)
 	}
 
-	return mt.insert(key, value)
+	return mt.insertLocked(key, value)
 }
 
 func (mt *MerkleTrie) Get(key []byte) ([]byte, error) {
 	mt.mu.RLock()
 	defer mt.mu.RUnlock()
 
-	return mt.lookup(key)
+	return mt.db.Get(append([]byte("entry:"), key...))
 }
 
 func (mt *MerkleTrie) Delete(key []byte) error {
 	mt.mu.Lock()
 	defer mt.mu.Unlock()
-
-	return mt.delete(key)
+	return mt.deleteLocked(key)
 }
 
 func (mt *MerkleTrie) Root() []byte {
@@ -72,72 +76,149 @@ func (mt *MerkleTrie) Prove(key []byte) ([][]byte, error) {
 }
 
 func (mt *MerkleTrie) VerifyProof(root []byte, key []byte, value []byte, proof [][]byte) bool {
+	if len(proof) == 0 {
+		computed := hashLeaf(key, value)
+		return bytes.Equal(computed, root)
+	}
+
+	meta := proof[len(proof)-1]
+	if len(meta) < 8 {
+		return false
+	}
+	leafIdx := int(binary.BigEndian.Uint32(meta[0:4]))
+	leafCount := int(binary.BigEndian.Uint32(meta[4:8]))
+	siblings := proof[:len(proof)-1]
+
+	if leafIdx < 0 || leafIdx >= leafCount || leafCount == 0 {
+		return false
+	}
+
 	computed := hashLeaf(key, value)
+	idx := leafIdx
+	count := leafCount
 
-	for i := len(proof) - 1; i >= 0; i-- {
-		layerHash := proof[i]
-		if bytes.Equal(layerHash, computed) {
-			continue
+	for count > 1 {
+		if idx%2 == 0 {
+			if idx+1 < count {
+				if len(siblings) == 0 {
+					return false
+				}
+				computed = hashNodes(computed, siblings[0])
+				siblings = siblings[1:]
+			} else {
+				computed = hashNodes(computed, computed)
+			}
+		} else {
+			if len(siblings) == 0 {
+				return false
+			}
+			computed = hashNodes(siblings[0], computed)
+			siblings = siblings[1:]
 		}
-
-		left := hashLeaf(nil, nil)
-		if len(proof) > i+1 {
-			left = proof[i+1]
-		}
-
-		computed = hashNodes(left, computed)
+		idx /= 2
+		count = (count + 1) / 2
 	}
 
 	return bytes.Equal(computed, root)
 }
 
-func (mt *MerkleTrie) insert(key, value []byte) error {
-	node := &TrieNode{
-		Key:      key,
-		Value:    value,
-		Children: make(map[string][]byte),
-		IsLeaf:   true,
+func (mt *MerkleTrie) insertLocked(key, value []byte) error {
+	if err := mt.db.Put(append([]byte("entry:"), key...), value); err != nil {
+		return fmt.Errorf("failed to store entry: %w", err)
 	}
-
-	nodeHash := hashNode(node)
-
-	if err := mt.db.Put(append([]byte("trie:"), nodeHash...), serializeNode(node)); err != nil {
-		return fmt.Errorf("failed to store trie node: %w", err)
-	}
-
-	mt.root = nodeHash
-	return nil
+	return mt.rebuild()
 }
 
-func (mt *MerkleTrie) lookup(key []byte) ([]byte, error) {
-	if mt.root == nil {
-		return nil, fmt.Errorf("trie not initialized")
+func (mt *MerkleTrie) deleteLocked(key []byte) error {
+	if err := mt.db.Delete(append([]byte("entry:"), key...)); err != nil {
+		return err
 	}
-
-	data, err := mt.db.Get(append([]byte("trie:"), mt.root...))
-	if err != nil {
-		return nil, fmt.Errorf("root node not found")
-	}
-
-	node, err := deserializeNode(data)
-	if err != nil {
-		return nil, fmt.Errorf("failed to deserialize root node: %w", err)
-	}
-
-	if node.IsLeaf && bytes.Equal(node.Key, key) {
-		return node.Value, nil
-	}
-
-	return nil, fmt.Errorf("key not found")
+	return mt.rebuild()
 }
 
-func (mt *MerkleTrie) delete(key []byte) error {
-	if mt.root == nil {
+func (mt *MerkleTrie) rebuild() error {
+	entries, err := mt.loadEntries()
+	if err != nil {
+		return err
+	}
+
+	if len(entries) == 0 {
+		mt.root = nil
 		return nil
 	}
 
-	mt.root = nil
+	sort.Slice(entries, func(i, j int) bool {
+		return bytes.Compare(entries[i].key, entries[j].key) < 0
+	})
+
+	current := make([][]byte, len(entries))
+	for i, e := range entries {
+		node := &TrieNode{
+			Key:    e.key,
+			Value:  e.value,
+			IsLeaf: true,
+		}
+		h := hashNode(node)
+		data := serializeNode(node)
+		if err := mt.db.Put(append([]byte("trie:"), h...), data); err != nil {
+			return fmt.Errorf("failed to store leaf: %w", err)
+		}
+		current[i] = h
+	}
+
+	for len(current) > 1 {
+		var next [][]byte
+		for i := 0; i < len(current); i += 2 {
+			left := current[i]
+			right := current[i]
+			if i+1 < len(current) {
+				right = current[i+1]
+			}
+			h := hashNodes(left, right)
+			node := &TrieNode{
+				LeftHash:  left,
+				RightHash: right,
+				IsLeaf:    false,
+			}
+			data := serializeNode(node)
+			if err := mt.db.Put(append([]byte("trie:"), h...), data); err != nil {
+				return fmt.Errorf("failed to store branch: %w", err)
+			}
+			next = append(next, h)
+		}
+		current = next
+	}
+
+	mt.root = current[0]
 	return nil
+}
+
+func (mt *MerkleTrie) loadEntries() ([]entry, error) {
+	iterStore, ok := mt.db.(IterableKVStore)
+	if !ok {
+		return nil, fmt.Errorf("store does not support iteration")
+	}
+
+	iter, err := iterStore.Iterator([]byte("entry:"))
+	if err != nil {
+		return nil, err
+	}
+	defer iter.Close()
+
+	var entries []entry
+	for iter.Next() {
+		key := iter.Key()
+		val := iter.Value()
+		if len(key) <= 6 {
+			continue
+		}
+		ek := make([]byte, len(key)-6)
+		copy(ek, key[6:])
+		ev := make([]byte, len(val))
+		copy(ev, val)
+		entries = append(entries, entry{key: ek, value: ev})
+	}
+	return entries, iter.Error()
 }
 
 func (mt *MerkleTrie) getProof(key []byte) ([][]byte, error) {
@@ -145,30 +226,71 @@ func (mt *MerkleTrie) getProof(key []byte) ([][]byte, error) {
 		return nil, fmt.Errorf("trie not initialized")
 	}
 
-	return [][]byte{mt.root}, nil
+	entries, err := mt.loadEntries()
+	if err != nil {
+		return nil, err
+	}
+
+	sort.Slice(entries, func(i, j int) bool {
+		return bytes.Compare(entries[i].key, entries[j].key) < 0
+	})
+
+	leafIdx := -1
+	for i, e := range entries {
+		if bytes.Equal(e.key, key) {
+			leafIdx = i
+			break
+		}
+	}
+	if leafIdx == -1 {
+		return nil, fmt.Errorf("key not found")
+	}
+
+	hashes := make([][]byte, len(entries))
+	for i, e := range entries {
+		hashes[i] = hashLeaf(e.key, e.value)
+	}
+
+	var proof [][]byte
+	idx := leafIdx
+	current := hashes
+
+	for len(current) > 1 {
+		var next [][]byte
+		for i := 0; i < len(current); i += 2 {
+			left := current[i]
+			right := current[i]
+			if i+1 < len(current) {
+				right = current[i+1]
+			}
+
+			if i == idx {
+				if i+1 < len(current) {
+					proof = append(proof, right)
+				}
+			} else if i+1 == idx {
+				proof = append(proof, left)
+			}
+
+			next = append(next, hashNodes(left, right))
+		}
+		idx /= 2
+		current = next
+	}
+
+	meta := make([]byte, 8)
+	binary.BigEndian.PutUint32(meta[0:4], uint32(leafIdx))
+	binary.BigEndian.PutUint32(meta[4:8], uint32(len(entries)))
+	proof = append(proof, meta)
+
+	return proof, nil
 }
 
 func hashNode(node *TrieNode) []byte {
-	h := sha256.New()
-	h.Write(node.Key)
-	h.Write(node.Value)
-
-	keys := make([]string, 0, len(node.Children))
-	for k := range node.Children {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	for _, k := range keys {
-		h.Write([]byte(k))
-		h.Write(node.Children[k])
-	}
-
 	if node.IsLeaf {
-		h.Write([]byte{0x01})
+		return hashLeaf(node.Key, node.Value)
 	}
-
-	return h.Sum(nil)
+	return hashNodes(node.LeftHash, node.RightHash)
 }
 
 func hashLeaf(key, value []byte) []byte {
@@ -194,79 +316,77 @@ func hashEmptyTrie() []byte {
 }
 
 func serializeNode(node *TrieNode) []byte {
-	data := []byte{}
-
-	data = append(data, byte(len(node.Key)))
-	data = append(data, node.Key...)
-
-	data = append(data, byte(len(node.Value)))
-	data = append(data, node.Value...)
-
 	if node.IsLeaf {
-		data = append(data, 0x01)
-	} else {
-		data = append(data, 0x00)
+		data := []byte{0x01}
+		kl := make([]byte, 4)
+		binary.BigEndian.PutUint32(kl, uint32(len(node.Key)))
+		data = append(data, kl...)
+		data = append(data, node.Key...)
+		vl := make([]byte, 4)
+		binary.BigEndian.PutUint32(vl, uint32(len(node.Value)))
+		data = append(data, vl...)
+		data = append(data, node.Value...)
+		return data
 	}
 
-	data = append(data, byte(len(node.Children)))
-	for k, v := range node.Children {
-		data = append(data, []byte(k)...)
-		data = append(data, ':')
-		data = append(data, v...)
-		data = append(data, ';')
-	}
-
+	data := []byte{0x00}
+	data = append(data, node.LeftHash...)
+	data = append(data, node.RightHash...)
 	return data
 }
 
 func deserializeNode(data []byte) (*TrieNode, error) {
-	if len(data) == 0 {
+	if len(data) < 1 {
 		return nil, fmt.Errorf("empty node data")
 	}
 
-	pos := 0
-	keyLen := int(data[pos])
-	pos++
+	isLeaf := data[0] == 0x01
+	pos := 1
 
-	key := data[pos : pos+keyLen]
-	pos += keyLen
-
-	valLen := int(data[pos])
-	pos++
-
-	value := data[pos : pos+valLen]
-	pos += valLen
-
-	isLeaf := data[pos] == 0x01
-	pos++
-
-	childrenCount := int(data[pos])
-	pos++
-
-	children := make(map[string][]byte)
-	for i := 0; i < childrenCount; i++ {
-		colonIdx := bytes.IndexByte(data[pos:], ':')
-		if colonIdx == -1 {
-			break
+	if isLeaf {
+		if pos+4 > len(data) {
+			return nil, fmt.Errorf("truncated key length")
 		}
-		childKey := string(data[pos : pos+colonIdx])
-		pos += colonIdx + 1
-
-		semiIdx := bytes.IndexByte(data[pos:], ';')
-		if semiIdx == -1 {
-			break
+		keyLen := int(binary.BigEndian.Uint32(data[pos:]))
+		pos += 4
+		if uint32(pos)+uint32(keyLen) > uint32(len(data)) {
+			return nil, fmt.Errorf("key length %d exceeds data", keyLen)
 		}
-		childHash := data[pos : pos+semiIdx]
-		pos += semiIdx + 1
+		key := make([]byte, keyLen)
+		copy(key, data[pos:pos+keyLen])
+		pos += keyLen
 
-		children[childKey] = childHash
+		if pos+4 > len(data) {
+			return nil, fmt.Errorf("truncated value length")
+		}
+		valLen := int(binary.BigEndian.Uint32(data[pos:]))
+		pos += 4
+		if uint32(pos)+uint32(valLen) > uint32(len(data)) {
+			return nil, fmt.Errorf("value length %d exceeds data", valLen)
+		}
+		value := make([]byte, valLen)
+		copy(value, data[pos:pos+valLen])
+
+		return &TrieNode{
+			Key:    key,
+			Value:  value,
+			IsLeaf: true,
+		}, nil
 	}
 
+	if pos+64 > len(data) {
+		return nil, fmt.Errorf("truncated branch node: need 64 bytes for children, have %d", len(data)-pos)
+	}
+
+	left := make([]byte, 32)
+	copy(left, data[pos:pos+32])
+	right := make([]byte, 32)
+	copy(right, data[pos+32:pos+64])
+
 	return &TrieNode{
-		Key:      key,
-		Value:    value,
-		Children: children,
-		IsLeaf:   isLeaf,
+		LeftHash:  left,
+		RightHash: right,
+		IsLeaf:    false,
 	}, nil
 }
 
@@ -276,10 +396,15 @@ func (mt *MerkleTrie) RootHex() string {
 
 func (mt *MerkleTrie) Size() int {
 	mt.mu.RLock()
-	defer mt.mu.RUnlock()
-
 	if mt.root == nil {
+		mt.mu.RUnlock()
 		return 0
 	}
-	return 1
+	mt.mu.RUnlock()
+
+	entries, err := mt.loadEntries()
+	if err != nil {
+		return 0
+	}
+	return len(entries)
 }

@@ -4,7 +4,7 @@
 [![Go](https://img.shields.io/badge/Go-1.22+-00ADD8?logo=go)](https://go.dev)
 [![License](https://img.shields.io/badge/license-MIT-brightgreen)](LICENSE)
 [![Tests](https://img.shields.io/badge/tests-43_packages_·_0_failures-brightgreen)](#test-results)
-[![Testnet](https://img.shields.io/badge/testnet-live-blue)](#public-testnet)
+[![Testnet](https://img.shields.io/badge/testnet-in_development-yellow)](#public-testnet)
 
 **A production-grade 3-layer modular blockchain built in Go.**
 
@@ -93,7 +93,7 @@ Binaries land in `./build/`:
 ```bash
 ./build/virid \
   --validator \
-  --chain-id 1337 \
+  --chain-id 2 \
   --data-dir ./data \
   --rpc-port 8545
 ```
@@ -133,10 +133,11 @@ You will see live HotStuff BFT consensus messages between validators.
 
 | Parameter | Value |
 |---|---|
-| Chain ID | `viri-testnet-1` |
-| RPC endpoint | `https://rpc.testnet.viri.network` |
-| Explorer | `https://explorer.testnet.viri.network` |
-| Faucet | `https://faucet.testnet.viri.network` |
+| Chain ID | `2` |
+| Block time | 1 second |
+| RPC endpoint | `https://rpc.testnet.viri.me` |
+| Explorer | `https://explorer.testnet.viri.me` |
+| Faucet | `https://faucet.testnet.viri.me` |
 
 Connect MetaMask or any EVM-compatible wallet to the RPC endpoint and start building immediately.
 
@@ -149,7 +150,7 @@ Connect MetaMask or any EVM-compatible wallet to the RPC endpoint and start buil
 | Package | What it does |
 |---|---|
 | `consensus` | HotStuff BFT — four-phase pipelined (Prepare → PreCommit → Commit → Decide) with leader rotation, view change on timeout, and liveness detection |
-| `crypto` | ECDSA P-256, SHA-256, BIP39 mnemonics, PBKDF2 key derivation, AES-256 encrypted keystore |
+| `crypto` | ECDSA secp256k1, SHA-256, BIP39 mnemonics, PBKDF2 key derivation, AES-256 encrypted keystore |
 | `ledger` | Block structure, transaction types, genesis configuration, EIP-1559 fee market, block rewards, serialization |
 | `p2p` | libp2p networking, peer manager with reputation scoring, message authentication, rate limiter, duplicate detection |
 | `state` | Merkle-Patricia Trie with deterministic root hashing, BadgerDB persistence, account state management |
@@ -230,7 +231,7 @@ ok  tests/fuzz                   0.37s   10 fuzz harnesses
 | State sync (late joiner) | Late validator catches up cleanly |
 | 20-validator convergence | Min/max spread of 1 block |
 | 100-validator supermajority | **2,015 ops/sec** |
-| Message throughput | **19,833 msgs/sec · 130 blocks/sec** |
+| Message throughput | **4,958 msgs/sec · 130 blocks/sec** |
 
 ### Fuzz Tests
 

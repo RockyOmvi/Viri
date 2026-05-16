@@ -2,6 +2,7 @@ package benchmarks
 
 import (
 	"math/big"
+	"sync"
 	"testing"
 	"time"
 
@@ -22,7 +23,7 @@ func BenchmarkBlockchainAddBlock(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		tx, _ := ledger.NewTransactionFromKey(uint64(i), []byte{0x02}, 100, 100000, 1, nil, key)
+		tx, _ := ledger.NewTransactionFromKey(uint64(i), []byte{0x02}, 100, 100000, 1, nil, uint64(1), key)
 		blockchain.TxPool().Add(tx)
 
 		block, _ := ledger.NewBlock(uint64(i+1), blockchain.TipHash(), blockchain.TxPool().GetPending(), key.PubKey().Address(), key)
@@ -36,7 +37,7 @@ func BenchmarkTransactionPool(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		tx, _ := ledger.NewTransactionFromKey(uint64(i), []byte{0x02}, 100, 100000, 1, nil, key)
+		tx, _ := ledger.NewTransactionFromKey(uint64(i), []byte{0x02}, 100, 100000, 1, nil, uint64(1), key)
 		pool.Add(tx)
 	}
 }
@@ -130,6 +131,98 @@ func BenchmarkMerkleTree(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		crypto.NewMerkleTree(leaves)
+	}
+}
+
+// BenchmarkConcurrentTransactionSubmission measures throughput under concurrent load.
+func BenchmarkConcurrentTransactionSubmission(b *testing.B) {
+	pool := ledger.NewTxPool(&ledger.TxPoolConfig{
+		MaxTransactions: 100_000,
+		MaxGas:          1_000_000_000,
+		MinGasPrice:     1,
+		MaxAccountTxs:   1000,
+	}, nil)
+
+	keys := make([]*crypto.PrivateKey, 32)
+	for i := range keys {
+		keys[i], _ = crypto.GenerateKey()
+	}
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		keyIdx := 0
+		nonce := uint64(0)
+		for pb.Next() {
+			key := keys[keyIdx%len(keys)]
+			keyIdx++
+			tx, err := ledger.NewTransactionFromKey(nonce, []byte{0x02}, 100, 100000, 1, nil, uint64(1), key)
+			if err != nil {
+				b.Fatal(err)
+			}
+			pool.Add(tx)
+			nonce++
+		}
+	})
+}
+
+// BenchmarkMempoolFillEvict measures mempool behavior when full (eviction pressure).
+func BenchmarkMempoolFillEvict(b *testing.B) {
+	config := &ledger.TxPoolConfig{
+		MaxTransactions: 1000,
+		MaxGas:          1_000_000_000,
+		MinGasPrice:     1,
+		MaxAccountTxs:   100,
+	}
+	pool := ledger.NewTxPool(config, nil)
+	key, _ := crypto.GenerateKey()
+
+	// Fill pool to capacity
+	for i := 0; i < config.MaxTransactions; i++ {
+		tx, _ := ledger.NewTransactionFromKey(uint64(i), []byte{0x02}, 100, 100000, 1, nil, uint64(1), key)
+		pool.Add(tx)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		tx, _ := ledger.NewTransactionFromKey(uint64(config.MaxTransactions+i), []byte{0x02}, 100, 100000, 99999, nil, uint64(1), key)
+		pool.Add(tx)
+	}
+}
+
+// BenchmarkBlockProductionConcurrent measures block production throughput
+// with concurrent transaction submission.
+func BenchmarkBlockProductionConcurrent(b *testing.B) {
+	db := state.NewMemoryStore()
+	genesis := ledger.DefaultGenesis()
+	blockchain, _ := ledger.NewPersistentBlockchain(genesis, db)
+	key, _ := crypto.GenerateKey()
+
+	// Pre-generate keys for concurrent submitters
+	submitterCount := 16
+	keys := make([]*crypto.PrivateKey, submitterCount)
+	for i := range keys {
+		keys[i], _ = crypto.GenerateKey()
+	}
+
+	var mu sync.Mutex
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		var wg sync.WaitGroup
+		for j := 0; j < submitterCount; j++ {
+			wg.Add(1)
+			go func(idx int, nonceOffset int) {
+				defer wg.Done()
+				k := keys[idx]
+				tx, _ := ledger.NewTransactionFromKey(uint64(nonceOffset+idx), []byte{0x02}, 100, 100000, 1, nil, uint64(1), k)
+				blockchain.TxPool().Add(tx)
+			}(j, i*submitterCount)
+		}
+		wg.Wait()
+
+		mu.Lock()
+		block, _ := ledger.NewBlock(uint64(i+1), blockchain.TipHash(), blockchain.TxPool().GetPending(), key.PubKey().Address(), key)
+		blockchain.AddBlock(block)
+		mu.Unlock()
 	}
 }
 

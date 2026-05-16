@@ -34,7 +34,7 @@ func (b *BadgerStore) Get(key []byte) ([]byte, error) {
 		return err
 	})
 	if err != nil {
-		return nil, fmt.Errorf("key not found: %w", err)
+		return nil, fmt.Errorf("key not found: %w", ErrKeyNotFound)
 	}
 	return val, nil
 }
@@ -98,17 +98,23 @@ type BadgerBatch struct {
 }
 
 func (b *BadgerBatch) Put(key []byte, value []byte) error {
-	b.ops = append(b.ops, batchOp{key: key, value: value})
+	k := make([]byte, len(key))
+	copy(k, key)
+	v := make([]byte, len(value))
+	copy(v, value)
+	b.ops = append(b.ops, batchOp{key: k, value: v})
 	return nil
 }
 
 func (b *BadgerBatch) Delete(key []byte) error {
-	b.ops = append(b.ops, batchOp{key: key, delete: true})
+	k := make([]byte, len(key))
+	copy(k, key)
+	b.ops = append(b.ops, batchOp{key: k, delete: true})
 	return nil
 }
 
 func (b *BadgerBatch) Write() error {
-	return b.db.Update(func(txn *badger.Txn) error {
+	err := b.db.Update(func(txn *badger.Txn) error {
 		for _, op := range b.ops {
 			if op.delete {
 				if err := txn.Delete(op.key); err != nil {
@@ -120,9 +126,10 @@ func (b *BadgerBatch) Write() error {
 				}
 			}
 		}
-		b.ops = b.ops[:0]
 		return nil
 	})
+	b.ops = b.ops[:0]
+	return err
 }
 
 func (b *BadgerBatch) Reset() {

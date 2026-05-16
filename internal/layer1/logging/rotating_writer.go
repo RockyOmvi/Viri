@@ -21,6 +21,9 @@ type RotatingFileWriter struct {
 }
 
 func NewRotatingFileWriter(dir, basename string, maxSizeMB int, maxBackups int) (*RotatingFileWriter, error) {
+	if maxSizeMB <= 0 {
+		return nil, fmt.Errorf("maxSizeMB must be positive, got %d", maxSizeMB)
+	}
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create log directory: %w", err)
 	}
@@ -44,9 +47,15 @@ func (w *RotatingFileWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
+	if w.current == nil {
+		return 0, fmt.Errorf("writer is closed")
+	}
+
 	today := time.Now().Format("2006-01-02")
 	if today != w.date || w.size+int64(len(p)) > w.maxSize {
-		w.current.Close()
+		if w.current != nil {
+			w.current.Close()
+		}
 		w.date = today
 		w.size = 0
 		if err := w.rotate(); err != nil {
@@ -63,14 +72,20 @@ func (w *RotatingFileWriter) Close() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.current != nil {
-		return w.current.Close()
+		err := w.current.Close()
+		w.current = nil
+		return err
 	}
 	return nil
 }
 
 func (w *RotatingFileWriter) rotate() error {
 	if w.current != nil {
-		w.current.Close()
+		if err := w.current.Close(); err != nil {
+			w.current = nil
+			return fmt.Errorf("failed to close old log file: %w", err)
+		}
+		w.current = nil
 	}
 
 	filename := filepath.Join(w.dir, fmt.Sprintf("%s-%s.log", w.basename, w.date))
@@ -82,6 +97,8 @@ func (w *RotatingFileWriter) rotate() error {
 	info, err := f.Stat()
 	if err == nil {
 		w.size = info.Size()
+	} else {
+		w.size = 0
 	}
 
 	w.current = f

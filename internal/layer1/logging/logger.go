@@ -1,6 +1,7 @@
 package logging
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -145,7 +146,6 @@ func (l *Logger) Error(msg string) {
 
 func (l *Logger) Fatal(msg string) {
 	l.log(FATAL, msg, nil)
-	os.Exit(1)
 }
 
 func (l *Logger) Debugf(format string, args ...interface{}) {
@@ -165,9 +165,6 @@ func (l *Logger) Errorf(format string, args ...interface{}) {
 }
 
 func (l *Logger) log(level LogLevel, msg string, extraFields map[string]interface{}) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
 	if level < l.level {
 		return
 	}
@@ -175,21 +172,28 @@ func (l *Logger) log(level LogLevel, msg string, extraFields map[string]interfac
 	timestamp := time.Now().Format("2006-01-02T15:04:05.000Z07:00")
 
 	allFields := make(map[string]interface{})
+	l.mu.Lock()
 	for k, v := range l.fields {
 		allFields[k] = v
 	}
+	format := l.format
+	output := l.output
+	l.mu.Unlock()
+
 	for k, v := range extraFields {
 		allFields[k] = v
 	}
 
 	var logLine string
-	if l.format == "json" {
+	if format == "json" {
 		logLine = l.formatJSON(timestamp, level, msg, allFields)
 	} else {
 		logLine = l.formatText(timestamp, level, msg, allFields)
 	}
 
-	fmt.Fprintln(l.output, logLine)
+	if _, err := fmt.Fprintln(output, logLine); err != nil {
+		fmt.Fprintf(os.Stderr, "logger: write error: %v\n", err)
+	}
 
 	if level == FATAL {
 		os.Exit(1)
@@ -216,21 +220,18 @@ func (l *Logger) formatText(timestamp string, level LogLevel, msg string, fields
 }
 
 func (l *Logger) formatJSON(timestamp string, level LogLevel, msg string, fields map[string]interface{}) string {
-	line := fmt.Sprintf(`{"time":"%s","level":"%s","module":"%s","msg":"%s"`, timestamp, level.String(), l.module, msg)
-
-	if len(fields) > 0 {
-		line += `,"fields":{`
-		first := true
-		for k, v := range fields {
-			if !first {
-				line += ","
-			}
-			line += fmt.Sprintf(`"%s":"%v"`, k, v)
-			first = false
-		}
-		line += "}"
+	record := map[string]interface{}{
+		"time":   timestamp,
+		"level":  level.String(),
+		"module": l.module,
+		"msg":    msg,
 	}
-
-	line += "}"
-	return line
+	if len(fields) > 0 {
+		record["fields"] = fields
+	}
+	b, err := json.Marshal(record)
+	if err != nil {
+		return fmt.Sprintf(`{"time":"%s","level":"ERROR","module":"%s","msg":"json marshal error: %v"}`, timestamp, l.module, err)
+	}
+	return string(b)
 }

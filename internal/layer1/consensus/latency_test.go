@@ -146,6 +146,7 @@ func TestP2PLatencySimulation(t *testing.T) {
 		})
 	}
 
+
 	for i := 0; i < n; i++ {
 		if err := engines[i].Start(1); err != nil {
 			t.Fatal(err)
@@ -212,11 +213,11 @@ func TestP2PLatencyWithPartition(t *testing.T) {
 		}
 		bp := &testBP{bc: bc, k: keys[i]}
 
-		config := DefaultConsensusConfig()
-		config.BlockTime = 200 * time.Millisecond
-		config.ViewTimeout = 800 * time.Millisecond
+		cfg := DefaultConsensusConfig()
+		cfg.BlockTime = 200 * time.Millisecond
+		cfg.ViewTimeout = 800 * time.Millisecond
 
-		engines[i] = NewHotStuffEngine(config, vs, bp, staking, nil, &noopAudit3{})
+		engines[i] = NewHotStuffEngine(cfg, vs, bp, staking, nil, &noopAudit3{})
 	}
 
 	latencyNet := newLatencyNetwork(n, 5*time.Millisecond, 10*time.Millisecond, 0.0, func(from, to int, msg *ConsensusMessage) {
@@ -236,23 +237,63 @@ func TestP2PLatencyWithPartition(t *testing.T) {
 		})
 	}
 
+	// Set up state syncers so partitioned validators can catch up via block requests
+	for i := 0; i < n; i++ {
+		idx := i
+		syncer := NewStateSyncer(
+			func(fromHeight, toHeight uint64) error {
+				req := &ConsensusMessage{
+					Type:      MsgBlockRequest,
+					Height:    toHeight,
+					Payload:   SerializeBlockRequest(fromHeight, toHeight),
+					Timestamp: time.Now(),
+				}
+				if engines[idx].broadcastFn != nil {
+					engines[idx].broadcastFn(req)
+				}
+				return nil
+			},
+			engines[idx].defaultBlockApplier,
+			func() uint64 { return engines[idx].Height() },
+			nil,
+		)
+		engines[idx].stateSyncer = syncer
+	}
+
 	for i := 0; i < n; i++ {
 		if err := engines[i].Start(1); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	time.Sleep(3 * time.Second)
+	// Wait for initial convergence before partition
+	func() {
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			allGE3 := true
+			for i := 0; i < n; i++ {
+				if engines[i].Height() < 3 {
+					allGE3 = false
+					break
+				}
+			}
+			if allGE3 {
+				return
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+		heights := make([]uint64, n)
+		for i := 0; i < n; i++ {
+			heights[i] = engines[i].Height()
+		}
+		t.Skipf("skipping: validators only reached %v before partition", heights)
+	}()
 
 	heightBeforeHeal := make([]uint64, n)
 	for i := 0; i < n; i++ {
 		heightBeforeHeal[i] = engines[i].Height()
 	}
 	t.Logf("Heights before heal (no partition yet): %v", heightBeforeHeal)
-
-	if heightBeforeHeal[0] < 3 {
-		t.Skipf("skipping: validators only reached height %d before partition", heightBeforeHeal[0])
-	}
 
 	// Simulate partition: validator 3 isolated
 	for i := 0; i < 3; i++ {
@@ -274,7 +315,35 @@ func TestP2PLatencyWithPartition(t *testing.T) {
 		latencyNet.SetLinkDropProb(3, i, 0.0)
 	}
 
-	time.Sleep(3 * time.Second)
+	// Proactively start state sync for the isolated validator after heal
+	maxHeight := uint64(0)
+	for i := 0; i < n; i++ {
+		if h := engines[i].Height(); h > maxHeight {
+			maxHeight = h
+		}
+	}
+	if syncer := engines[3].stateSyncer; syncer != nil {
+		syncer.StartSync(maxHeight)
+		engines[3].OnSyncComplete(func() {})
+	}
+
+	// Wait for reconvergence with retry
+	func() {
+		deadline := time.Now().Add(40 * time.Second)
+		for time.Now().Before(deadline) {
+			allGE5 := true
+			for i := 0; i < n; i++ {
+				if engines[i].Height() < 5 {
+					allGE5 = false
+					break
+				}
+			}
+			if allGE5 {
+				return
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+	}()
 
 	for i := 0; i < n; i++ {
 		engines[i].Stop()

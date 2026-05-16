@@ -57,7 +57,7 @@ func TestRpcCallSuccess(t *testing.T) {
 }
 
 func TestApiGet(t *testing.T) {
-	withArgs(t, []string{"virictl", "--rpc", "http://127.0.0.1:9999"}, func() {
+	withArgs(t, []string{"virictl"}, func() {
 		if _, err := apiGet("/"); err == nil {
 			t.Fatalf("expected api error")
 		}

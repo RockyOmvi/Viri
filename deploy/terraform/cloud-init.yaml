@@ -10,27 +10,21 @@ packages:
   - ufw
 
 runcmd:
-  # --- Docker setup ---
   - systemctl enable docker
   - systemctl start docker
   - usermod -aG docker ubuntu
 
-  # --- Firewall ---
   - ufw --force disable
   - iptables -P INPUT ACCEPT
   - iptables -P FORWARD ACCEPT
   - iptables -P OUTPUT ACCEPT
 
-  # --- Pull image ---
   - docker pull ghcr.io/viri-chain/viri:latest
 
-  # --- Create directories ---
   - mkdir -p /opt/viri/{config,data,logs,genesis}
 
-  # --- Role-specific setup ---
-  %{ if instance_name == "bootstrap" ~}
+%{ if instance_name == "bootstrap" ~}
 
-  # Bootstrap node: generate key + run bootstrap
   - |
     if [ ! -f /opt/viri/config/bootstrap.key ]; then
       docker run --rm -v /opt/viri/config:/config ghcr.io/viri-chain/viri:latest \
@@ -40,7 +34,6 @@ runcmd:
     PEER_ID=$(grep -oP 'peer_id:\s*\K\S+' /opt/viri/config/bootstrap.key || echo "")
     echo "Bootstrap Peer ID: $PEER_ID" > /opt/viri/logs/bootstrap-info.txt
 
-  # --- Bootstrap docker-compose ---
   - |
     cat > /opt/viri/docker-compose.yml << 'COMPOSE'
 services:
@@ -66,9 +59,9 @@ services:
     command: ["virid", "--config", "/home/viri/config/config.json"]
 COMPOSE
 
-  %{ else if instance_name == "faucet" ~}
+%{ else ~}
+  %{ if instance_name == "faucet" ~}
 
-  # Faucet node: run faucet service
   - |
     cat > /opt/viri/docker-compose.yml << 'COMPOSE'
 services:
@@ -86,7 +79,7 @@ services:
     environment:
       - VIRI_LOG_LEVEL=info
       - FAUCET_PORT=8081
-      - FAUCET_WALLET_KEY=${FAUCET_WALLET_KEY}
+      - FAUCET_WALLET_KEY=${faucet_wallet_key}
       - FAUCET_DAILY_LIMIT=1000000000000000000000
       - FAUCET_PER_CLAIM=10000000000000000000
       - FAUCET_COOLDOWN=86400
@@ -110,7 +103,6 @@ COMPOSE
 
   %{ else ~}
 
-  # Validator node
   - |
     cat > /opt/viri/docker-compose.yml << 'COMPOSE'
 services:
@@ -141,8 +133,8 @@ services:
 COMPOSE
 
   %{ endif ~}
+%{ endif ~}
 
-  # --- Start services ---
   - docker compose -f /opt/viri/docker-compose.yml up -d
 
 final_message:

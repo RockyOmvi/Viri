@@ -1600,7 +1600,7 @@ func (s *RPCServer) sendUserOperation(ctx context.Context, params json.RawMessag
 		return nil, fmt.Errorf("no result")
 	}
 
-	userOpHash := fmt.Sprintf("0x%x", accounts.UserOpHash(op, s.chainID))
+	userOpHash := fmt.Sprintf("0x%x", accounts.UserOpHash(op, s.entryPoint.Address(), s.chainID))
 
 	return map[string]interface{}{
 		"userOpHash": userOpHash,
@@ -1749,6 +1749,13 @@ func (s *evmCallStateAdapter) SetStorage(addr []byte, key []byte, value []byte) 
 	}
 	acct.Storage[string(key)] = value
 }
+
+func (s *evmCallStateAdapter) AddLog(addr []byte, topics [][]byte, data []byte) {
+}
+
+func (s *evmCallStateAdapter) Snapshot() int { return 0 }
+
+func (s *evmCallStateAdapter) RevertToSnapshot(int) {}
 
 func (s *evmCallStateAdapter) Transfer(from, to []byte, amount *big.Int) {}
 

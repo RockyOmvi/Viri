@@ -34,12 +34,30 @@ type StateProof struct {
 }
 
 func (spv *SPVVerifier) VerifyTransactionInclusion(proof *InclusionProof, blockTxHashes []string) bool {
+	if proof == nil {
+		return false
+	}
 	if len(proof.MerkleProof) == 0 {
+		return false
+	}
+
+	// Verify the claimed tx hash actually appears in the block
+	found := false
+	for _, txHash := range blockTxHashes {
+		if txHash == proof.TxHash {
+			found = true
+			break
+		}
+	}
+	if !found {
 		return false
 	}
 
 	computedBytes, err := hex.DecodeString(proof.TxHash)
 	if err != nil {
+		return false
+	}
+	if len(computedBytes) != 32 {
 		return false
 	}
 
@@ -67,7 +85,7 @@ func (spv *SPVVerifier) VerifyTransactionInclusion(proof *InclusionProof, blockT
 }
 
 func (spv *SPVVerifier) VerifyStateProof(proof *StateProof, trie *state.MerkleTrie) bool {
-	if len(proof.Proof) == 0 {
+	if proof == nil {
 		return false
 	}
 
@@ -157,8 +175,11 @@ func (spv *SPVVerifier) VerifyBlockHeader(header []byte, trustedRoot []byte) boo
 	return bytes.Equal(computedHash, trustedRoot)
 }
 
-func (spv *SPVVerifier) BuildLightClientProof(txs [][]byte, address []byte, balance []byte, trie *state.MerkleTrie) (*LightClientProof, error) {
-	txProof, err := spv.GenerateTransactionMerkleProof(txs, 0)
+func (spv *SPVVerifier) BuildLightClientProof(txs [][]byte, txIndex int, address []byte, balance []byte, trie *state.MerkleTrie) (*LightClientProof, error) {
+	if txIndex < 0 || txIndex >= len(txs) {
+		return nil, fmt.Errorf("invalid transaction index %d (txs len=%d)", txIndex, len(txs))
+	}
+	txProof, err := spv.GenerateTransactionMerkleProof(txs, txIndex)
 	if err != nil {
 		return nil, err
 	}
@@ -168,10 +189,13 @@ func (spv *SPVVerifier) BuildLightClientProof(txs [][]byte, address []byte, bala
 		return nil, fmt.Errorf("failed to generate state proof: %w", err)
 	}
 
+	stateRoot := make([]byte, len(trie.Root()))
+	copy(stateRoot, trie.Root())
+
 	return &LightClientProof{
-		TxMerkleProof:   txProof,
+		TxMerkleProof:    txProof,
 		StateMerkleProof: stateProof,
-		StateRoot:       trie.Root(),
+		StateRoot:        stateRoot,
 	}, nil
 }
 

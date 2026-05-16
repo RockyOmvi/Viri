@@ -70,6 +70,7 @@ func (bc *PersistentBlockchain) ProcessReorg(newBlocks []*Block) error {
 
 	commonAncestor := findCommonAncestorHeight(bc, newBlocks[0])
 
+	// Unwind old blocks: re-add their transactions to the pool
 	for h := bc.height; h > commonAncestor; h-- {
 		block, err := bc.GetBlock(h)
 		if err != nil {
@@ -81,6 +82,7 @@ func (bc *PersistentBlockchain) ProcessReorg(newBlocks []*Block) error {
 		}
 	}
 
+	// Apply new blocks
 	for _, block := range newBlocks {
 		if block.Header.Height <= commonAncestor {
 			continue
@@ -103,6 +105,11 @@ func (bc *PersistentBlockchain) ProcessReorg(newBlocks []*Block) error {
 
 		if !block.Verify() {
 			return ErrInvalidBlock
+		}
+
+		// Apply economic effects for the new block
+		if _, err := bc.economics.ProcessBlock(block.Transactions, block.Header.Height); err != nil {
+			return fmt.Errorf("economics processing failed during reorg: %w", err)
 		}
 
 		blockData, err := SerializeBlock(block)
@@ -156,10 +163,13 @@ func (bc *PersistentBlockchain) HandleSideBlock(block *Block) (*ReorgResult, err
 }
 
 func (bc *PersistentBlockchain) ValidateChainContinuity() error {
+	// Read current height under lock, then verify blocks without holding lock
+	// to avoid recursive RLock hazard in GetBlock.
 	bc.mu.RLock()
-	defer bc.mu.RUnlock()
+	currentHeight := bc.height
+	bc.mu.RUnlock()
 
-	for h := uint64(1); h <= bc.height; h++ {
+	for h := uint64(1); h <= currentHeight; h++ {
 		block, err := bc.GetBlock(h)
 		if err != nil {
 			return fmt.Errorf("missing block at height %d: %w", h, err)

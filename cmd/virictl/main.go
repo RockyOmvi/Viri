@@ -197,6 +197,10 @@ func apiGet(path string) (map[string]interface{}, error) {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("API returned status %d", resp.StatusCode)
+	}
+
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
@@ -539,7 +543,7 @@ func txSend(to string, amountStr string) {
 	}
 
 	// Create and sign transaction
-	tx, err := ledger.NewTransactionFromKey(nonce, toBytes, amount, 21000, 1, nil, key)
+	tx, err := ledger.NewTransactionFromKey(nonce, toBytes, amount, 21000, 1, nil, uint64(1), key)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to create transaction: %v\n", err)
 		os.Exit(1)

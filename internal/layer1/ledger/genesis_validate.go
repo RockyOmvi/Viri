@@ -43,7 +43,7 @@ func ValidateGenesis(config *GenesisConfig) error {
 
 	if len(config.InitialValidators) > 0 {
 		validatorAddresses := make(map[string]bool)
-		totalStake := uint64(0)
+		totalStake := new(big.Int)
 
 		for i, validator := range config.InitialValidators {
 			if len(validator.Address) == 0 {
@@ -60,10 +60,10 @@ func ValidateGenesis(config *GenesisConfig) error {
 				return fmt.Errorf("validator %d has zero stake", i)
 			}
 
-			totalStake += validator.Stake
+			totalStake.Add(totalStake, new(big.Int).SetUint64(validator.Stake))
 		}
 
-		if totalStake == 0 {
+		if totalStake.Sign() == 0 {
 			return fmt.Errorf("total validator stake is zero")
 		}
 	}

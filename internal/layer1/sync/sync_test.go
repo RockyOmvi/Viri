@@ -1,6 +1,7 @@
 package sync
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -23,38 +24,38 @@ type mockFetcher struct {
 	getSnapErr     error
 }
 
-func (m *mockFetcher) GetRemoteHeight() (uint64, error) {
+func (m *mockFetcher) GetRemoteHeight(ctx context.Context) (uint64, error) {
 	return m.remoteHeight, m.getRemoteError
 }
 
-func (m *mockFetcher) GetHeaders(from, to uint64) ([]*ledger.Header, error) {
+func (m *mockFetcher) GetHeaders(ctx context.Context, from, to uint64) ([]*ledger.Header, error) {
 	return m.headers, m.getHeadersErr
 }
 
-func (m *mockFetcher) GetBlocks(from, to uint64) ([]*ledger.Block, error) {
+func (m *mockFetcher) GetBlocks(ctx context.Context, from, to uint64) ([]*ledger.Block, error) {
 	return m.blocks, m.getBlocksErr
 }
 
-func (m *mockFetcher) ApplyBlock(block *ledger.Block) error {
+func (m *mockFetcher) ApplyBlock(ctx context.Context, block *ledger.Block) error {
 	return m.applyBlockErr
 }
 
-func (m *mockFetcher) ApplyHeader(header *ledger.Header) error {
+func (m *mockFetcher) ApplyHeader(ctx context.Context, header *ledger.Header) error {
 	return m.applyHeaderErr
 }
 
-func (m *mockFetcher) GetStateSnapshot(height uint64) (*ledger.StateSnapshot, error) {
+func (m *mockFetcher) GetStateSnapshot(ctx context.Context, height uint64) (*ledger.StateSnapshot, error) {
 	if len(m.snapshots) > 0 {
 		return m.snapshots[0], m.getSnapErr
 	}
 	return nil, m.getSnapErr
 }
 
-func (m *mockFetcher) GetStateSnapshots(from, to uint64) ([]*ledger.StateSnapshot, error) {
+func (m *mockFetcher) GetStateSnapshots(ctx context.Context, from, to uint64) ([]*ledger.StateSnapshot, error) {
 	return m.snapshots, m.getSnapErr
 }
 
-func (m *mockFetcher) ApplyStateSnapshot(snapshot *ledger.StateSnapshot) error {
+func (m *mockFetcher) ApplyStateSnapshot(ctx context.Context, snapshot *ledger.StateSnapshot) error {
 	return m.applySnapErr
 }
 
@@ -274,5 +275,40 @@ func TestFullSync(t *testing.T) {
 
 	if !syncer.IsComplete() {
 		t.Error("expected full sync to complete")
+	}
+}
+
+func TestSyncConfigValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		config  *SyncConfig
+		wantErr bool
+	}{
+		{"valid default", DefaultSyncConfig(), false},
+		{"zero pivot interval", &SyncConfig{PivotInterval: 0, BatchSize: 128, Timeout: time.Second, MaxRetries: 3}, true},
+		{"zero batch size", &SyncConfig{PivotInterval: 64, BatchSize: 0, Timeout: time.Second, MaxRetries: 3}, true},
+		{"zero timeout", &SyncConfig{PivotInterval: 64, BatchSize: 128, Timeout: 0, MaxRetries: 3}, true},
+		{"negative max retries", &SyncConfig{PivotInterval: 64, BatchSize: 128, Timeout: time.Second, MaxRetries: -1}, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.config.Validate()
+			if tt.wantErr && err == nil {
+				t.Error("expected validation error, got nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestStartWithNilFetcher(t *testing.T) {
+	logger := logging.NewLogger("test", logging.INFO, "text")
+	syncer := NewSyncer(nil, logger)
+	err := syncer.Start(0, nil)
+	if err == nil {
+		t.Error("expected error when starting with nil fetcher")
 	}
 }

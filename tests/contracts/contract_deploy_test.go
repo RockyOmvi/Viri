@@ -32,6 +32,12 @@ func (m *mockState) GetCode(addr []byte) []byte           { return nil }
 func (m *mockState) GetStorage(addr, key []byte) []byte   { return m.storage[string(key)] }
 func (m *mockState) SetStorage(addr, key, val []byte)     { m.storage[string(key)] = val }
 func (m *mockState) Transfer(from, to []byte, amt *big.Int) {}
+func (m *mockState) AddLog(addr []byte, topics [][]byte, data []byte) {}
+
+func (m *mockState) Snapshot() int { return 0 }
+
+func (m *mockState) RevertToSnapshot(int) {}
+
 func (m *mockState) CreateAccount(addr []byte)            {}
 
 func runAndCheck(t *testing.T, code []byte, expected []byte) {

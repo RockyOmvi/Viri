@@ -146,9 +146,14 @@ func (rm *RecoveryManager) ExecuteRecovery(wallet []byte) error {
 		return fmt.Errorf("no recovery config")
 	}
 
-	// Check timelock
-	if time.Since(req.Initiated) < cfg.TimelockDuration {
-		remaining := cfg.TimelockDuration - time.Since(req.Initiated)
+	// Check timelock (minimum 1 hour enforced)
+	minTimelock := 1 * time.Hour
+	effectiveTimelock := cfg.TimelockDuration
+	if effectiveTimelock < minTimelock {
+		effectiveTimelock = minTimelock
+	}
+	if time.Since(req.Initiated) < effectiveTimelock {
+		remaining := effectiveTimelock - time.Since(req.Initiated)
 		return fmt.Errorf("recovery timelock not expired: %v remaining", remaining)
 	}
 

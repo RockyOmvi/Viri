@@ -434,199 +434,6 @@ func TestShieldedTransactionComputeHash(t *testing.T) {
 	}
 }
 
-func TestShieldedPoolProcessDeposit(t *testing.T) {
-	circuit := NewCircuit("test", 2, 1, FieldTypePrime)
-	circuit.AddAddConstraint(0, 1, 2)
-
-	pk := GenerateProvingKey(circuit)
-	vk := GenerateVerifyingKey(pk, circuit)
-
-	pool := NewShieldedPool(circuit, vk)
-
-	prover := NewProver(pk, circuit)
-	assignment := &Assignment{
-		Inputs:  []*big.Int{big.NewInt(3), big.NewInt(5)},
-		Witness: []*big.Int{big.NewInt(8)},
-	}
-
-	proof, err := prover.Prove(assignment)
-	if err != nil {
-		t.Fatalf("proof generation failed: %v", err)
-	}
-
-	tx, err := pool.ProcessDeposit(1000, []byte("sender1"), proof)
-	if err != nil {
-		t.Fatalf("deposit processing failed: %v", err)
-	}
-
-	if tx.Type != ShieldedTxTypeDeposit {
-		t.Errorf("transaction type should be deposit")
-	}
-	if tx.Amount != 1000 {
-		t.Errorf("transaction amount should be 1000")
-	}
-
-	if pool.GetCommitmentCount() != 1 {
-		t.Errorf("expected 1 commitment, got %d", pool.GetCommitmentCount())
-	}
-	if pool.GetNullifierCount() != 1 {
-		t.Errorf("expected 1 nullifier, got %d", pool.GetNullifierCount())
-	}
-}
-
-func TestShieldedPoolDuplicateCommitment(t *testing.T) {
-	circuit := NewCircuit("test", 2, 1, FieldTypePrime)
-	circuit.AddAddConstraint(0, 1, 2)
-
-	pk := GenerateProvingKey(circuit)
-	vk := GenerateVerifyingKey(pk, circuit)
-
-	pool := NewShieldedPool(circuit, vk)
-
-	prover := NewProver(pk, circuit)
-	assignment := &Assignment{
-		Inputs:  []*big.Int{big.NewInt(3), big.NewInt(5)},
-		Witness: []*big.Int{big.NewInt(8)},
-	}
-
-	proof, err := prover.Prove(assignment)
-	if err != nil {
-		t.Fatalf("proof generation failed: %v", err)
-	}
-
-	_, err = pool.ProcessDeposit(1000, []byte("sender1"), proof)
-	if err != nil {
-		t.Fatalf("first deposit failed: %v", err)
-	}
-
-	_, err = pool.ProcessDeposit(1000, []byte("sender1"), proof)
-	if err == nil {
-		t.Errorf("duplicate commitment should fail")
-	}
-}
-
-func TestShieldedPoolProcessWithdraw(t *testing.T) {
-	circuit := NewCircuit("test", 2, 1, FieldTypePrime)
-	circuit.AddAddConstraint(0, 1, 2)
-
-	pk := GenerateProvingKey(circuit)
-	vk := GenerateVerifyingKey(pk, circuit)
-
-	pool := NewShieldedPool(circuit, vk)
-
-	prover := NewProver(pk, circuit)
-	assignment := &Assignment{
-		Inputs:  []*big.Int{big.NewInt(3), big.NewInt(5)},
-		Witness: []*big.Int{big.NewInt(8)},
-	}
-
-	proof, err := prover.Prove(assignment)
-	if err != nil {
-		t.Fatalf("proof generation failed: %v", err)
-	}
-
-	depositTx, err := pool.ProcessDeposit(1000, []byte("sender1"), proof)
-	if err != nil {
-		t.Fatalf("deposit failed: %v", err)
-	}
-
-	nullifier := depositTx.Nullifier
-
-	tx, err := pool.ProcessWithdraw(500, []byte("receiver1"), nullifier, proof)
-	if err != nil {
-		t.Fatalf("withdraw processing failed: %v", err)
-	}
-
-	if tx.Type != ShieldedTxTypeWithdraw {
-		t.Errorf("transaction type should be withdraw")
-	}
-	if tx.Amount != 500 {
-		t.Errorf("transaction amount should be 500")
-	}
-}
-
-func TestShieldedPoolProcessTransfer(t *testing.T) {
-	circuit := NewCircuit("test", 2, 1, FieldTypePrime)
-	circuit.AddAddConstraint(0, 1, 2)
-
-	pk := GenerateProvingKey(circuit)
-	vk := GenerateVerifyingKey(pk, circuit)
-
-	pool := NewShieldedPool(circuit, vk)
-
-	prover := NewProver(pk, circuit)
-	assignment := &Assignment{
-		Inputs:  []*big.Int{big.NewInt(3), big.NewInt(5)},
-		Witness: []*big.Int{big.NewInt(8)},
-	}
-
-	proof, err := prover.Prove(assignment)
-	if err != nil {
-		t.Fatalf("proof generation failed: %v", err)
-	}
-
-	tx, err := pool.ProcessTransfer(100, []byte("sender1"), []byte("receiver1"), proof)
-	if err != nil {
-		t.Fatalf("transfer processing failed: %v", err)
-	}
-
-	if tx.Type != ShieldedTxTypeTransfer {
-		t.Errorf("transaction type should be transfer")
-	}
-	if tx.Amount != 100 {
-		t.Errorf("transaction amount should be 100")
-	}
-
-	if !pool.HasCommitment(tx.Commitment) {
-		t.Errorf("commitment should be registered")
-	}
-	if !pool.HasNullifier(tx.Nullifier) {
-		t.Errorf("nullifier should be registered")
-	}
-}
-
-func TestShieldedPoolTransactionCount(t *testing.T) {
-	circuit := NewCircuit("test", 2, 1, FieldTypePrime)
-	circuit.AddAddConstraint(0, 1, 2)
-
-	pk := GenerateProvingKey(circuit)
-	vk := GenerateVerifyingKey(pk, circuit)
-
-	pool := NewShieldedPool(circuit, vk)
-
-	prover := NewProver(pk, circuit)
-
-	proof1, err := prover.Prove(&Assignment{
-		Inputs:  []*big.Int{big.NewInt(3), big.NewInt(5)},
-		Witness: []*big.Int{big.NewInt(8)},
-	})
-	if err != nil {
-		t.Fatalf("proof 1 generation failed: %v", err)
-	}
-
-	proof2, err := prover.Prove(&Assignment{
-		Inputs:  []*big.Int{big.NewInt(1), big.NewInt(2)},
-		Witness: []*big.Int{big.NewInt(3)},
-	})
-	if err != nil {
-		t.Fatalf("proof 2 generation failed: %v", err)
-	}
-
-	_, err = pool.ProcessDeposit(1000, []byte("sender1"), proof1)
-	if err != nil {
-		t.Fatalf("deposit failed: %v", err)
-	}
-
-	_, err = pool.ProcessTransfer(100, []byte("sender2"), []byte("receiver1"), proof2)
-	if err != nil {
-		t.Fatalf("transfer failed: %v", err)
-	}
-
-	if len(pool.GetTransactions()) != 2 {
-		t.Errorf("expected 2 transactions, got %d", len(pool.GetTransactions()))
-	}
-}
-
 func TestNewShieldedTransferCircuit(t *testing.T) {
 	circuit := NewShieldedTransferCircuit()
 
@@ -655,6 +462,16 @@ func TestNewRangeProofCircuit(t *testing.T) {
 	}
 }
 
+func TestNewRangeProofCircuitMinBits(t *testing.T) {
+	circuit := NewRangeProofCircuit(0)
+	if circuit == nil {
+		t.Fatalf("range proof circuit should not be nil")
+	}
+	if circuit.NumWitness < 1 {
+		t.Errorf("expected at least 1 witness variable for bits=0")
+	}
+}
+
 func TestVerifyQuick(t *testing.T) {
 	circuit := NewCircuit("test", 2, 1, FieldTypePrime)
 	circuit.AddAddConstraint(0, 1, 2)
@@ -675,5 +492,35 @@ func TestVerifyQuick(t *testing.T) {
 
 	if err := VerifyQuick(proof, vk, circuit); err != nil {
 		t.Errorf("quick verification failed: %v", err)
+	}
+}
+
+func TestSerializeProofForTx(t *testing.T) {
+	circuit := NewCircuit("test", 2, 1, FieldTypePrime)
+	circuit.AddAddConstraint(0, 1, 2)
+
+	prover := NewProver(GenerateProvingKey(circuit), circuit)
+	proof, err := prover.Prove(&Assignment{
+		Inputs:  []*big.Int{big.NewInt(3), big.NewInt(5)},
+		Witness: []*big.Int{big.NewInt(8)},
+	})
+	if err != nil {
+		t.Fatalf("proof generation failed: %v", err)
+	}
+
+	if _, err := SerializeProofForTx(proof, proof.Public); err == nil {
+		t.Errorf("expected error for simulated proof without Raw data")
+	}
+}
+
+func TestDeserializeProofFromTxTruncated(t *testing.T) {
+	circuit := NewCircuit("test", 2, 1, FieldTypePrime)
+
+	if _, _, err := DeserializeProofFromTx([]byte{0x00, 0x00, 0x00, 0x00}, circuit); err == nil {
+		t.Errorf("expected error for zero-length proof")
+	}
+
+	if _, _, err := DeserializeProofFromTx([]byte{0x00, 0x00, 0x00, 0x01}, circuit); err == nil {
+		t.Errorf("expected error for truncated proof body (1 byte claimed, 0 available)")
 	}
 }

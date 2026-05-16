@@ -31,7 +31,7 @@ func TestAddBlock(t *testing.T) {
 		t.Fatalf("Failed to generate key: %v", err)
 	}
 
-	tx, err := NewTransactionFromKey(0, key.PubKey().Address(), 100, 1000, 1, nil, key)
+	tx, err := NewTransactionFromKey(0, key.PubKey().Address(), 100, 1000, 1, nil, 1337, key)
 	if err != nil {
 		t.Fatalf("Failed to create transaction: %v", err)
 	}

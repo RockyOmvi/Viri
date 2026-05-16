@@ -3,6 +3,7 @@ package zk
 import (
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"io"
 	"math/big"
 )
@@ -11,8 +12,6 @@ type ProofSystem string
 
 const (
 	Groth16 ProofSystem = "groth16"
-	Plonk   ProofSystem = "plonk"
-	Halo2   ProofSystem = "halo2"
 )
 
 type Proof struct {
@@ -23,7 +22,7 @@ type Proof struct {
 	Public    []*big.Int
 	ProofHash []byte
 	System    ProofSystem
-	Raw       []byte // serialized gnark proof (groth16 binary encoding)
+	Raw       []byte
 }
 
 type VerifyingKey struct {
@@ -48,6 +47,7 @@ type ProvingKey struct {
 	G2Elements [][]byte
 }
 
+// Deprecated: test-only simulated prover. Use GnarkProver for production.
 type Prover struct {
 	pk      *ProvingKey
 	circuit *Circuit
@@ -69,7 +69,7 @@ func (p *Prover) Prove(assignment *Assignment) (*Proof, error) {
 		B:         make([]*big.Int, totalLen),
 		C:         make([]*big.Int, totalLen),
 		Public:    make([]*big.Int, p.circuit.NumInputs),
-		System:    p.pk.VK.System,
+		System:    Groth16,
 	}
 
 	for i := 0; i < p.circuit.NumInputs && i < len(assignment.Inputs); i++ {
@@ -216,11 +216,13 @@ func GenerateVerifyingKey(pk *ProvingKey, circuit *Circuit) *VerifyingKey {
 
 func (c *Circuit) serializeConstraints() []byte {
 	data := make([]byte, 0)
+	buf := make([]byte, 13)
 	for _, con := range c.Constraints {
-		data = append(data, byte(con.Type))
-		data = append(data, byte(con.Left))
-		data = append(data, byte(con.Right))
-		data = append(data, byte(con.Output))
+		buf[0] = byte(con.Type)
+		binary.LittleEndian.PutUint32(buf[1:5], uint32(con.Left))
+		binary.LittleEndian.PutUint32(buf[5:9], uint32(con.Right))
+		binary.LittleEndian.PutUint32(buf[9:13], uint32(con.Output))
+		data = append(data, buf...)
 	}
 	return data
 }

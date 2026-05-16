@@ -55,7 +55,7 @@ func main() {
 	deployData := append(initCode, constructorArgs...)
 
 	// 3. Create and send deploy transaction
-	tx, err := ledger.NewTransactionFromKey(nonce, nil, 0, 1_000_000, 10, deployData, privKey)
+	tx, err := ledger.NewTransactionFromKey(nonce, nil, 0, 1_000_000, 10, deployData, uint64(1), privKey)
 	if err != nil {
 		panic(err)
 	}
@@ -115,7 +115,7 @@ func main() {
 	transferData := "0xa9059cbb" + hex.EncodeToString(pad32(recipient)) + hex.EncodeToString(pad32(transferAmount.Bytes()))
 	transferNonce := getNonce(rpcURL, deployerHex)
 	contractAddrBytes, _ := hex.DecodeString(contractAddr[2:])
-	tx2, _ := ledger.NewTransactionFromKey(transferNonce, contractAddrBytes, 0, 100000, 10, mustHex(transferData[2:]), privKey)
+	tx2, _ := ledger.NewTransactionFromKey(transferNonce, contractAddrBytes, 0, 100000, 10, mustHex(transferData[2:]), uint64(1), privKey)
 	tx2Data, _ := ledger.SerializeTransaction(tx2)
 	rawTx2 := "0x" + hex.EncodeToString(tx2Data)
 

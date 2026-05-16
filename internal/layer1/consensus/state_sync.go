@@ -45,25 +45,49 @@ func NewStateSyncer(blockRequester BlockRequester, blockApplier BlockApplier, he
 
 func (ss *StateSyncer) StartSync(targetHeight uint64) {
 	ss.mu.Lock()
-	defer ss.mu.Unlock()
-
-	if ss.syncing {
-		return
-	}
 
 	localHeight := ss.heightGetter()
 	if targetHeight <= localHeight {
+		ss.mu.Unlock()
+		return
+	}
+
+	if ss.syncing {
+		if targetHeight > ss.targetHeight {
+			ss.targetHeight = targetHeight
+		}
+		ss.requested = make(map[uint64]bool)
+		ss.pendingBlocks = make(map[uint64][]byte)
+		ss.syncStartTime = time.Now()
+		ss.mu.Unlock()
 		return
 	}
 
 	ss.syncing = true
-	ss.currentHeight = localHeight // heightGetter already returns next expected height
+	ss.currentHeight = localHeight
 	ss.targetHeight = targetHeight
 	ss.pendingBlocks = make(map[uint64][]byte)
 	ss.requested = make(map[uint64]bool)
 	ss.syncStartTime = time.Now()
 
 	ss.logInfo(fmt.Sprintf("State sync started from=%d to=%d", ss.currentHeight, ss.targetHeight))
+
+	// Mark first batch as requested while holding the lock
+	batchEnd := localHeight + ss.maxBatchSize - 1
+	if batchEnd > targetHeight {
+		batchEnd = targetHeight
+	}
+	for h := localHeight; h <= batchEnd; h++ {
+		ss.requested[h] = true
+	}
+	requester := ss.blockRequester
+	ss.mu.Unlock()
+
+	// Issue the first batch synchronously (before requestLoop goroutine starts,
+	// eliminating the race window where the goroutine is delayed by the scheduler)
+	if err := requester(localHeight, batchEnd); err != nil {
+		ss.logger.WithField("error", err.Error()).Warn("initial block request batch failed")
+	}
 
 	go ss.requestLoop()
 }
@@ -176,6 +200,8 @@ func (ss *StateSyncer) Stop() {
 }
 
 func (ss *StateSyncer) requestLoop() {
+	ss.requestNextBatch()
+
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 
@@ -203,28 +229,35 @@ func (ss *StateSyncer) requestLoop() {
 			return
 		}
 
-		nextUnrequested := uint64(0)
-		ss.mu.RLock()
-		for h := current; h <= target; h++ {
-			if !ss.requested[h] {
-				nextUnrequested = h
-				break
-			}
-		}
-		ss.mu.RUnlock()
-
-		if nextUnrequested > 0 && nextUnrequested <= target {
-			batchEnd := nextUnrequested + ss.maxBatchSize - 1
-			if batchEnd > target {
-				batchEnd = target
-			}
-			_ = ss.RequestBlocks(nextUnrequested, batchEnd)
-		}
+		ss.requestNextBatch()
 
 		select {
 		case <-ticker.C:
 		case <-time.After(2 * time.Second):
 		}
+	}
+}
+
+func (ss *StateSyncer) requestNextBatch() {
+	ss.mu.RLock()
+	if !ss.syncing {
+		ss.mu.RUnlock()
+		return
+	}
+	target := ss.targetHeight
+	current := ss.currentHeight
+	ss.mu.RUnlock()
+
+	if current > target {
+		return
+	}
+
+	batchEnd := current + ss.maxBatchSize - 1
+	if batchEnd > target {
+		batchEnd = target
+	}
+	if err := ss.RequestBlocks(current, batchEnd); err != nil {
+		ss.logger.WithField("error", err.Error()).Warn("state sync RequestBlocks failed")
 	}
 }
 

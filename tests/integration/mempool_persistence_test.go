@@ -45,7 +45,7 @@ func setupMempoolTest(t *testing.T) (*ledger.MempoolPersister, *ledger.TxPool, *
 
 func generateTestTx(t *testing.T, key *crypto.PrivateKey, nonce uint64, toAddr []byte) *ledger.Transaction {
 	t.Helper()
-	tx, err := ledger.NewTransactionFromKey(nonce, toAddr, 1000, 100000, 1, nil, key)
+	tx, err := ledger.NewTransactionFromKey(nonce, toAddr, 1000, 100000, 1, nil, uint64(1), key)
 	if err != nil {
 		t.Fatal(err)
 	}

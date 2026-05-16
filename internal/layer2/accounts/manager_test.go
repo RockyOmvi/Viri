@@ -1,6 +1,9 @@
 package accounts
 
-import "testing"
+import (
+	"math/big"
+	"testing"
+)
 
 func TestCreateAccount(t *testing.T) {
 	am := NewAccountManager()
@@ -10,8 +13,8 @@ func TestCreateAccount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create failed: %v", err)
 	}
-	if account.Balance != 100 {
-		t.Fatalf("balance mismatch")
+	if account.Balance.Cmp(big.NewInt(100)) != 0 {
+		t.Fatalf("balance mismatch: %s", account.Balance)
 	}
 
 	if _, err := am.CreateAccount(addr, AccountTypeNormal, 100); err == nil {
@@ -30,11 +33,11 @@ func TestGetAccountClone(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected account")
 	}
-	loaded.Balance = 0
+	loaded.Balance.SetInt64(0)
 	loaded.Storage["k"] = []byte("x")
 
 	check, _ := am.GetAccount(addr)
-	if check.Balance != account.Balance {
+	if check.Balance.Cmp(account.Balance) != 0 {
 		t.Fatalf("clone not isolated")
 	}
 	if string(check.Storage["k"]) != "v" {
@@ -62,8 +65,8 @@ func TestTransfer(t *testing.T) {
 
 	fromAcc, _ := am.GetAccount(from)
 	toAcc, _ := am.GetAccount(to)
-	if fromAcc.Balance != 50 || toAcc.Balance != 50 {
-		t.Fatalf("balance mismatch")
+	if fromAcc.Balance.Cmp(big.NewInt(50)) != 0 || toAcc.Balance.Cmp(big.NewInt(50)) != 0 {
+		t.Fatalf("balance mismatch: from=%s to=%s", fromAcc.Balance, toAcc.Balance)
 	}
 }
 

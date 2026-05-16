@@ -18,6 +18,9 @@ var (
 	ErrInvalidKey       = errors.New("invalid key")
 )
 
+// secp256k1HalfOrder is (N-1)/2 used for low-S canonical signature enforcement (EIP-2).
+var secp256k1HalfOrder = new(big.Int).Rsh(secp256k1.S256().N, 1)
+
 type PrivateKey struct {
 	key *secp256k1.PrivateKey
 }
@@ -62,6 +65,15 @@ func (k *PrivateKey) SignHash(hash []byte) (*Signature, error) {
 	s := sig.S()
 	rBytes := r.Bytes()
 	sBytes := s.Bytes()
+
+	// Enforce low-S for EIP-2 / EVM compatibility
+	// If S > N/2, replace with N - S to prevent signature malleability
+	sInt := new(big.Int).SetBytes(sBytes[:])
+	if sInt.Cmp(secp256k1HalfOrder) > 0 {
+		sInt.Sub(secp256k1.S256().N, sInt)
+		copy(sBytes[:], sInt.FillBytes(make([]byte, 32)))
+	}
+
 	return &Signature{
 		R: new(big.Int).SetBytes(rBytes[:]),
 		S: new(big.Int).SetBytes(sBytes[:]),

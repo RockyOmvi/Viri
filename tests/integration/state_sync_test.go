@@ -1,6 +1,7 @@
 package integration
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"testing"
@@ -31,13 +32,13 @@ func newMockFetcher(initialHeight uint64) *mockSyncFetcher {
 	}
 }
 
-func (m *mockSyncFetcher) GetRemoteHeight() (uint64, error) {
+func (m *mockSyncFetcher) GetRemoteHeight(ctx context.Context) (uint64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.remoteHeight, nil
 }
 
-func (m *mockSyncFetcher) GetHeaders(from, to uint64) ([]*ledger.Header, error) {
+func (m *mockSyncFetcher) GetHeaders(ctx context.Context, from, to uint64) ([]*ledger.Header, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var result []*ledger.Header
@@ -51,7 +52,7 @@ func (m *mockSyncFetcher) GetHeaders(from, to uint64) ([]*ledger.Header, error) 
 	return result, nil
 }
 
-func (m *mockSyncFetcher) GetBlocks(from, to uint64) ([]*ledger.Block, error) {
+func (m *mockSyncFetcher) GetBlocks(ctx context.Context, from, to uint64) ([]*ledger.Block, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var result []*ledger.Block
@@ -65,21 +66,21 @@ func (m *mockSyncFetcher) GetBlocks(from, to uint64) ([]*ledger.Block, error) {
 	return result, nil
 }
 
-func (m *mockSyncFetcher) ApplyBlock(block *ledger.Block) error {
+func (m *mockSyncFetcher) ApplyBlock(ctx context.Context, block *ledger.Block) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.callCount++
 	return m.applyBlockErr
 }
 
-func (m *mockSyncFetcher) ApplyHeader(header *ledger.Header) error {
+func (m *mockSyncFetcher) ApplyHeader(ctx context.Context, header *ledger.Header) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.callCount++
 	return m.applyHeaderErr
 }
 
-func (m *mockSyncFetcher) GetStateSnapshot(height uint64) (*ledger.StateSnapshot, error) {
+func (m *mockSyncFetcher) GetStateSnapshot(ctx context.Context, height uint64) (*ledger.StateSnapshot, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if snap, exists := m.snapshots[height]; exists {
@@ -88,7 +89,7 @@ func (m *mockSyncFetcher) GetStateSnapshot(height uint64) (*ledger.StateSnapshot
 	return &ledger.StateSnapshot{BlockHeight: height}, nil
 }
 
-func (m *mockSyncFetcher) GetStateSnapshots(from, to uint64) ([]*ledger.StateSnapshot, error) {
+func (m *mockSyncFetcher) GetStateSnapshots(ctx context.Context, from, to uint64) ([]*ledger.StateSnapshot, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var result []*ledger.StateSnapshot
@@ -98,7 +99,7 @@ func (m *mockSyncFetcher) GetStateSnapshots(from, to uint64) ([]*ledger.StateSna
 	return result, nil
 }
 
-func (m *mockSyncFetcher) ApplyStateSnapshot(snapshot *ledger.StateSnapshot) error {
+func (m *mockSyncFetcher) ApplyStateSnapshot(ctx context.Context, snapshot *ledger.StateSnapshot) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.callCount++

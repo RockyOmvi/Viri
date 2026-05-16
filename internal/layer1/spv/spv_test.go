@@ -125,10 +125,6 @@ func TestVerifyStateProof_ValidProof(t *testing.T) {
 		t.Fatalf("failed to generate state proof: %v", err)
 	}
 
-	if len(proof) == 0 {
-		t.Skip("state proof is empty for single entry")
-	}
-
 	stateProof := &StateProof{
 		Address:  hex.EncodeToString(addr),
 		RootHash: rootHash,
@@ -137,8 +133,8 @@ func TestVerifyStateProof_ValidProof(t *testing.T) {
 	}
 
 	result := spv.VerifyStateProof(stateProof, trie)
-	if !result && len(proof) > 0 {
-		t.Log("VerifyStateProof returned false (may be due to proof format mismatch)")
+	if !result {
+		t.Error("VerifyStateProof should return true for valid proof")
 	}
 }
 
@@ -278,7 +274,7 @@ func TestBuildLightClientProof(t *testing.T) {
 
 	txs := [][]byte{[]byte("tx1"), []byte("tx2")}
 
-	proof, err := spv.BuildLightClientProof(txs, addr, balance, trie)
+	proof, err := spv.BuildLightClientProof(txs, 0, addr, balance, trie)
 	if err != nil {
 		t.Fatalf("failed to build light client proof: %v", err)
 	}
@@ -289,6 +285,32 @@ func TestBuildLightClientProof(t *testing.T) {
 
 	if len(proof.StateRoot) == 0 {
 		t.Error("expected non-empty state root")
+	}
+}
+
+func TestVerifyTransactionInclusion_NilProof(t *testing.T) {
+	spv := NewSPVVerifier()
+	if spv.VerifyTransactionInclusion(nil, nil) {
+		t.Error("expected false for nil proof")
+	}
+}
+
+func TestVerifyTransactionInclusion_UnlistedTxHash(t *testing.T) {
+	spv := NewSPVVerifier()
+	proof := &InclusionProof{
+		TxHash:      "deadbeef",
+		MerkleProof: [][]byte{{0x01}},
+		BlockHash:   "cafebabe",
+	}
+	if spv.VerifyTransactionInclusion(proof, []string{"othertx"}) {
+		t.Error("expected false when tx hash not in block tx list")
+	}
+}
+
+func TestVerifyStateProof_NilProof(t *testing.T) {
+	spv := NewSPVVerifier()
+	if spv.VerifyStateProof(nil, nil) {
+		t.Error("expected false for nil state proof")
 	}
 }
 

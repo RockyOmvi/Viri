@@ -128,12 +128,24 @@ func (bc *PersistentBlockchain) AddBlockByHash(height uint64, prevHash []byte, b
 	bc.mu.Lock()
 	defer bc.mu.Unlock()
 
+	if height == 0 {
+		return fmt.Errorf("%w: genesis block cannot be added by hash", ErrInvalidHeight)
+	}
+
 	if height != bc.height+1 {
 		return fmt.Errorf("%w: expected %d, got %d", ErrInvalidHeight, bc.height+1, height)
 	}
 
 	if !crypto.EqualHash(prevHash, bc.tipHash) {
 		return ErrInvalidPrevHash
+	}
+
+	if len(blockHash) == 0 {
+		return fmt.Errorf("block hash is empty")
+	}
+
+	if len(proposer) == 0 {
+		return fmt.Errorf("proposer is empty")
 	}
 
 	block := &Block{
@@ -178,21 +190,22 @@ func (bc *PersistentBlockchain) AddBlockByHash(height uint64, prevHash []byte, b
 
 func (bc *PersistentBlockchain) GetBlock(height uint64) (*Block, error) {
 	bc.mu.RLock()
-	if block, ok := bc.cache[height]; ok {
-		bc.mu.RUnlock()
+	block, ok := bc.cache[height]
+	bc.mu.RUnlock()
+
+	if ok {
 		bc.mu.Lock()
 		bc.touchCache(height)
 		bc.mu.Unlock()
 		return block, nil
 	}
-	bc.mu.RUnlock()
 
 	data, err := bc.db.Get(blockKey(height))
 	if err != nil {
 		return nil, fmt.Errorf("block at height %d not found", height)
 	}
 
-	block, err := DeserializeBlock(data)
+	block, err = DeserializeBlock(data)
 	if err != nil {
 		return nil, err
 	}
@@ -218,7 +231,10 @@ func (bc *PersistentBlockchain) GetBlockByHash(hash string) (*Block, error) {
 	if err != nil {
 		return nil, fmt.Errorf("block with hash %s not found", hash)
 	}
-	height := bytesToUint64(data)
+	height, err := bytesToUint64(data)
+	if err != nil {
+		return nil, err
+	}
 
 	block, err := bc.GetBlock(height)
 	if err != nil {
@@ -366,9 +382,10 @@ func (bc *PersistentBlockchain) Economics() *Economics {
 
 func (bc *PersistentBlockchain) Validate() bool {
 	bc.mu.RLock()
-	defer bc.mu.RUnlock()
+	currentHeight := bc.height
+	bc.mu.RUnlock()
 
-	for h := uint64(1); h <= bc.height; h++ {
+	for h := uint64(1); h <= currentHeight; h++ {
 		block, err := bc.GetBlock(h)
 		if err != nil {
 			return false
@@ -401,7 +418,11 @@ func (bc *PersistentBlockchain) loadFromDB() error {
 		return fmt.Errorf("chain not initialized")
 	}
 
-	bc.height = bytesToUint64(heightData)
+	height, err := bytesToUint64(heightData)
+	if err != nil {
+		return err
+	}
+	bc.height = height
 
 	tipHash, err := bc.db.Get(tipHashKey())
 	if err != nil {
@@ -474,10 +495,13 @@ func receiptKey(hash []byte) []byte {
 	return append([]byte{0x05}, hash...)
 }
 
-func bytesToUint64(b []byte) uint64 {
+func bytesToUint64(b []byte) (uint64, error) {
+	if len(b) < 8 {
+		return 0, fmt.Errorf("bytesToUint64: need 8 bytes, got %d", len(b))
+	}
 	var n uint64
 	for i := 0; i < 8; i++ {
 		n = (n << 8) | uint64(b[i])
 	}
-	return n
+	return n, nil
 }

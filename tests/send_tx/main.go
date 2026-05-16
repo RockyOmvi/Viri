@@ -36,7 +36,7 @@ func main() {
 	fmt.Printf("Nonce: %d\n", nonce)
 
 	// Create transfer to self
-	tx, err := ledger.NewTransactionFromKey(nonce, address, 100, 100000, 10, nil, privKey)
+	tx, err := ledger.NewTransactionFromKey(nonce, address, 100, 100000, 10, nil, uint64(1), privKey)
 	if err != nil {
 		panic(err)
 	}

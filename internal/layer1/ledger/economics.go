@@ -84,25 +84,23 @@ func (e *Economics) CalculateBlockReward(blockHeight uint64) *big.Int {
 }
 
 func (e *Economics) CalculateFees(txs []*Transaction) (*big.Int, *big.Int, *big.Int) {
-	totalGasUsed := uint64(0)
-	totalGasPrice := uint64(0)
-
+	totalFee := new(big.Int)
 	for _, tx := range txs {
-		totalGasUsed += tx.GasLimit
-		totalGasPrice += tx.GasPrice * tx.GasLimit
+		txFee := new(big.Int).SetUint64(tx.GasPrice)
+		txFee.Mul(txFee, new(big.Int).SetUint64(tx.GasLimit))
+		totalFee.Add(totalFee, txFee)
 	}
 
-	feeAmount := new(big.Int).SetUint64(totalGasPrice)
 	validatorShare := new(big.Int).Div(
-		new(big.Int).Mul(feeAmount, e.config.ValidatorShare),
+		new(big.Int).Mul(totalFee, e.config.ValidatorShare),
 		big.NewInt(100),
 	)
 	burnShare := new(big.Int).Div(
-		new(big.Int).Mul(feeAmount, e.config.BurnShare),
+		new(big.Int).Mul(totalFee, e.config.BurnShare),
 		big.NewInt(100),
 	)
 
-	return feeAmount, validatorShare, burnShare
+	return totalFee, validatorShare, burnShare
 }
 
 func (e *Economics) ProcessBlock(txs []*Transaction, blockHeight uint64) (*BlockEconomics, error) {
@@ -179,22 +177,23 @@ func (e *Economics) calculateBlockRewardLocked(blockHeight uint64) *big.Int {
 }
 
 func (e *Economics) calculateFeesLocked(txs []*Transaction) (*big.Int, *big.Int, *big.Int) {
-	totalGasPrice := uint64(0)
+	totalFee := new(big.Int)
 	for _, tx := range txs {
-		totalGasPrice += tx.GasPrice * tx.GasLimit
+		txFee := new(big.Int).SetUint64(tx.GasPrice)
+		txFee.Mul(txFee, new(big.Int).SetUint64(tx.GasLimit))
+		totalFee.Add(totalFee, txFee)
 	}
 
-	feeAmount := new(big.Int).SetUint64(totalGasPrice)
 	validatorFees := new(big.Int).Div(
-		new(big.Int).Mul(feeAmount, e.config.ValidatorShare),
+		new(big.Int).Mul(totalFee, e.config.ValidatorShare),
 		big.NewInt(100),
 	)
 	burnFees := new(big.Int).Div(
-		new(big.Int).Mul(feeAmount, e.config.BurnShare),
+		new(big.Int).Mul(totalFee, e.config.BurnShare),
 		big.NewInt(100),
 	)
 
-	return feeAmount, validatorFees, burnFees
+	return totalFee, validatorFees, burnFees
 }
 
 type BlockEconomics struct {

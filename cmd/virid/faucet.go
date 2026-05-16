@@ -240,7 +240,7 @@ func (f *FaucetServer) handleClaim(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create and sign the faucet transaction
-	tx, err := ledger.NewTransactionFromKey(nonce, addrBytes, f.perClaim, 21000, 1, nil, f.walletKey)
+	tx, err := ledger.NewTransactionFromKey(nonce, addrBytes, f.perClaim, 21000, 1, nil, uint64(1), f.walletKey)
 	if err != nil {
 		json.NewEncoder(w).Encode(ClaimResponse{Error: "Failed to create transaction: " + err.Error()})
 		return

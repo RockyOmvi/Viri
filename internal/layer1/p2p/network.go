@@ -1847,7 +1847,9 @@ func (n *ViriNetwork) RequestBlocks(fromHeight, toHeight uint64) error {
 		go func(pid peer.ID) {
 			ctx, cancel := context.WithTimeout(n.ctx, 10*time.Second)
 			defer cancel()
-			_ = n.SendToPeer(ctx, pid, msg)
+			if err := n.SendToPeer(ctx, pid, msg); err != nil {
+				n.logger.WithField("peer", pid.String()).WithField("error", err.Error()).Warn("RequestBlocks send failed")
+			}
 		}(p.ID)
 	}
 

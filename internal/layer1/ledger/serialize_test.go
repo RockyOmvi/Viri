@@ -18,7 +18,7 @@ func TestSerializeBlock(t *testing.T) {
 		t.Fatalf("Failed to generate key: %v", err)
 	}
 
-	tx, _ := NewTransactionFromKey(0, key.PubKey().Address(), 100, 1000, 10, nil, key)
+	tx, _ := NewTransactionFromKey(0, key.PubKey().Address(), 100, 1000, 10, nil, 1337, key)
 	block, _ := NewBlock(1, bc.LatestBlock().Hash(), []*Transaction{tx}, key.PubKey().Address(), key)
 
 	data, err := SerializeBlock(block)
@@ -46,7 +46,7 @@ func TestSerializeBlock(t *testing.T) {
 
 func TestSerializeTransaction(t *testing.T) {
 	key, _ := crypto.GenerateKey()
-	tx, _ := NewTransactionFromKey(0, key.PubKey().Address(), 100, 1000, 10, []byte("data"), key)
+	tx, _ := NewTransactionFromKey(0, key.PubKey().Address(), 100, 1000, 10, []byte("data"), 1337, key)
 
 	data, err := SerializeTransaction(tx)
 	if err != nil {
@@ -102,7 +102,7 @@ func TestBlockToJSON(t *testing.T) {
 	bc, _ := NewBlockchain(genesis)
 
 	key, _ := crypto.GenerateKey()
-	tx, _ := NewTransactionFromKey(0, key.PubKey().Address(), 100, 1000, 10, nil, key)
+	tx, _ := NewTransactionFromKey(0, key.PubKey().Address(), 100, 1000, 10, nil, 1337, key)
 	block, _ := NewBlock(1, bc.LatestBlock().Hash(), []*Transaction{tx}, key.PubKey().Address(), key)
 
 	data, err := BlockToJSON(block)
@@ -123,7 +123,7 @@ func TestBlockToJSON(t *testing.T) {
 
 func TestTransactionToJSON(t *testing.T) {
 	key, _ := crypto.GenerateKey()
-	tx, _ := NewTransactionFromKey(42, key.PubKey().Address(), 9999, 5000, 20, []byte("test"), key)
+	tx, _ := NewTransactionFromKey(42, key.PubKey().Address(), 9999, 5000, 20, []byte("test"), 1337, key)
 
 	data, err := TransactionToJSON(tx)
 	if err != nil {
@@ -213,7 +213,7 @@ func TestBlockJSONContainsHashes(t *testing.T) {
 	bc, _ := NewBlockchain(genesis)
 
 	key, _ := crypto.GenerateKey()
-	tx, _ := NewTransactionFromKey(0, key.PubKey().Address(), 100, 1000, 10, nil, key)
+	tx, _ := NewTransactionFromKey(0, key.PubKey().Address(), 100, 1000, 10, nil, 1337, key)
 	block, _ := NewBlock(1, bc.LatestBlock().Hash(), []*Transaction{tx}, key.PubKey().Address(), key)
 
 	data, _ := BlockToJSON(block)

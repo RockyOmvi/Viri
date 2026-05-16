@@ -7,7 +7,7 @@ import (
 )
 
 func TestEventBusPublishSubscribe(t *testing.T) {
-	bus := NewEventBus(100)
+	bus := NewEventBus()
 
 	var received Event
 	var wg sync.WaitGroup
@@ -35,7 +35,7 @@ func TestEventBusPublishSubscribe(t *testing.T) {
 }
 
 func TestEventBusSubscribeAll(t *testing.T) {
-	bus := NewEventBus(100)
+	bus := NewEventBus()
 
 	count := 0
 	var mu sync.Mutex
@@ -61,7 +61,7 @@ func TestEventBusSubscribeAll(t *testing.T) {
 }
 
 func TestEventBusMultipleHandlers(t *testing.T) {
-	bus := NewEventBus(100)
+	bus := NewEventBus()
 
 	var wg sync.WaitGroup
 	wg.Add(3)
@@ -77,7 +77,7 @@ func TestEventBusMultipleHandlers(t *testing.T) {
 }
 
 func TestEventBusHandlerCount(t *testing.T) {
-	bus := NewEventBus(100)
+	bus := NewEventBus()
 
 	if bus.HandlerCount(EventBlockAdded) != 0 {
 		t.Error("Expected 0 handlers initially")
@@ -92,7 +92,7 @@ func TestEventBusHandlerCount(t *testing.T) {
 }
 
 func TestEventBusClear(t *testing.T) {
-	bus := NewEventBus(100)
+	bus := NewEventBus()
 
 	bus.Subscribe(EventBlockAdded, func(event Event) {})
 	bus.Subscribe(EventTxAdded, func(event Event) {})
@@ -132,7 +132,7 @@ func TestEventFactory(t *testing.T) {
 }
 
 func TestEventBusPublishSync(t *testing.T) {
-	bus := NewEventBus(100)
+	bus := NewEventBus()
 
 	count := 0
 	bus.Subscribe(EventBlockAdded, func(event Event) {

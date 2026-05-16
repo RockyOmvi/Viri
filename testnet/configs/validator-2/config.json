@@ -47,8 +47,8 @@
   },
   "logging": {
     "level": "info",
-    "format": "json",
-    "output": "stdout",
+    "format": "text",
+    "output": "",
     "max_size": 100,
     "max_backups": 3
   },

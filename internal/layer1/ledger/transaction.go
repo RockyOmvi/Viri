@@ -6,15 +6,18 @@ import (
 	"github.com/viri-chain/viri/internal/layer1/crypto"
 )
 
-func NewTransaction(nonce uint64, from, to []byte, value, gasLimit, gasPrice uint64, data []byte, key *crypto.PrivateKey) (*Transaction, error) {
+func NewTransaction(nonce uint64, to []byte, value, gasLimit, gasPrice uint64, data []byte, chainID uint64, key *crypto.PrivateKey) (*Transaction, error) {
+	pubKeyBytes := key.PubKey().Bytes()
+
 	tx := &Transaction{
 		Nonce:    nonce,
-		From:     from,
+		From:     pubKeyBytes,
 		To:       to,
 		Value:    value,
 		GasLimit: gasLimit,
 		GasPrice: gasPrice,
 		Data:     data,
+		ChainID:  chainID,
 	}
 
 	payload := tx.SigningPayload()
@@ -33,7 +36,7 @@ func NewTransaction(nonce uint64, from, to []byte, value, gasLimit, gasPrice uin
 	return tx, nil
 }
 
-func NewTransactionFromKey(nonce uint64, to []byte, value, gasLimit, gasPrice uint64, data []byte, key *crypto.PrivateKey) (*Transaction, error) {
+func NewTransactionFromKey(nonce uint64, to []byte, value, gasLimit, gasPrice uint64, data []byte, chainID uint64, key *crypto.PrivateKey) (*Transaction, error) {
 	pubKeyBytes := key.PubKey().Bytes()
 
 	tx := &Transaction{
@@ -44,6 +47,7 @@ func NewTransactionFromKey(nonce uint64, to []byte, value, gasLimit, gasPrice ui
 		GasLimit: gasLimit,
 		GasPrice: gasPrice,
 		Data:     data,
+		ChainID:  chainID,
 	}
 
 	payload := tx.SigningPayload()
@@ -64,6 +68,7 @@ func NewTransactionFromKey(nonce uint64, to []byte, value, gasLimit, gasPrice ui
 
 func (tx *Transaction) SigningPayload() []byte {
 	payload := make([]byte, 0)
+	payload = append(payload, uint64ToBytes(tx.ChainID)...)
 	payload = append(payload, uint64ToBytes(tx.Nonce)...)
 	payload = append(payload, tx.From...)
 	payload = append(payload, tx.To...)

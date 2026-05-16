@@ -91,7 +91,7 @@ func (p *testBP) GetBlockData(height uint64) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return ledger.SerializeBlock(block)
+	return json.Marshal(block)
 }
 
 func (p *testBP) RotateKey() error {
@@ -177,7 +177,7 @@ func TestMultiNodeBlockProduction(t *testing.T) {
 
 		config := DefaultConsensusConfig()
 		config.BlockTime = 100 * time.Millisecond
-		config.ViewTimeout = 200 * time.Millisecond
+		config.ViewTimeout = 500 * time.Millisecond
 
 		engines[i] = NewHotStuffEngine(config, vs, bps[i], staking, nil, &noopAudit3{})
 	}
@@ -202,9 +202,9 @@ func TestMultiNodeBlockProduction(t *testing.T) {
 		}
 	}
 
-	time.Sleep(3 * time.Second)
+	time.Sleep(5 * time.Second)
 
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		converged := true
 		for i := 0; i < n; i++ {

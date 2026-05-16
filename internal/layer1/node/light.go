@@ -3,8 +3,6 @@ package node
 import (
 	"sync"
 	"time"
-
-	"github.com/viri-chain/viri/internal/layer1/state"
 )
 
 // LightMode configures a light client with memory-optimized settings.
@@ -45,6 +43,11 @@ func (l *LightMode) IsEnabled() bool {
 	return l.enabled
 }
 
+// StateDeleter is the interface for deleting state data by epoch.
+type StateDeleter interface {
+	DeleteBefore(epoch uint64) (uint64, error)
+}
+
 // StatePruner manages state pruning for low-memory environments.
 type StatePruner struct {
 	mu             sync.Mutex
@@ -52,14 +55,14 @@ type StatePruner struct {
 	currentEpoch   uint64
 	prunedBlocks   uint64
 	lastPruneTime  time.Time
-	stateManager   *state.StateManager
+	stateDeleter   StateDeleter
 }
 
 // NewStatePruner creates a pruner that keeps the last N epochs of state.
-func NewStatePruner(sm *state.StateManager, keepEpochs uint64) *StatePruner {
+func NewStatePruner(sd StateDeleter, keepEpochs uint64) *StatePruner {
 	return &StatePruner{
 		keepEpochs:   keepEpochs,
-		stateManager: sm,
+		stateDeleter: sd,
 	}
 }
 
@@ -73,7 +76,7 @@ func (sp *StatePruner) Prune(currentEpoch uint64) (uint64, error) {
 	}
 
 	pruneBefore := currentEpoch - sp.keepEpochs
-	count, err := sp.stateManager.DeleteBefore(pruneBefore)
+	count, err := sp.stateDeleter.DeleteBefore(pruneBefore)
 	if err != nil {
 		return 0, err
 	}

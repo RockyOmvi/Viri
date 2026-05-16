@@ -1,6 +1,9 @@
 package accounts
 
-import "testing"
+import (
+	"math/big"
+	"testing"
+)
 
 func TestTransferCreatesRecipient(t *testing.T) {
 	am := NewAccountManager()
@@ -11,7 +14,7 @@ func TestTransferCreatesRecipient(t *testing.T) {
 	}
 
 	toAcc, ok := am.GetAccount([]byte("to"))
-	if !ok || toAcc.Balance != 5 {
-		t.Fatalf("recipient not created")
+	if !ok || toAcc.Balance.Cmp(big.NewInt(5)) != 0 {
+		t.Fatalf("recipient not created, balance=%s", toAcc.Balance)
 	}
 }

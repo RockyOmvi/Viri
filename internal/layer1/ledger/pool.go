@@ -33,14 +33,18 @@ func DefaultTxPoolConfig() *TxPoolConfig {
 	}
 }
 
+type PressureCallback func(level float64)
+
 type TxPool struct {
-	mu         sync.RWMutex
-	config     *TxPoolConfig
-	pending    map[string]*Transaction
-	queued     map[string][]*Transaction
-	byGasPrice []*Transaction
-	state      *state.StateManager
-	txCounter  int
+	mu             sync.RWMutex
+	config         *TxPoolConfig
+	pending        map[string]*Transaction
+	queued         map[string][]*Transaction
+	byGasPrice     []*Transaction
+	state          *state.StateManager
+	txCounter      int
+	pressureCB     PressureCallback
+	lastPressureLvl float64
 }
 
 func NewTxPool(config *TxPoolConfig, stateMgr *state.StateManager) *TxPool {
@@ -62,10 +66,6 @@ func NewTxPool(config *TxPoolConfig, stateMgr *state.StateManager) *TxPool {
 func (p *TxPool) Add(tx *Transaction) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-
-	if len(p.pending) >= p.config.MaxTransactions {
-		return ErrTxPoolFull
-	}
 
 	txHash := string(tx.Hash)
 	if _, exists := p.pending[txHash]; exists {
@@ -89,6 +89,16 @@ func (p *TxPool) Add(tx *Transaction) error {
 		}
 	}
 
+	// Evict lowest-gas-price tx if pool is full (replace-by-fee)
+	if len(p.pending) >= p.config.MaxTransactions {
+		if len(p.byGasPrice) > 0 && tx.GasPrice > p.byGasPrice[len(p.byGasPrice)-1].GasPrice {
+			evictHash := string(p.byGasPrice[len(p.byGasPrice)-1].Hash)
+			p.removeLocked(evictHash)
+		} else {
+			return ErrTxPoolFull
+		}
+	}
+
 	p.pending[txHash] = tx
 	p.byGasPrice = append(p.byGasPrice, tx)
 	sort.Slice(p.byGasPrice, func(i, j int) bool {
@@ -96,6 +106,7 @@ func (p *TxPool) Add(tx *Transaction) error {
 	})
 
 	p.txCounter++
+	p.notifyPressure()
 	return nil
 }
 
@@ -239,6 +250,66 @@ func (p *TxPool) uniqueAccountsLocked() int {
 		accounts[string(tx.From)] = true
 	}
 	return len(accounts)
+}
+
+func (p *TxPool) PressureLevel() float64 {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.config.MaxTransactions == 0 {
+		return 0
+	}
+	return float64(len(p.pending)) / float64(p.config.MaxTransactions)
+}
+
+func (p *TxPool) SetPressureCallback(cb PressureCallback) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.pressureCB = cb
+}
+
+func (p *TxPool) Evict(count int) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	removed := 0
+	for i := len(p.byGasPrice) - 1; i >= 0 && removed < count; i-- {
+		hash := string(p.byGasPrice[i].Hash)
+		if _, exists := p.pending[hash]; exists {
+			delete(p.pending, hash)
+			removed++
+		}
+	}
+	// Rebuild sorted list
+	p.rebuildByGasPrice()
+	p.notifyPressure()
+	return removed
+}
+
+func (p *TxPool) notifyPressure() {
+	if p.pressureCB == nil {
+		return
+	}
+	// Called with mu.Lock() held — compute pressure inline to avoid
+	// RLock-acquiring-while-Lock-held deadlock on the RWMutex.
+	maxTx := p.config.MaxTransactions
+	var lvl float64
+	if maxTx > 0 {
+		lvl = float64(len(p.pending)) / float64(maxTx)
+	}
+	if lvl != p.lastPressureLvl {
+		p.lastPressureLvl = lvl
+		p.pressureCB(lvl)
+	}
+}
+
+func (p *TxPool) rebuildByGasPrice() {
+	p.byGasPrice = make([]*Transaction, 0, len(p.pending))
+	for _, tx := range p.pending {
+		p.byGasPrice = append(p.byGasPrice, tx)
+	}
+	sort.Slice(p.byGasPrice, func(i, j int) bool {
+		return p.byGasPrice[i].GasPrice > p.byGasPrice[j].GasPrice
+	})
 }
 
 type TxPoolStats struct {

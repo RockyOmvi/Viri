@@ -62,10 +62,11 @@ func (a *Account) Transfer(amount *big.Int) error {
 	if amount.Sign() < 0 {
 		return fmt.Errorf("transfer amount must be non-negative")
 	}
-	a.Balance = new(big.Int).Sub(a.Balance, amount)
-	if a.Balance.Sign() < 0 {
+	newBalance := new(big.Int).Sub(a.Balance, amount)
+	if newBalance.Sign() < 0 {
 		return fmt.Errorf("insufficient balance")
 	}
+	a.Balance = newBalance
 	return nil
 }
 
@@ -188,14 +189,19 @@ func (as *AccountState) AllAccounts() ([]*Account, error) {
 	defer iter.Close()
 
 	var accounts []*Account
+	var errs []error
 	for iter.Next() {
 		var account Account
 		if err := account.Deserialize(iter.Value()); err != nil {
+			errs = append(errs, fmt.Errorf("failed to deserialize account: %w", err))
 			continue
 		}
 		accounts = append(accounts, &account)
 	}
 
+	if len(errs) > 0 {
+		return accounts, fmt.Errorf("account deserialization errors: %v", errs)
+	}
 	return accounts, nil
 }
 

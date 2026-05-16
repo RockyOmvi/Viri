@@ -1,22 +1,30 @@
-# Oracle Cloud Infrastructure credentials
-# Copy this file to terraform.tfvars and fill in your values
-tenancy_ocid     = "ocid1.tenancy.oc1..aaaaaaaa..."
-user_ocid        = "ocid1.user.oc1..aaaaaaaa..."
-fingerprint      = "aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99"
-private_key_path = "~/.oci/oci_api_key.pem"
-compartment_ocid = "ocid1.compartment.oc1..aaaaaaaa..."
-region           = "ap-mumbai-1"
+# Viri Testnet — Azure Terraform Variables
+#
+# 1. Install Azure CLI: https://aka.ms/installazurecliwindows
+# 2. Login: az login
+# 3. Copy this file to terraform.tfvars and fill in your values
+# 4. Run: terraform init && terraform plan && terraform apply
+#
+# Cost estimate (5 x Standard_B2s = ~$150/month, $100 credit lasts ~20 days)
+# To save cost: set vm_sku = "Standard_B1ms" (~$65/month, 100 credit lasts ~46 days)
 
-# SSH public key for VM access (required)
-ssh_public_key = "ssh-ed25519 AAAA..."
+# Azure region — pick the closest to you
+#   eastus, eastus2, westeurope, southeastasia, japaneast, etc.
+location = "eastus"
 
-# Optional: domain for TLS (leave empty if not using TLS)
-domain = ""
+# SSH public key content (required)
+# Generate: ssh-keygen -t ed25519 -f ~/.ssh/viri-azure -C "viri-testnet"
+ssh_public_key = "ssh-ed25519 AAAAC3NzaC1lZ..."
 
-# Optional: faucet wallet private key (required if running faucet)
-faucet_wallet_key = ""
+# Admin username for VM access (default: viriadmin)
+# admin_username = "viriadmin"
 
-# Optional: instance sizing
-# instance_shape   = "VM.Standard.A1.Flex"
-# instance_ocpus   = 4
-# instance_memory_gb = 24
+# VM size — B2s (2vCPU/4GB) for performance, B1ms (1vCPU/2GB) for cost savings
+# vm_sku = "Standard_B2s"
+
+# Optional: domain for TLS certificates (leave empty if not using TLS)
+# domain = "testnet.viri.io"
+
+# Optional: faucet wallet private key (hex-encoded, required for faucet node)
+# Generate: openssl rand -hex 32
+# faucet_wallet_key = "abc123..."

@@ -101,14 +101,6 @@ var (
 	addrZKVerify        = []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF3}
 )
 
-type VMType uint8
-
-const (
-	VMTypeDefault VMType = iota
-	VMTypeEVM
-	VMTypeWASM
-)
-
 type ExecutionEngine struct {
 	baseGas        uint64
 	transferGas    uint64
@@ -117,11 +109,9 @@ type ExecutionEngine struct {
 	storageGas     uint64
 	logGas         uint64
 	shieldedPool   *privacy.ShieldedPool
-	zkVerifier     *zk.Verifier
 	gnarkVerifier  *zk.GnarkVerifier
 	gnarkCircuit   *zk.Circuit
 	contractMgr    *contracts.ContractManager
-	vmType         VMType
 	parallel       bool
 }
 
@@ -140,19 +130,9 @@ func (e *ExecutionEngine) SetShieldedPool(sp *privacy.ShieldedPool) {
 	e.shieldedPool = sp
 }
 
-func (e *ExecutionEngine) SetZKVerifier(zv *zk.Verifier) {
-	e.zkVerifier = zv
-}
-
-// SetGnarkVerifier configures the constraint-based ZK verifier with its circuit.
 func (e *ExecutionEngine) SetGnarkVerifier(gv *zk.GnarkVerifier, circuit *zk.Circuit) {
 	e.gnarkVerifier = gv
 	e.gnarkCircuit = circuit
-}
-
-// SetVMType configures which VM backend to use for contract execution.
-func (e *ExecutionEngine) SetVMType(t VMType) {
-	e.vmType = t
 }
 
 // SetParallel enables or disables parallel transaction execution.
@@ -162,17 +142,6 @@ func (e *ExecutionEngine) SetParallel(enabled bool) {
 
 func (e *ExecutionEngine) SetContractManager(cm *contracts.ContractManager) {
 	e.contractMgr = cm
-}
-
-// newExecutor creates a VM executor matching the configured VM type.
-func (e *ExecutionEngine) newExecutor(ctx *vm.EVMContext, state *evmStateAdapter) vm.Executor {
-	switch e.vmType {
-	case VMTypeWASM:
-		adapter := vm.NewWasmAdapter(ctx.GasLimit)
-		return adapter
-	default:
-		return vm.NewEVMExecutor(ctx, state)
-	}
 }
 
 func isPrecompileAddress(addr []byte) bool {
@@ -433,7 +402,7 @@ func (e *ExecutionEngine) executeDeploy(tx *ledger.Transaction, getAccount func(
 		initCode = tx.Data[:len(tx.Data)-32]
 	}
 
-	executor := e.newExecutor(ctx, stateAdapter)
+	executor := vm.NewEVMExecutor(ctx, stateAdapter)
 	runtimeCode, gasUsed, err := executor.Execute(initCode)
 
 	if err != nil {
@@ -441,6 +410,7 @@ func (e *ExecutionEngine) executeDeploy(tx *ledger.Transaction, getAccount func(
 			Status:  0,
 			GasUsed: gasUsed,
 			Err:     fmt.Errorf("contract init failed: %v", err),
+			Logs:    stateAdapter.logs,
 		}
 	}
 
@@ -459,6 +429,7 @@ func (e *ExecutionEngine) executeDeploy(tx *ledger.Transaction, getAccount func(
 		return &ExecutionResult{
 			Status:  0,
 			Err:     fmt.Errorf("failed to save contract: %v", err),
+			Logs:    stateAdapter.logs,
 		}
 	}
 
@@ -466,12 +437,13 @@ func (e *ExecutionEngine) executeDeploy(tx *ledger.Transaction, getAccount func(
 		Status:  1,
 		Output:  contractAddr,
 		GasUsed: gasUsed,
+		Logs:    stateAdapter.logs,
 	}
 }
 
 func (e *ExecutionEngine) executeCall(tx *ledger.Transaction, getAccount func([]byte) (*AccountState, error), setAccount func([]byte, *AccountState) error) *ExecutionResult {
 	// Check for precompile addresses
-	if e.shieldedPool != nil || e.zkVerifier != nil || e.gnarkVerifier != nil {
+	if e.shieldedPool != nil || e.gnarkVerifier != nil {
 		if res := e.handlePrecompile(tx, getAccount, setAccount); res != nil {
 			return res
 		}
@@ -513,7 +485,7 @@ func (e *ExecutionEngine) executeCall(tx *ledger.Transaction, getAccount func([]
 		Data:     tx.Data,
 	}
 
-	executor := e.newExecutor(ctx, stateAdapter)
+	executor := vm.NewEVMExecutor(ctx, stateAdapter)
 	output, gasUsed, err := executor.Execute(contract.Code)
 
 	if err != nil {
@@ -521,6 +493,7 @@ func (e *ExecutionEngine) executeCall(tx *ledger.Transaction, getAccount func([]
 			Status:  0,
 			GasUsed: gasUsed,
 			Err:     err,
+			Logs:    stateAdapter.logs,
 		}
 	}
 
@@ -528,6 +501,7 @@ func (e *ExecutionEngine) executeCall(tx *ledger.Transaction, getAccount func([]
 		Status:  1,
 		Output:  output,
 		GasUsed: gasUsed,
+		Logs:    stateAdapter.logs,
 	}
 }
 
@@ -542,7 +516,7 @@ func (e *ExecutionEngine) handlePrecompile(tx *ledger.Transaction, getAccount fu
 	case bytes.Equal(tx.To, addrShieldedWithdraw):
 		return e.precompileShieldedWithdraw(tx, getAccount, setAccount)
 	case bytes.Equal(tx.To, addrZKVerify):
-		return e.precompileZKVerify(tx, getAccount, setAccount)
+		return e.precompileZKVerify(tx)
 	}
 
 	// Check standard contracts (ERC20, ERC721, etc.)
@@ -585,7 +559,7 @@ func (e *ExecutionEngine) precompileShieldedWithdraw(tx *ledger.Transaction, get
 		return &ExecutionResult{Status: 0, Err: fmt.Errorf("invalid withdraw data: need nullifier(32)")}
 	}
 	nullifier := tx.Data[:32]
-	if err := e.shieldedPool.SpendNote(nullifier); err != nil {
+	if _, err := e.shieldedPool.SpendNote(nullifier); err != nil {
 		return &ExecutionResult{Status: 0, Err: fmt.Errorf("shielded withdraw failed: %v", err)}
 	}
 	recipient, err := getAccount(tx.To)
@@ -604,28 +578,10 @@ func (e *ExecutionEngine) precompileShieldedWithdraw(tx *ledger.Transaction, get
 	return &ExecutionResult{Status: 1}
 }
 
-func (e *ExecutionEngine) precompileZKVerify(tx *ledger.Transaction, getAccount func([]byte) (*AccountState, error), setAccount func([]byte, *AccountState) error) *ExecutionResult {
-	if e.gnarkVerifier != nil && e.gnarkCircuit != nil {
-		return e.precompileGnarkVerify(tx)
+func (e *ExecutionEngine) precompileZKVerify(tx *ledger.Transaction) *ExecutionResult {
+	if e.gnarkVerifier == nil || e.gnarkCircuit == nil {
+		return &ExecutionResult{Status: 0, Err: fmt.Errorf("ZK gnark verifier not configured")}
 	}
-	if e.zkVerifier == nil {
-		return &ExecutionResult{Status: 0, Err: fmt.Errorf("ZK verifier not available")}
-	}
-	if len(tx.Data) < 96 {
-		return &ExecutionResult{Status: 0, Err: fmt.Errorf("invalid verify data: need A(32)+B(32)+C(32)")}
-	}
-	proof := &zk.Proof{
-		A: []*big.Int{new(big.Int).SetBytes(tx.Data[:32])},
-		B: []*big.Int{new(big.Int).SetBytes(tx.Data[32:64])},
-		C: []*big.Int{new(big.Int).SetBytes(tx.Data[64:96])},
-	}
-	if err := e.zkVerifier.Verify(proof); err != nil {
-		return &ExecutionResult{Status: 0, Err: fmt.Errorf("ZK proof verification failed: %v", err)}
-	}
-	return &ExecutionResult{Status: 1, Output: []byte{0x01}}
-}
-
-func (e *ExecutionEngine) precompileGnarkVerify(tx *ledger.Transaction) *ExecutionResult {
 	proof, publicWitness, err := zk.DeserializeProofFromTx(tx.Data, e.gnarkCircuit)
 	if err != nil {
 		return &ExecutionResult{Status: 0, Err: fmt.Errorf("invalid verify data: %w", err)}
@@ -639,6 +595,24 @@ func (e *ExecutionEngine) precompileGnarkVerify(tx *ledger.Transaction) *Executi
 type evmStateAdapter struct {
 	getAccount func([]byte) (*AccountState, error)
 	setAccount func([]byte, *AccountState) error
+	logs       []*ledger.Log
+	journal    []journalEntry
+	snapshots  []int
+}
+
+type journalAction uint8
+
+const (
+	jBal journalAction = iota
+	jStor
+	jCreate
+)
+
+type journalEntry struct {
+	action journalAction
+	addr   string
+	key    string
+	oldVal interface{}
 }
 
 func (s *evmStateAdapter) GetNonce(addr []byte) uint64 {
@@ -681,8 +655,11 @@ func (s *evmStateAdapter) SetStorage(addr []byte, key []byte, value []byte) {
 	if acct.Storage == nil {
 		acct.Storage = make(map[string][]byte)
 	}
-	acct.Storage[string(key)] = value
-	s.setAccount(addr, acct)
+	keyStr := string(key)
+	oldVal := acct.Storage[keyStr]
+	acct.Storage[keyStr] = value
+	s.journal = append(s.journal, journalEntry{action: jStor, addr: string(addr), key: keyStr, oldVal: oldVal})
+	_ = s.setAccount(addr, acct)
 }
 
 func (s *evmStateAdapter) Transfer(from, to []byte, amount *big.Int) {
@@ -700,10 +677,14 @@ func (s *evmStateAdapter) Transfer(from, to []byte, amount *big.Int) {
 		}
 	}
 	if fromAcct.Balance.Cmp(amount) >= 0 {
+		oldFrom := new(big.Int).Set(fromAcct.Balance)
+		oldTo := new(big.Int).Set(toAcct.Balance)
 		fromAcct.Balance.Sub(fromAcct.Balance, amount)
 		toAcct.Balance.Add(toAcct.Balance, amount)
-		s.setAccount(from, fromAcct)
-		s.setAccount(to, toAcct)
+		s.journal = append(s.journal, journalEntry{action: jBal, addr: string(from), oldVal: oldFrom})
+		s.journal = append(s.journal, journalEntry{action: jBal, addr: string(to), oldVal: oldTo})
+		_ = s.setAccount(from, fromAcct)
+		_ = s.setAccount(to, toAcct)
 	}
 }
 
@@ -714,7 +695,54 @@ func (s *evmStateAdapter) CreateAccount(addr []byte) {
 		Nonce:   0,
 		Storage: make(map[string][]byte),
 	}
-	s.setAccount(addr, acct)
+	s.journal = append(s.journal, journalEntry{action: jCreate, addr: string(addr)})
+	_ = s.setAccount(addr, acct)
+}
+
+func (s *evmStateAdapter) AddLog(addr []byte, topics [][]byte, data []byte) {
+	s.logs = append(s.logs, &ledger.Log{Address: addr, Topics: topics, Data: data})
+}
+
+func (s *evmStateAdapter) Snapshot() int {
+	s.snapshots = append(s.snapshots, len(s.journal))
+	return len(s.snapshots) - 1
+}
+
+func (s *evmStateAdapter) RevertToSnapshot(id int) {
+	if id < 0 || id >= len(s.snapshots) {
+		return
+	}
+	marker := s.snapshots[id]
+	for len(s.journal) > marker {
+		entry := s.journal[len(s.journal)-1]
+		s.journal = s.journal[:len(s.journal)-1]
+		switch entry.action {
+		case jBal:
+			acct, err := s.getAccount([]byte(entry.addr))
+			if err != nil || acct == nil {
+				acct = &AccountState{Address: []byte(entry.addr), Balance: new(big.Int), Storage: make(map[string][]byte)}
+			}
+			acct.Balance = new(big.Int).Set(entry.oldVal.(*big.Int))
+			_ = s.setAccount([]byte(entry.addr), acct)
+		case jStor:
+			acct, err := s.getAccount([]byte(entry.addr))
+			if err != nil || acct == nil {
+				acct = &AccountState{Address: []byte(entry.addr), Balance: new(big.Int), Storage: make(map[string][]byte)}
+			}
+			if acct.Storage == nil {
+				acct.Storage = make(map[string][]byte)
+			}
+			if entry.oldVal == nil {
+				delete(acct.Storage, entry.key)
+			} else {
+				acct.Storage[entry.key] = entry.oldVal.([]byte)
+			}
+			_ = s.setAccount([]byte(entry.addr), acct)
+		case jCreate:
+			_ = s.setAccount([]byte(entry.addr), &AccountState{Address: []byte(entry.addr)})
+		}
+	}
+	s.snapshots = s.snapshots[:id]
 }
 
 func (e *ExecutionEngine) calculateGasCost(txType TxType, tx *ledger.Transaction) uint64 {

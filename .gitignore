@@ -32,5 +32,13 @@ docker/data/
 
 # Logs
 *.log
-.viri-testnet/  
+.viri-testnet/
+
+# Node.js / frontend
+frontend/node_modules/
+frontend/.next/
+
+# Generated archives
+stitch_viri_explorer.zip
+stitch_viri_explorer/
  

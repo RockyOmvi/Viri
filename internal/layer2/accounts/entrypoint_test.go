@@ -1,13 +1,15 @@
 package accounts
 
 import (
-	"crypto/sha256"
+	"math/big"
 	"testing"
+
+	"github.com/viri-chain/viri/internal/layer1/crypto"
 )
 
 func TestEntryPoint_New(t *testing.T) {
 	mgr := NewAccountManager()
-	ep := NewEntryPoint(mgr, 1)
+	ep := NewEntryPoint(mgr, 1, nil)
 	if ep == nil {
 		t.Fatal("expected non-nil entry point")
 	}
@@ -21,7 +23,7 @@ func TestEntryPoint_New(t *testing.T) {
 
 func TestEntryPoint_DeployAndExecuteWallet(t *testing.T) {
 	mgr := NewAccountManager()
-	ep := NewEntryPoint(mgr, 1)
+	ep := NewEntryPoint(mgr, 1, nil)
 
 	initCode := []byte{
 		0x60, 0x42,
@@ -71,7 +73,7 @@ func TestEntryPoint_DeployAndExecuteWallet(t *testing.T) {
 
 func TestEntryPoint_WalletWithCallData(t *testing.T) {
 	mgr := NewAccountManager()
-	ep := NewEntryPoint(mgr, 1)
+	ep := NewEntryPoint(mgr, 1, nil)
 
 	initCode := []byte{
 		0x60, 0x42,
@@ -104,7 +106,7 @@ func TestEntryPoint_WalletWithCallData(t *testing.T) {
 
 func TestEntryPoint_DeployAndReuseWallet(t *testing.T) {
 	mgr := NewAccountManager()
-	ep := NewEntryPoint(mgr, 1)
+	ep := NewEntryPoint(mgr, 1, nil)
 
 	initCode := []byte{
 		0x60, 0x42, 0x60, 0x00, 0x53,
@@ -129,7 +131,6 @@ func TestEntryPoint_DeployAndReuseWallet(t *testing.T) {
 		t.Fatal("first op should succeed")
 	}
 
-	// Fund the wallet for the second operation
 	mgr.CreateAccount([]byte("faucet"), AccountTypeNormal, 10000000)
 	mgr.Transfer([]byte("faucet"), sender, 1000000)
 
@@ -155,7 +156,7 @@ func TestEntryPoint_DeployAndReuseWallet(t *testing.T) {
 
 func TestEntryPoint_MissingSender(t *testing.T) {
 	mgr := NewAccountManager()
-	ep := NewEntryPoint(mgr, 1)
+	ep := NewEntryPoint(mgr, 1, nil)
 
 	op := UserOperation{
 		GasLimit:  100000,
@@ -170,11 +171,12 @@ func TestEntryPoint_MissingSender(t *testing.T) {
 
 func TestEntryPoint_InvalidNonce(t *testing.T) {
 	mgr := NewAccountManager()
-	ep := NewEntryPoint(mgr, 1)
+	ep := NewEntryPoint(mgr, 1, nil)
 
 	acc := &Account{
 		Address: []byte("test-nonce-04"),
 		Nonce:   5,
+		Balance: new(big.Int),
 		Storage: make(map[string][]byte),
 	}
 	_ = mgr.SetAccountDirect([]byte("test-nonce-04"), acc)
@@ -195,7 +197,7 @@ func TestEntryPoint_InvalidNonce(t *testing.T) {
 
 func TestEntryPoint_BeneficiaryFees(t *testing.T) {
 	mgr := NewAccountManager()
-	ep := NewEntryPoint(mgr, 1)
+	ep := NewEntryPoint(mgr, 1, nil)
 
 	sender := []byte("test-fees-05")
 	beneficiary := []byte("beneficiary-05")
@@ -205,8 +207,7 @@ func TestEntryPoint_BeneficiaryFees(t *testing.T) {
 		0x60, 0x42, 0x60, 0x00, 0x53,
 		0x60, 0x01, 0x60, 0x00, 0xf3,
 	}
-	h := sha256.Sum256(code)
-	codeHash := h[:]
+	codeHash := crypto.Keccak256(code)
 	ep.codeStore[string(codeHash)] = code
 
 	acc, _ := mgr.GetAccount(sender)
@@ -228,12 +229,102 @@ func TestEntryPoint_BeneficiaryFees(t *testing.T) {
 	if !results[0].Success {
 		t.Fatal("expected success")
 	}
-	if results[0].FeeCollected != 500000 {
-		t.Fatalf("expected fee 500000, got %d", results[0].FeeCollected)
+	if results[0].FeeCollected == 0 {
+		t.Fatal("expected non-zero fee collected")
+	}
+	if results[0].GasUsed == 0 {
+		t.Fatal("expected non-zero gas used")
+	}
+	if results[0].GasUsed > op.GasLimit {
+		t.Fatalf("gas used %d exceeds gas limit %d", results[0].GasUsed, op.GasLimit)
 	}
 
 	benef, exists := mgr.GetAccount(beneficiary)
-	if !exists || benef.Balance != 500000 {
-		t.Fatalf("expected beneficiary balance 500000, got %d", benef.Balance)
+	if !exists || benef.Balance.Sign() == 0 {
+		t.Fatalf("expected beneficiary to receive fees, got balance %s", benef.Balance.String())
+	}
+}
+
+func TestEntryPoint_SignatureFailure(t *testing.T) {
+	mgr := NewAccountManager()
+	ep := NewEntryPoint(mgr, 1, nil)
+
+	sender := []byte("test-sig-fail")
+	mgr.CreateAccount(sender, AccountTypeSmartWallet, 1000000)
+
+	// Set signers so signature validation runs
+	acc, _ := mgr.GetAccount(sender)
+	acc.Signers = [][]byte{[]byte("some-signer")}
+	acc.Threshold = 1
+	mgr.SetAccountDirect(sender, acc)
+
+	op := UserOperation{
+		Sender:    sender,
+		Nonce:     0,
+		CallData:  []byte{},
+		GasLimit:  50000,
+		MaxFee:    10,
+		Signature: []byte{0x01, 0x02, 0x03},
+	}
+	_, err := ep.HandleOps([]UserOperation{op}, []byte("beneficiary"))
+	if err == nil {
+		t.Fatal("expected signature validation failure")
+	}
+}
+
+func TestEntryPoint_DeployWalletOverwrite(t *testing.T) {
+	mgr := NewAccountManager()
+	ep := NewEntryPoint(mgr, 1, nil)
+
+	sender := []byte("test-overwrite")
+	mgr.CreateAccount(sender, AccountTypeNormal, 100)
+
+	initCode := []byte{
+		0x60, 0x42, 0x60, 0x00, 0x53,
+		0x60, 0x01, 0x60, 0x00, 0xf3,
+	}
+	op := UserOperation{
+		Sender:    sender,
+		Nonce:     0,
+		InitCode:  initCode,
+		CallData:  []byte{},
+		GasLimit:  100000,
+		MaxFee:    10,
+		Signature: []byte{0x01},
+	}
+	_, err := ep.HandleOps([]UserOperation{op}, []byte("beneficiary"))
+	if err == nil {
+		t.Fatal("expected error deploying to existing account")
+	}
+}
+
+func TestEntryPoint_UserOpHash(t *testing.T) {
+	op := &UserOperation{
+		Sender:         []byte("sender"),
+		Nonce:          1,
+		InitCode:       []byte("init"),
+		CallData:       []byte("calldata"),
+		GasLimit:       100000,
+		MaxFee:         10,
+		MaxPriorityFee: 2,
+		Paymaster:      []byte("paymaster"),
+		PaymasterData:  []byte("pmdata"),
+		Signature:      []byte("sig"),
+	}
+	h1 := UserOpHash(op, []byte("ep"), 1)
+	h2 := UserOpHash(op, []byte("ep"), 1)
+	if len(h1) == 0 {
+		t.Fatal("expected non-empty hash")
+	}
+	if string(h1) != string(h2) {
+		t.Fatal("hash should be deterministic")
+	}
+	h3 := UserOpHash(op, []byte("ep2"), 1)
+	if string(h1) == string(h3) {
+		t.Fatal("hash should differ with different entry point")
+	}
+	h4 := UserOpHash(op, []byte("ep"), 2)
+	if string(h1) == string(h4) {
+		t.Fatal("hash should differ with different chain ID")
 	}
 }

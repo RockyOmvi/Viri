@@ -180,7 +180,11 @@ func (gc *GenesisConfig) Validate() error {
 		if acc.Address == "" {
 			return fmt.Errorf("account address required")
 		}
-		if _, err := hex.DecodeString(acc.Address); err != nil {
+		addr := acc.Address
+		if len(addr) > 2 && addr[:2] == "0x" {
+			addr = addr[2:]
+		}
+		if _, err := hex.DecodeString(addr); err != nil {
 			return fmt.Errorf("invalid account address format: %s", acc.Address)
 		}
 	}

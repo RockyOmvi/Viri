@@ -1,245 +1,342 @@
 terraform {
   required_version = ">= 1.5"
   required_providers {
-    oci = {
-      source  = "oracle/oci"
-      version = "~> 6.0"
+    azurerm = {
+      source  = "hashicorp/azurerm"
+      version = "~> 4.0"
     }
   }
 }
 
-variable "tenancy_ocid"     { type = string }
-variable "user_ocid"        { type = string }
-variable "fingerprint"      { type = string }
-variable "private_key_path" { type = string }
-variable "region"           { type = string }
-variable "compartment_ocid" { type = string }
-variable "ssh_public_key"   { type = string }
-variable "domain"           { type = string }
+provider "azurerm" {
+  features {}
+}
 
+# --- Variables ---
+variable "location" {
+  description = "Azure region (eastus, westeurope, southeastasia, etc.)"
+  type        = string
+  default     = "eastus"
+}
+
+variable "ssh_public_key" {
+  description = "Public SSH key content for VM access"
+  type        = string
+  sensitive   = true
+}
+
+variable "admin_username" {
+  description = "Admin username for VMs"
+  type        = string
+  default     = "viriadmin"
+}
+
+variable "domain" {
+  description = "Domain name for TLS (optional)"
+  type        = string
+  default     = ""
+}
+
+variable "faucet_wallet_key" {
+  description = "Hex-encoded private key for the faucet wallet"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "vm_sku" {
+  description = "Azure VM SKU (size). B2s=2vCPU/4GB ~$30/mo, B1ms=1vCPU/2GB ~$13/mo"
+  type        = string
+  default     = "Standard_B2s"
+}
+
+# --- Locals ---
 locals {
-  network_cidr = "10.0.0.0/16"
-  subnet_cidr  = "10.0.1.0/24"
+  network_cidr  = "10.0.0.0/16"
+  subnet_cidr   = "10.0.1.0/24"
   instance_count = 5
   instance_names = ["bootstrap", "validator-0", "validator-1", "validator-2", "faucet"]
-}
-
-provider "oci" {
-  tenancy_ocid     = var.tenancy_ocid
-  user_ocid        = var.user_ocid
-  fingerprint      = var.fingerprint
-  private_key_path = var.private_key_path
-  region           = var.region
-}
-
-resource "oci_core_vcn" "viri_testnet" {
-  compartment_id = var.compartment_ocid
-  display_name   = "viri-testnet-vcn"
-  cidr_block     = local.network_cidr
-  dns_label      = "viri"
-}
-
-resource "oci_core_subnet" "viri_testnet" {
-  compartment_id    = var.compartment_ocid
-  vcn_id            = oci_core_vcn.viri_testnet.id
-  display_name      = "viri-testnet-subnet"
-  cidr_block        = local.subnet_cidr
-  dns_label         = "viri"
-  security_list_ids = [oci_core_security_list.viri_testnet.id]
-}
-
-resource "oci_core_internet_gateway" "viri_testnet" {
-  compartment_id = var.compartment_ocid
-  vcn_id         = oci_core_vcn.viri_testnet.id
-  display_name   = "viri-testnet-igw"
-}
-
-resource "oci_core_default_route_table" "viri_testnet" {
-  manage_default_resource_id = oci_core_vcn.viri_testnet.default_route_table_id
-  display_name               = "viri-testnet-rt"
-
-  route_rules {
-    destination       = "0.0.0.0/0"
-    destination_type  = "CIDR_BLOCK"
-    network_entity_id = oci_core_internet_gateway.viri_testnet.id
+  resource_prefix = "viri-testnet"
+  tags = {
+    Environment = "testnet"
+    Project     = "viri-blockchain"
+    ManagedBy   = "terraform"
   }
 }
 
-# Security list — open ports for blockchain node
-resource "oci_core_security_list" "viri_testnet" {
-  compartment_id = var.compartment_ocid
-  vcn_id         = oci_core_vcn.viri_testnet.id
-  display_name   = "viri-testnet-sl"
+# --- Resource Group ---
+resource "azurerm_resource_group" "main" {
+  name     = "${local.resource_prefix}-rg"
+  location = var.location
+  tags     = local.tags
+}
 
-  egress_security_rules {
-    destination = "0.0.0.0/0"
-    protocol    = "all"
-  }
+# --- Virtual Network ---
+resource "azurerm_virtual_network" "main" {
+  name                = "${local.resource_prefix}-vnet"
+  location            = azurerm_resource_group.main.location
+  resource_group_name = azurerm_resource_group.main.name
+  address_space       = [local.network_cidr]
+  tags                = local.tags
+}
 
-  ingress_security_rules {
-    protocol = "6"
-    source   = "0.0.0.0/0"
-    description = "SSH"
-    tcp_options {
-      min = 22
-      max = 22
-    }
-  }
+resource "azurerm_subnet" "main" {
+  name                 = "${local.resource_prefix}-subnet"
+  resource_group_name  = azurerm_resource_group.main.name
+  virtual_network_name = azurerm_virtual_network.main.name
+  address_prefixes     = [local.subnet_cidr]
+}
 
-  ingress_security_rules {
-    protocol = "6"
-    source   = "0.0.0.0/0"
-    description = "P2P"
-    tcp_options {
-      min = 30303
-      max = 30303
-    }
-  }
+# --- Network Security Group (firewall rules) ---
+resource "azurerm_network_security_group" "main" {
+  name                = "${local.resource_prefix}-nsg"
+  location            = azurerm_resource_group.main.location
+  resource_group_name = azurerm_resource_group.main.name
+  tags                = local.tags
+}
 
-  ingress_security_rules {
-    protocol = "6"
-    source   = "0.0.0.0/0"
-    description = "JSON-RPC"
-    tcp_options {
-      min = 8545
-      max = 8545
-    }
-  }
+resource "azurerm_network_security_rule" "ssh" {
+  name                        = "SSH"
+  priority                    = 100
+  direction                   = "Inbound"
+  access                      = "Allow"
+  protocol                    = "Tcp"
+  source_port_range           = "*"
+  destination_port_range      = "22"
+  source_address_prefix       = "*"
+  destination_address_prefix  = "*"
+  resource_group_name         = azurerm_resource_group.main.name
+  network_security_group_name = azurerm_network_security_group.main.name
+}
 
-  ingress_security_rules {
-    protocol = "6"
-    source   = "0.0.0.0/0"
-    description = "REST API"
-    tcp_options {
-      min = 8546
-      max = 8546
-    }
-  }
+resource "azurerm_network_security_rule" "p2p" {
+  name                        = "P2P"
+  priority                    = 101
+  direction                   = "Inbound"
+  access                      = "Allow"
+  protocol                    = "Tcp"
+  source_port_range           = "*"
+  destination_port_range      = "30303"
+  source_address_prefix       = "*"
+  destination_address_prefix  = "*"
+  resource_group_name         = azurerm_resource_group.main.name
+  network_security_group_name = azurerm_network_security_group.main.name
+}
 
-  ingress_security_rules {
-    protocol = "6"
-    source   = "0.0.0.0/0"
-    description = "Explorer"
-    tcp_options {
-      min = 8080
-      max = 8080
-    }
-  }
+resource "azurerm_network_security_rule" "json_rpc" {
+  name                        = "JSON-RPC"
+  priority                    = 102
+  direction                   = "Inbound"
+  access                      = "Allow"
+  protocol                    = "Tcp"
+  source_port_range           = "*"
+  destination_port_range      = "8545"
+  source_address_prefix       = "*"
+  destination_address_prefix  = "*"
+  resource_group_name         = azurerm_resource_group.main.name
+  network_security_group_name = azurerm_network_security_group.main.name
+}
 
-  ingress_security_rules {
-    protocol = "6"
-    source   = "0.0.0.0/0"
-    description = "Faucet"
-    tcp_options {
-      min = 8081
-      max = 8081
-    }
-  }
+resource "azurerm_network_security_rule" "rest_api" {
+  name                        = "REST-API"
+  priority                    = 103
+  direction                   = "Inbound"
+  access                      = "Allow"
+  protocol                    = "Tcp"
+  source_port_range           = "*"
+  destination_port_range      = "8546"
+  source_address_prefix       = "*"
+  destination_address_prefix  = "*"
+  resource_group_name         = azurerm_resource_group.main.name
+  network_security_group_name = azurerm_network_security_group.main.name
+}
 
-  ingress_security_rules {
-    protocol = "6"
-    source   = "0.0.0.0/0"
-    description = "Metrics"
-    tcp_options {
-      min = 9090
-      max = 9090
-    }
-  }
+resource "azurerm_network_security_rule" "explorer" {
+  name                        = "Explorer"
+  priority                    = 104
+  direction                   = "Inbound"
+  access                      = "Allow"
+  protocol                    = "Tcp"
+  source_port_range           = "*"
+  destination_port_range      = "8080"
+  source_address_prefix       = "*"
+  destination_address_prefix  = "*"
+  resource_group_name         = azurerm_resource_group.main.name
+  network_security_group_name = azurerm_network_security_group.main.name
+}
 
-  ingress_security_rules {
-    protocol = "6"
-    source   = local.network_cidr
-    description = "Internal gossip"
-    tcp_options {
-      min = 7946
-      max = 7946
-    }
-  }
+resource "azurerm_network_security_rule" "faucet" {
+  name                        = "Faucet"
+  priority                    = 105
+  direction                   = "Inbound"
+  access                      = "Allow"
+  protocol                    = "Tcp"
+  source_port_range           = "*"
+  destination_port_range      = "8081"
+  source_address_prefix       = "*"
+  destination_address_prefix  = "*"
+  resource_group_name         = azurerm_resource_group.main.name
+  network_security_group_name = azurerm_network_security_group.main.name
+}
 
-  ingress_security_rules {
-    protocol = "17"
-    source   = local.network_cidr
-    description = "Serf LAN"
-    tcp_options {
-      min = 7946
-      max = 7946
-    }
+resource "azurerm_network_security_rule" "metrics" {
+  name                        = "Metrics"
+  priority                    = 106
+  direction                   = "Inbound"
+  access                      = "Allow"
+  protocol                    = "Tcp"
+  source_port_range           = "*"
+  destination_port_range      = "9090"
+  source_address_prefix       = "*"
+  destination_address_prefix  = "*"
+  resource_group_name         = azurerm_resource_group.main.name
+  network_security_group_name = azurerm_network_security_group.main.name
+}
+
+resource "azurerm_network_security_rule" "internal_gossip_tcp" {
+  name                        = "Internal-Gossip-TCP"
+  priority                    = 200
+  direction                   = "Inbound"
+  access                      = "Allow"
+  protocol                    = "Tcp"
+  source_port_range           = "*"
+  destination_port_range      = "7946"
+  source_address_prefix       = local.subnet_cidr
+  destination_address_prefix  = "*"
+  resource_group_name         = azurerm_resource_group.main.name
+  network_security_group_name = azurerm_network_security_group.main.name
+}
+
+resource "azurerm_network_security_rule" "internal_gossip_udp" {
+  name                        = "Internal-Gossip-UDP"
+  priority                    = 201
+  direction                   = "Inbound"
+  access                      = "Allow"
+  protocol                    = "Udp"
+  source_port_range           = "*"
+  destination_port_range      = "7946"
+  source_address_prefix       = local.subnet_cidr
+  destination_address_prefix  = "*"
+  resource_group_name         = azurerm_resource_group.main.name
+  network_security_group_name = azurerm_network_security_group.main.name
+}
+
+# --- Public IPs ---
+resource "azurerm_public_ip" "vms" {
+  count               = local.instance_count
+  name                = "${local.resource_prefix}-pip-${local.instance_names[count.index]}"
+  location            = azurerm_resource_group.main.location
+  resource_group_name = azurerm_resource_group.main.name
+  allocation_method   = "Static"
+  sku                 = "Standard"
+  domain_name_label   = "viri-${local.instance_names[count.index]}"
+  tags                = local.tags
+}
+
+# --- Network Interfaces ---
+resource "azurerm_network_interface" "vms" {
+  count               = local.instance_count
+  name                = "${local.resource_prefix}-nic-${local.instance_names[count.index]}"
+  location            = azurerm_resource_group.main.location
+  resource_group_name = azurerm_resource_group.main.name
+  tags                = local.tags
+
+  ip_configuration {
+    name                          = "primary"
+    subnet_id                     = azurerm_subnet.main.id
+    private_ip_address_allocation = "Static"
+    private_ip_address            = cidrhost(local.subnet_cidr, count.index + 10)
+    public_ip_address_id          = azurerm_public_ip.vms[count.index].id
   }
 }
 
-# Static public IPs
-resource "oci_core_public_ip" "viri_testnet" {
-  count          = local.instance_count
-  compartment_id = var.compartment_ocid
-  display_name   = "viri-${local.instance_names[count.index]}-ip"
-  lifetime       = "RESERVED"
-}
-
-# Compute instances
-resource "oci_core_instance" "viri_testnet" {
+# --- VMs ---
+resource "azurerm_linux_virtual_machine" "vms" {
   count                = local.instance_count
-  compartment_id       = var.compartment_ocid
-  display_name         = "viri-${local.instance_names[count.index]}"
-  availability_domain  = data.oci_identity_availability_domains.ads.availability_domains[0].name
-  shape                = "VM.Standard.A1.Flex"
-  shape_config {
-    ocpus         = 4
-    memory_in_gbs = 24
+  name                 = "viri-${local.instance_names[count.index]}"
+  location             = azurerm_resource_group.main.location
+  resource_group_name  = azurerm_resource_group.main.name
+  size                 = var.vm_sku
+  admin_username       = var.admin_username
+  network_interface_ids = [azurerm_network_interface.vms[count.index].id]
+  tags                 = local.tags
+
+  admin_ssh_key {
+    username   = var.admin_username
+    public_key = var.ssh_public_key
   }
 
-  source_details {
-    source_type = "image"
-    source_id   = data.oci_core_images.ubuntu.id
+  source_image_reference {
+    publisher = "canonical"
+    offer     = "ubuntu-24_04-lts"
+    sku       = "server"
+    version   = "latest"
   }
 
-  metadata = {
-    ssh_authorized_keys = var.ssh_public_key
-    user_data = base64encode(templatefile("${path.module}/cloud-init.yaml", {
-      instance_name    = local.instance_names[count.index]
-      domain           = var.domain
-      faucet_wallet_key = var.faucet_wallet_key
-    }))
+  os_disk {
+    name                 = "${local.resource_prefix}-disk-${local.instance_names[count.index]}"
+    caching              = "ReadWrite"
+    storage_account_type = "Premium_LRS"
+    disk_size_gb         = 64
   }
 
-  create_vnic_details {
-    display_name      = "viri-${local.instance_names[count.index]}-vnic"
-    subnet_id         = oci_core_subnet.viri_testnet.id
-    private_ip        = cidrhost(local.subnet_cidr, count.index + 10)
-    public_ip         = oci_core_public_ip.viri_testnet[count.index].ip_address
-    skip_source_dest_check = true
+  user_data = base64encode(templatefile("${path.module}/cloud-init.yaml", {
+    instance_name     = local.instance_names[count.index]
+    domain            = var.domain
+    faucet_wallet_key = var.faucet_wallet_key
+  }))
+
+  boot_diagnostics {
+    storage_account_uri = null
+  }
+
+  identity {
+    type = "SystemAssigned"
   }
 }
 
-data "oci_identity_availability_domains" "ads" {
-  compartment_id = var.compartment_ocid
-}
-
-data "oci_core_images" "ubuntu" {
-  compartment_id           = var.compartment_ocid
-  operating_system         = "Canonical Ubuntu"
-  operating_system_version = "24.04"
-  shape                    = "VM.Standard.A1.Flex"
-  sort_by                  = "TIMECREATED"
-  sort_order               = "DESC"
-}
-
+# --- Outputs ---
 output "instance_ips" {
   value = {
     for i, name in local.instance_names :
-    name => oci_core_public_ip.viri_testnet[i].ip_address
+    name => azurerm_public_ip.vms[i].ip_address
   }
+  description = "Map of instance names to public IPs"
+}
+
+output "instance_fqdns" {
+  value = {
+    for i, name in local.instance_names :
+    name => azurerm_public_ip.vms[i].fqdn
+  }
+  description = "Map of instance names to FQDNs"
 }
 
 output "bootstrap_ip" {
-  value = oci_core_public_ip.viri_testnet[0].ip_address
+  value = azurerm_public_ip.vms[0].ip_address
+}
+
+output "bootstrap_fqdn" {
+  value = azurerm_public_ip.vms[0].fqdn
 }
 
 output "validator_ips" {
   value = [
-    for i in range(1, 4) : oci_core_public_ip.viri_testnet[i].ip_address
+    for i in range(1, 4) : azurerm_public_ip.vms[i].ip_address
   ]
 }
 
 output "faucet_ip" {
-  value = oci_core_public_ip.viri_testnet[4].ip_address
+  value = azurerm_public_ip.vms[4].ip_address
+}
+
+output "resource_group" {
+  value = azurerm_resource_group.main.name
+}
+
+output "ssh_command" {
+  value = {
+    for i, name in local.instance_names :
+    name => "ssh ${var.admin_username}@${azurerm_public_ip.vms[i].ip_address}"
+  }
 }

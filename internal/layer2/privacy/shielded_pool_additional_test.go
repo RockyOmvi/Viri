@@ -8,7 +8,7 @@ func TestNoteCountAndHasFlags(t *testing.T) {
 		t.Fatalf("expected 0 notes")
 	}
 
-	note, _ := pool.CreateNote(5, []byte("owner"), []byte("rand2"))
+	note, _ := pool.CreateNote(5, []byte("owner"), []byte("rand1234567890123"))
 	if pool.NoteCount() != 1 {
 		t.Fatalf("expected 1 note")
 	}
@@ -16,6 +16,6 @@ func TestNoteCountAndHasFlags(t *testing.T) {
 		t.Fatalf("commitment missing")
 	}
 	if pool.HasNullifier(note.Nullifier) {
-		t.Fatalf("nullifier should not be marked")
+		t.Fatalf("nullifier should not be marked before spend")
 	}
 }

@@ -159,7 +159,7 @@ VIRI_KEY_PASSPHRASE=<strong-random-passphrase>
 VIRI_TLS_CERT=/etc/viri/tls/server.crt
 VIRI_TLS_KEY=/etc/viri/tls/server.key
 VIRI_API_KEY_HASH=<sha256-hash-of-api-key>
-VIRI_READINESS_MIN_PEERS=1
+VIRI_READINESS_MIN_PEERS=3
 VIRI_READINESS_FORCE=0
 VIRI_LOG_LEVEL=info
 EOF
@@ -242,7 +242,7 @@ sudo journalctl -u virid -f
 | `VIRI_TLS_CERT` | TLS certificate path | "" |
 | `VIRI_TLS_KEY` | TLS private key path | "" |
 | `VIRI_API_KEY_HASH` | SHA256 hash of API key | "" |
-| `VIRI_READINESS_MIN_PEERS` | Minimum peers for ready state | 1 |
+| `VIRI_READINESS_MIN_PEERS` | Minimum peers for ready state | 3 |
 | `VIRI_READINESS_MIN_HEIGHT` | Minimum block height for ready | 0 |
 | `VIRI_READINESS_FORCE` | Bypass readiness checks | 0 (dev: 1) |
 | `VIRI_LOG_LEVEL` | Log level (debug/info/warn/error) | info |

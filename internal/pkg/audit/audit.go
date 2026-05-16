@@ -110,6 +110,7 @@ type AuditLogger struct {
 	flushInterval time.Duration
 	stopCh        chan struct{}
 	stopped       atomic.Bool
+	writeLoopWg   sync.WaitGroup
 	fileSize      int64
 	entriesInFile uint64
 	fileIndex     int
@@ -175,6 +176,7 @@ func NewAuditLogger(config *AuditConfig) (*AuditLogger, error) {
 		return nil, err
 	}
 
+	al.writeLoopWg.Add(1)
 	go al.writeLoop()
 
 	return al, nil
@@ -321,6 +323,7 @@ func (al *AuditLogger) writeLoop() {
 			if len(al.batch) > 0 {
 				al.flushBatch()
 			}
+			al.writeLoopWg.Done()
 			return
 		}
 	}
@@ -732,6 +735,8 @@ func (al *AuditLogger) Close() error {
 	}
 
 	close(al.stopCh)
+
+	al.writeLoopWg.Wait()
 
 	al.writeMu.Lock()
 	defer al.writeMu.Unlock()

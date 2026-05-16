@@ -40,6 +40,7 @@ type Transaction struct {
 	FeeCurrency []byte // token address for gas payment; nil or zero = native coin
 	Data        []byte
 	Signature   *TxSignature
+	ChainID     uint64
 }
 
 // FeeToken returns the fee currency. nil means native coin.
@@ -84,6 +85,24 @@ type Log struct {
 	Address []byte
 	Topics  [][]byte
 	Data    []byte
+}
+
+type SlashingReason uint8
+
+const (
+	SlashingDoubleSign   SlashingReason = 1
+	SlashingDowntime     SlashingReason = 2
+	SlashingInvalidBlock SlashingReason = 3
+	SlashingMalicious    SlashingReason = 4
+)
+
+type SlashingRecord struct {
+	Reason      SlashingReason
+	Validator   []byte
+	BlockHeight uint64
+	Evidence    []byte
+	SlashRate   uint64 // basis points (e.g. 1000 = 10%)
+	JailPeriod  uint64 // number of blocks to jail
 }
 
 type GenesisConfig struct {

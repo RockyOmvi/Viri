@@ -153,7 +153,7 @@ func DecodeSignatureEnvelope(data []byte) (*SignatureEnvelope, error) {
 // ParseScheme parses a scheme name string.
 func ParseScheme(s string) (Scheme, bool) {
 	switch s {
-	case "secp256k1", "ecdsa", "p256":
+	case "secp256k1", "ecdsa":
 		return SchemeECDSA, true
 	case "mldsa44", "mldsa-44":
 		return SchemeMLDSA44, true

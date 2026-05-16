@@ -64,6 +64,16 @@ func (b *Block) Verify() bool {
 		return false
 	}
 
+	// Reject timestamps more than 1 hour in the future (clock drift tolerance)
+	if time.Since(b.Header.Timestamp) < -time.Hour {
+		return false
+	}
+
+	// Genesis block (height 0) is trusted; only check signature on non-genesis blocks
+	if b.Header.Height > 0 && len(b.Header.Signature) != 64 {
+		return false
+	}
+
 	for _, tx := range b.Transactions {
 		if !tx.Verify() {
 			return false
@@ -76,6 +86,24 @@ func (b *Block) Verify() bool {
 	}
 
 	return true
+}
+
+// VerifyWithProposer verifies the block including the proposer's signature.
+// The pubKey must be the 65-byte uncompressed public key of the block proposer.
+func (b *Block) VerifyWithProposer(pubKey []byte) bool {
+	if !b.Verify() {
+		return false
+	}
+	if len(pubKey) == 0 {
+		return false
+	}
+	payload := b.SigningPayload()
+	sig := b.Header.Signature
+	pub, err := crypto.PubKeyFromBytes(pubKey)
+	if err != nil {
+		return false
+	}
+	return pub.VerifyMessage(payload, sig)
 }
 
 func ComputeTransactionsHash(txs []*Transaction) []byte {

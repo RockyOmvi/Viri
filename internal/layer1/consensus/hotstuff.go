@@ -60,6 +60,7 @@ func (hs *HotStuffEngine) logError(msg string) {
 type HotStuffEngine struct {
 	mu            sync.Mutex
 	config        *ConsensusConfig
+	chainID       uint64
 	state         *ConsensusState
 	validatorSet  *ValidatorSet
 	blockProducer BlockProducer
@@ -170,12 +171,17 @@ func (hs *HotStuffEngine) SetMetrics(mc *metrics.MetricsCollector) {
 }
 
 func NewHotStuffEngine(config *ConsensusConfig, vs *ValidatorSet, bp BlockProducer, staking *StakingModule, log *logging.Logger, auditLog audit.AuditLoggerInterface) *HotStuffEngine {
+	return newHotStuffEngineWithChainID(config, vs, bp, staking, log, auditLog, 0)
+}
+
+func newHotStuffEngineWithChainID(config *ConsensusConfig, vs *ValidatorSet, bp BlockProducer, staking *StakingModule, log *logging.Logger, auditLog audit.AuditLoggerInterface, chainID uint64) *HotStuffEngine {
 	if config == nil {
 		config = DefaultConsensusConfig()
 	}
 
 	hs := &HotStuffEngine{
 		config:       config,
+		chainID:      chainID,
 		validatorSet: vs,
 		blockProducer: bp,
 		staking:      staking,
@@ -465,7 +471,7 @@ func (hs *HotStuffEngine) proposeLocked() error {
 		payload:  blockData,
 	}
 
-	sig, err := hs.blockProducer.Sign(blockHash)
+	sig, err := hs.blockProducer.Sign(hs.createProposalData(blockHash))
 	if err != nil {
 		return err
 	}
@@ -623,8 +629,8 @@ func (hs *HotStuffEngine) HandleMessage(msg *ConsensusMessage) {
 	if msg.Type == MsgBlockResponse {
 		hs.mu.Lock()
 		stateSyncer := hs.stateSyncer
-		isSyncing := stateSyncer != nil && stateSyncer.IsSyncing()
 		hs.mu.Unlock()
+		isSyncing := stateSyncer != nil && stateSyncer.IsSyncing()
 		if isSyncing && len(msg.Payload) > 0 {
 			blockData := prependHeightToPayload(msg.Payload, msg.Height)
 			if err := stateSyncer.ReceiveBlock(blockData); err != nil {
@@ -636,8 +642,10 @@ func (hs *HotStuffEngine) HandleMessage(msg *ConsensusMessage) {
 
 	if msg.Type == MsgBlockRequest {
 		hs.mu.Lock()
-		hs.handleBlockRequest(msg)
+		payload := make([]byte, len(msg.Payload))
+		copy(payload, msg.Payload)
 		hs.mu.Unlock()
+		hs.handleBlockRequestData(payload)
 		return
 	}
 
@@ -675,7 +683,8 @@ func (hs *HotStuffEngine) handleMessage(msg *ConsensusMessage) {
 func (hs *HotStuffEngine) handleMessageLocked(msg *ConsensusMessage) {
 	switch msg.Type {
 	case MsgBlockRequest:
-		hs.handleBlockRequest(msg)
+		// MsgBlockRequest is handled in HandleMessage without the mutex
+		// to avoid deadlock with broadcastFn. This path should not be reached.
 		return
 	case MsgBlockResponse:
 		// MsgBlockResponse is handled directly in HandleMessage (without the mutex)
@@ -753,7 +762,7 @@ func (hs *HotStuffEngine) handleProposal(msg *ConsensusMessage) {
 	}
 
 	if msg.Signature != nil && hs.blockProducer != nil {
-		if !hs.blockProducer.VerifySign(proposer.PublicKey, msg.BlockHash, msg.Signature) {
+		if !hs.blockProducer.VerifySign(proposer.PublicKey, hs.createProposalData(msg.BlockHash), msg.Signature) {
 			hs.logWarn(fmt.Sprintf("Invalid proposal signature height=%d view=%d", msg.Height, msg.View))
 			return
 		}
@@ -1069,13 +1078,6 @@ func (hs *HotStuffEngine) createNewViewAndBroadcast(newView uint64) {
 	delete(hs.timeoutHighQCs, newView)
 }
 
-func (hs *HotStuffEngine) createTimeoutData(height uint64, view uint64) []byte {
-	data := make([]byte, 16)
-	binary.BigEndian.PutUint64(data[0:8], height)
-	binary.BigEndian.PutUint64(data[8:16], view)
-	return data
-}
-
 func (hs *HotStuffEngine) encodeTimeoutPayload(view uint64, sig *crypto.Signature, highQC *QC) []byte {
 	if sig == nil {
 		return nil
@@ -1202,6 +1204,11 @@ func (hs *HotStuffEngine) handleNewView(msg *ConsensusMessage) {
 }
 
 func (hs *HotStuffEngine) advancePhase(phase Phase) {
+	if hs.state.PreparedQC == nil {
+		hs.logWarn(fmt.Sprintf("advancePhase skipped: PreparedQC is nil phase=%s height=%d view=%d", phase, hs.state.Height, hs.state.View))
+		return
+	}
+
 	hs.state.Phase = phase
 	hs.startTimeout()
 
@@ -1492,7 +1499,7 @@ func (hs *HotStuffEngine) isValidQC(qc *QC) bool {
 func (hs *HotStuffEngine) doBroadcast(msg *ConsensusMessage) {
 	if hs.validatorSet != nil && hs.validatorSet.Size() > 1 {
 		if hs.broadcastFn != nil {
-			hs.broadcastFn(msg)
+			go hs.broadcastFn(msg)
 		}
 		if hs.messageCh != nil {
 			select {
@@ -1531,7 +1538,9 @@ func (hs *HotStuffEngine) handleDoubleSign(evidence *DoubleSignRecord) {
 		hs.auditLog.LogValidator("slashed", fmt.Sprintf("%x", evidence.Validator), amount, fmt.Sprintf("double_sign_type_%d", evidence.Type))
 	}
 
-	_ = hs.validatorSet.RemoveValidator(evidence.Validator)
+	if err := hs.validatorSet.RemoveValidator(evidence.Validator); err != nil {
+		hs.logWarn(fmt.Sprintf("RemoveValidator failed for slashed validator: %v", err))
+	}
 }
 
 func (hs *HotStuffEngine) handleDowntimeSlash(validator []byte, missed uint64) {
@@ -1623,7 +1632,9 @@ func (hs *HotStuffEngine) applyEpochSlashing() {
 		hs.doubleSign.MarkSlashed(evidence.Validator, evidence.Height)
 		evidence.SlashAmount = amount
 		evidence.IsSlashed = true
-		_ = hs.validatorSet.RemoveValidator(evidence.Validator)
+	if err := hs.validatorSet.RemoveValidator(evidence.Validator); err != nil {
+		hs.logWarn(fmt.Sprintf("RemoveValidator failed for slashed validator: %v", err))
+	}
 	}
 }
 
@@ -1729,12 +1740,28 @@ func (hs *HotStuffEngine) restoreState(saved *PersistedState) {
 	hs.state.StartTime = time.Now()
 }
 
+func (hs *HotStuffEngine) createProposalData(blockHash []byte) []byte {
+	data := make([]byte, 8+len(blockHash))
+	binary.BigEndian.PutUint64(data[0:8], hs.chainID)
+	copy(data[8:], blockHash)
+	return data
+}
+
 func (hs *HotStuffEngine) createVoteData(height, view uint64, phase Phase, blockHash []byte) []byte {
-	data := make([]byte, 17+len(blockHash))
-	binary.BigEndian.PutUint64(data[0:8], height)
-	binary.BigEndian.PutUint64(data[8:16], view)
-	data[16] = byte(phase)
-	copy(data[17:], blockHash)
+	data := make([]byte, 25+len(blockHash))
+	binary.BigEndian.PutUint64(data[0:8], hs.chainID)
+	binary.BigEndian.PutUint64(data[8:16], height)
+	binary.BigEndian.PutUint64(data[16:24], view)
+	data[24] = byte(phase)
+	copy(data[25:], blockHash)
+	return data
+}
+
+func (hs *HotStuffEngine) createTimeoutData(height uint64, view uint64) []byte {
+	data := make([]byte, 24)
+	binary.BigEndian.PutUint64(data[0:8], hs.chainID)
+	binary.BigEndian.PutUint64(data[8:16], height)
+	binary.BigEndian.PutUint64(data[16:24], view)
 	return data
 }
 
@@ -1862,13 +1889,13 @@ func (hs *HotStuffEngine) defaultBlockRequester(fromHeight, toHeight uint64) err
 	return nil
 }
 
-func (hs *HotStuffEngine) handleBlockRequest(msg *ConsensusMessage) {
-	if len(msg.Payload) < 16 {
+func (hs *HotStuffEngine) handleBlockRequestData(payload []byte) {
+	if len(payload) < 16 {
 		return
 	}
 
-	fromHeight := binary.BigEndian.Uint64(msg.Payload[:8])
-	toHeight := binary.BigEndian.Uint64(msg.Payload[8:16])
+	fromHeight := binary.BigEndian.Uint64(payload[:8])
+	toHeight := binary.BigEndian.Uint64(payload[8:16])
 
 	for h := fromHeight; h <= toHeight; h++ {
 		blockData, err := hs.blockProducer.GetBlockData(h)
@@ -1885,7 +1912,7 @@ func (hs *HotStuffEngine) handleBlockRequest(msg *ConsensusMessage) {
 		}
 
 		if hs.broadcastFn != nil {
-			hs.broadcastFn(respMsg)
+			go hs.broadcastFn(respMsg)
 		}
 	}
 }

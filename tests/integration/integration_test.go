@@ -152,14 +152,14 @@ func TestFullBlockchainFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tx, err := ledger.NewTransactionFromKey(1, key2.PubKey().Address(), 1000, 100000, 1, nil, key1)
+	tx, err := ledger.NewTransactionFromKey(1, key2.PubKey().Address(), 1000, 100000, 1, nil, uint64(1), key1)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	blockchain.TxPool().Add(tx)
 
-	eventBus := events.NewEventBus(100)
+	eventBus := events.NewEventBus()
 	eventBus.Subscribe(events.EventBlockAdded, func(event events.Event) {
 		block := event.Data.(*ledger.Block)
 		t.Logf("Block added: height=%d", block.Header.Height)
@@ -285,7 +285,7 @@ func TestStatePersistence(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tx, _ := ledger.NewTransactionFromKey(1, []byte{0x02}, 100, 100000, 1, nil, key)
+	tx, _ := ledger.NewTransactionFromKey(1, []byte{0x02}, 100, 100000, 1, nil, uint64(1), key)
 	if tx != nil {
 		blockchain1.TxPool().Add(tx)
 	}
@@ -531,7 +531,7 @@ func newTestValidator(t *testing.T, baseDir string, idx int, key *crypto.Private
 	config.ViewTimeout = 200 * time.Millisecond
 	config.MinValidators = 1
 	engine := consensus.NewHotStuffEngine(config, validatorSet, producer, staking, nil, auditLogger)
-	eventBus := events.NewEventBus(100)
+	eventBus := events.NewEventBus()
 	return &testValidator{
 		engine:      engine,
 		blockchain:  bc,

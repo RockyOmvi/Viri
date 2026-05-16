@@ -5,11 +5,13 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
+	"sync"
 )
 
 // MerklePatriciaTrie is a compact authenticated trie with branch, extension, and leaf nodes.
 // Paths are represented as nibble (hex character) sequences.
 type MerklePatriciaTrie struct {
+	mu       sync.RWMutex
 	rootHash []byte
 	db       KVStore
 }
@@ -27,6 +29,8 @@ func NewMPT(db KVStore) *MerklePatriciaTrie {
 }
 
 func (m *MerklePatriciaTrie) Root() []byte {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	if m.rootHash == nil {
 		return hashEmptyMPT()
 	}
@@ -39,6 +43,8 @@ func (m *MerklePatriciaTrie) RootHex() string {
 
 // Get retrieves a value by key. Returns error if not found.
 func (m *MerklePatriciaTrie) Get(key []byte) ([]byte, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	if m.rootHash == nil {
 		return nil, fmt.Errorf("mpt: empty trie")
 	}
@@ -48,6 +54,8 @@ func (m *MerklePatriciaTrie) Get(key []byte) ([]byte, error) {
 
 // Update inserts or updates a key-value pair. Empty value deletes.
 func (m *MerklePatriciaTrie) Update(key, value []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if len(value) == 0 {
 		return m.delete(key)
 	}
@@ -62,6 +70,8 @@ func (m *MerklePatriciaTrie) Update(key, value []byte) error {
 
 // Delete removes a key from the trie.
 func (m *MerklePatriciaTrie) Delete(key []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	return m.delete(key)
 }
 
@@ -76,41 +86,6 @@ func (m *MerklePatriciaTrie) delete(key []byte) error {
 	}
 	m.rootHash = newRoot
 	return nil
-}
-
-// Prove generates a Merkle proof of inclusion for the given key.
-func (m *MerklePatriciaTrie) Prove(key []byte) ([][]byte, error) {
-	if m.rootHash == nil {
-		return nil, fmt.Errorf("mpt: empty trie")
-	}
-	path := keyToNibbles(key)
-	nodes, _, err := m.collectProof(m.rootHash, path)
-	if err != nil {
-		return nil, err
-	}
-	return nodes, nil
-}
-
-// VerifyProof checks a Merkle proof for a key-value pair.
-// The proof is a list of sibling node hashes from leaf to root.
-func (m *MerklePatriciaTrie) VerifyProof(rootHash []byte, key, value []byte, proof [][]byte) bool {
-	if len(proof) == 0 {
-		return false
-	}
-	path := keyToNibbles(key)
-	computed := hashLeafNode(path, value)
-	// Combine sibling hashes: at each level, hash = sha256(0x02 || siblingHash || currentHash)
-	for i := len(proof) - 1; i >= 0; i-- {
-		if len(proof[i]) != 32 {
-			return false
-		}
-		h := sha256.New()
-		h.Write([]byte{nodeTypeBranch})
-		h.Write(proof[i])
-		h.Write(computed)
-		computed = h.Sum(nil)
-	}
-	return bytes.Equal(computed, rootHash)
 }
 
 // keyToNibbles converts a byte key to a nibble (hex char) slice.
@@ -135,60 +110,6 @@ func nibblesToKey(nibbles []byte) []byte {
 	return key
 }
 
-// compactEncode encodes nibbles with a flag prefix (odd/even + leaf/extension).
-// Format: [flag_byte] + [nibble_data] where flag encodes odd-length + type.
-func compactEncode(nibbles []byte, isLeaf bool) []byte {
-	odd := len(nibbles)%2 != 0
-	var flag byte
-	if isLeaf {
-		if odd {
-			flag = 0x30 // leaf odd: 0011 0000
-		} else {
-			flag = 0x20 // leaf even: 0010 0000
-		}
-	} else {
-		if odd {
-			flag = 0x10 // extension odd: 0001 0000
-		} else {
-			flag = 0x00 // extension even: 0000 0000
-		}
-	}
-
-	buf := make([]byte, 0, len(nibbles)/2+2)
-	if odd {
-		buf = append(buf, flag|nibbles[0])
-		nibbles = nibbles[1:]
-	} else {
-		buf = append(buf, flag)
-	}
-	for i := 0; i < len(nibbles); i += 2 {
-		buf = append(buf, nibbles[i]<<4|nibbles[i+1])
-	}
-	return buf
-}
-
-// compactDecode decodes compact-encoded nibbles.
-func compactDecode(data []byte) (nibbles []byte, isLeaf bool) {
-	if len(data) == 0 {
-		return nil, false
-	}
-	flag := data[0] >> 4
-	isLeaf = flag == 0x02 || flag == 0x03
-	odd := flag == 0x01 || flag == 0x03
-
-	nibbles = make([]byte, 0, len(data)*2)
-	if odd {
-		nibbles = append(nibbles, data[0]&0x0f)
-		data = data[1:]
-	} else {
-		data = data[1:]
-	}
-	for _, b := range data {
-		nibbles = append(nibbles, b>>4, b&0x0f)
-	}
-	return nibbles, isLeaf
-}
-
 // commonPrefixLen returns the length of the common nibble prefix.
 func commonPrefixLen(a, b []byte) int {
 	max := len(a)
@@ -205,62 +126,6 @@ func commonPrefixLen(a, b []byte) int {
 
 // --- Node serialization ---
 
-func encodeBranchNode(children []hashEntry, value []byte) []byte {
-	h := sha256.New()
-	buf := make([]byte, 2)
-	buf[0] = nodeTypeBranch
-	h.Write(buf)
-	for i := 0; i < 16; i++ {
-		hdr := make([]byte, 2)
-		if children[i].hash != nil {
-			binary.BigEndian.PutUint16(hdr, uint16(len(children[i].hash)))
-			h.Write(hdr)
-			h.Write(children[i].hash)
-		} else {
-			binary.BigEndian.PutUint16(hdr, 0)
-			h.Write(hdr)
-		}
-	}
-	// value present flag
-	if len(value) > 0 {
-		h.Write([]byte{0x01})
-		vl := make([]byte, 4)
-		binary.BigEndian.PutUint32(vl, uint32(len(value)))
-		h.Write(vl)
-		h.Write(value)
-	} else {
-		h.Write([]byte{0x00})
-	}
-	return h.Sum(nil)
-}
-
-func encodeExtensionNode(sharedNibbles []byte, childHash []byte) []byte {
-	h := sha256.New()
-	hdr := make([]byte, 2)
-	binary.BigEndian.PutUint16(hdr, uint16(len(sharedNibbles)))
-	h.Write(hdr)
-	h.Write(sharedNibbles)
-	cl := make([]byte, 2)
-	binary.BigEndian.PutUint16(cl, uint16(len(childHash)))
-	h.Write(cl)
-	h.Write(childHash)
-	return h.Sum(nil)
-}
-
-func hashLeafNode(path []byte, value []byte) []byte {
-	h := sha256.New()
-	h.Write([]byte{nodeTypeLeaf})
-	pl := make([]byte, 4)
-	binary.BigEndian.PutUint32(pl, uint32(len(path)))
-	h.Write(pl)
-	h.Write(path)
-	vl := make([]byte, 4)
-	binary.BigEndian.PutUint32(vl, uint32(len(value)))
-	h.Write(vl)
-	h.Write(value)
-	return h.Sum(nil)
-}
-
 func hashEmptyMPT() []byte {
 	h := sha256.New()
 	h.Write([]byte{0x00})
@@ -273,7 +138,6 @@ type hashEntry struct {
 }
 
 type node interface {
-	hash() []byte
 	serialize() []byte
 }
 
@@ -585,20 +449,25 @@ func (m *MerklePatriciaTrie) deleteExtension(data []byte, path []byte) ([]byte, 
 		return nil, nil
 	}
 	// Try to collapse extension if child is a leaf
-		cd, err := m.db.Get(append([]byte("mpt:"), newChild...))
-	if err == nil && len(cd) > 0 && cd[0] == nodeTypeLeaf {
-		cNibbles, cVal := parseLeafData(cd)
-		combined := make([]byte, 0, len(shared)+len(cNibbles))
-		combined = append(combined, shared...)
-		combined = append(combined, cNibbles...)
-		return m.storeNode(&leafMPTNode{path: combined, value: cVal})
+	cd, err := m.db.Get(append([]byte("mpt:"), newChild...))
+	if err != nil {
+		return m.storeNode(&extensionMPTNode{sharedNibbles: shared, childHash: newChild})
 	}
-	if err == nil && len(cd) > 0 && cd[0] == nodeTypeExtension {
-		extShared, extChild := parseExtensionData(cd)
-		combined := make([]byte, 0, len(shared)+len(extShared))
-		combined = append(combined, shared...)
-		combined = append(combined, extShared...)
-		return m.storeNode(&extensionMPTNode{sharedNibbles: combined, childHash: extChild})
+	if len(cd) > 0 {
+		switch cd[0] {
+		case nodeTypeLeaf:
+			cNibbles, cVal := parseLeafData(cd)
+			combined := make([]byte, 0, len(shared)+len(cNibbles))
+			combined = append(combined, shared...)
+			combined = append(combined, cNibbles...)
+			return m.storeNode(&leafMPTNode{path: combined, value: cVal})
+		case nodeTypeExtension:
+			extShared, extChild := parseExtensionData(cd)
+			combined := make([]byte, 0, len(shared)+len(extShared))
+			combined = append(combined, shared...)
+			combined = append(combined, extShared...)
+			return m.storeNode(&extensionMPTNode{sharedNibbles: combined, childHash: extChild})
+		}
 	}
 	return m.storeNode(&extensionMPTNode{sharedNibbles: shared, childHash: newChild})
 }
@@ -674,61 +543,10 @@ func (m *MerklePatriciaTrie) deleteBranch(data []byte, path []byte) ([]byte, err
 	}
 }
 
-// --- Proof collection ---
-
-func (m *MerklePatriciaTrie) collectProof(nodeHash []byte, path []byte) (nodes [][]byte, leafValue []byte, err error) {
-	if len(nodeHash) == 0 {
-		return nil, nil, fmt.Errorf("mpt: key not found")
-	}
-	data, err := m.db.Get(append([]byte("mpt:"), nodeHash...))
-	if err != nil {
-		return nil, nil, fmt.Errorf("mpt: node not found")
-	}
-	switch data[0] {
-	case nodeTypeLeaf:
-		nibbles, val := parseLeafData(data)
-		if bytes.Equal(nibbles, path) {
-			return [][]byte{hashLeafNode(path, val)}, val, nil
-		}
-		return nil, nil, fmt.Errorf("mpt: key not found")
-	case nodeTypeExtension:
-		shared, childHash := parseExtensionData(data)
-		if len(path) < len(shared) || !bytes.Equal(path[:len(shared)], shared) {
-			return nil, nil, fmt.Errorf("mpt: key not found")
-		}
-		childNodes, val, err := m.collectProof(childHash, path[len(shared):])
-		if err != nil {
-			return nil, nil, err
-		}
-		h := sha256.Sum256(data)
-		nodes = append([][]byte{h[:]}, childNodes...)
-		return nodes, val, nil
-	case nodeTypeBranch:
-		children, value := parseBranchData(data)
-		h := sha256.Sum256(data)
-
-		if len(path) == 0 {
-			if value != nil {
-				return [][]byte{h[:]}, value, nil
-			}
-			return nil, nil, fmt.Errorf("mpt: key not found")
-		}
-		idx := path[0]
-		if idx >= 16 || children[idx].hash == nil {
-			return nil, nil, fmt.Errorf("mpt: key not found")
-		}
-		childNodes, val, err := m.collectProof(children[idx].hash, path[1:])
-		if err != nil {
-			return nil, nil, err
-		}
-		nodes = append([][]byte{h[:]}, childNodes...)
-		return nodes, val, nil
-	default:
-		return nil, nil, fmt.Errorf("mpt: unknown node type")
-	}
-}
-
 // --- Node storage ---
+// WARNING: Orphaned nodes are never deleted. Old node versions accumulate in the
+// database on every Update/Delete. A production system needs reference counting
+// or epoch-based garbage collection.
 
 func (m *MerklePatriciaTrie) storeNode(n node) ([]byte, error) {
 	data := n.serialize()
@@ -751,8 +569,9 @@ func (n *branchMPTNode) serialize() []byte {
 			buf.WriteByte(0)
 		}
 	}
-	// value
-	if len(n.value) > 0 {
+	// value — use explicit present flag so empty values are preserved
+	hasValue := n.value != nil
+	if hasValue {
 		buf.WriteByte(0x01)
 		vl := make([]byte, 4)
 		binary.BigEndian.PutUint32(vl, uint32(len(n.value)))
@@ -762,12 +581,6 @@ func (n *branchMPTNode) serialize() []byte {
 		buf.WriteByte(0x00)
 	}
 	return buf.Bytes()
-}
-
-func (n *branchMPTNode) hash() []byte {
-	h := sha256.New()
-	h.Write(n.serialize())
-	return h.Sum(nil)
 }
 
 func (n *extensionMPTNode) serialize() []byte {
@@ -784,12 +597,6 @@ func (n *extensionMPTNode) serialize() []byte {
 	return buf.Bytes()
 }
 
-func (n *extensionMPTNode) hash() []byte {
-	h := sha256.New()
-	h.Write(n.serialize())
-	return h.Sum(nil)
-}
-
 func (n *leafMPTNode) serialize() []byte {
 	var buf bytes.Buffer
 	buf.WriteByte(nodeTypeLeaf)
@@ -804,12 +611,6 @@ func (n *leafMPTNode) serialize() []byte {
 	return buf.Bytes()
 }
 
-func (n *leafMPTNode) hash() []byte {
-	h := sha256.New()
-	h.Write(n.serialize())
-	return h.Sum(nil)
-}
-
 // --- Parsing ---
 
 func parseLeafData(data []byte) (nibbles []byte, value []byte) {
@@ -819,10 +620,19 @@ func parseLeafData(data []byte) (nibbles []byte, value []byte) {
 	pos := 1
 	pl := binary.BigEndian.Uint32(data[pos:])
 	pos += 4
+	if uint32(pos)+pl > uint32(len(data)) {
+		return nil, nil
+	}
 	nibbles = data[pos : pos+int(pl)]
 	pos += int(pl)
+	if pos+4 > len(data) {
+		return nil, nil
+	}
 	vl := binary.BigEndian.Uint32(data[pos:])
 	pos += 4
+	if uint32(pos)+vl > uint32(len(data)) {
+		return nil, nil
+	}
 	value = data[pos : pos+int(vl)]
 	return nibbles, value
 }
@@ -834,10 +644,19 @@ func parseExtensionData(data []byte) (shared []byte, childHash []byte) {
 	pos := 1
 	pl := binary.BigEndian.Uint32(data[pos:])
 	pos += 4
+	if uint32(pos)+pl > uint32(len(data)) {
+		return nil, nil
+	}
 	shared = data[pos : pos+int(pl)]
 	pos += int(pl)
+	if pos+4 > len(data) {
+		return nil, nil
+	}
 	cl := binary.BigEndian.Uint32(data[pos:])
 	pos += 4
+	if uint32(pos)+cl > uint32(len(data)) {
+		return nil, nil
+	}
 	childHash = data[pos : pos+int(cl)]
 	return shared, childHash
 }
@@ -874,6 +693,8 @@ func parseBranchData(data []byte) (children [16]hashEntry, value []byte) {
 
 // MPTNodeCount returns the number of nodes in the trie by walking the tree.
 func (m *MerklePatriciaTrie) MPTNodeCount() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	if m.rootHash == nil {
 		return 0
 	}

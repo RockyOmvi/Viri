@@ -28,7 +28,7 @@ func TestDeployAndGetContract(t *testing.T) {
 
 func TestExecuteMissingContract(t *testing.T) {
 	cm := NewContractManager()
-	if _, err := cm.Execute([]byte("missing"), []byte("input"), 1); err == nil {
+	if _, err := cm.Execute([]byte("missing"), []byte("caller"), []byte("input"), 1); err == nil {
 		t.Fatalf("expected missing contract error")
 	}
 }

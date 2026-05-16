@@ -7,7 +7,7 @@ First public testnet release. All 43 packages operational.
 ### Layer 1 — Core
 
 - **consensus** — HotStuff BFT (4-phase pipelined: Prepare, PreCommit, Commit, Decide). Leader rotation, view change, liveness detection. Tested to 100 validators with 2000+ ops/sec supermajority verification. Throughput: 4958 msgs/sec, 130 blocks/sec.
-- **crypto** — ECDSA P-256 key generation, signing, verification. Keccak256 address derivation. Encrypted keystore with PBKDF2 key derivation. BIP39 mnemonic support (12/15/18/21/24 words) with full 2048-word English wordlist.
+- **crypto** — ECDSA secp256k1 key generation, signing, verification. EIP-2 low-S canonical signatures. Keccak256 address derivation. Encrypted keystore with scrypt key derivation. BIP39 mnemonic support (12/15/18/21/24 words) with full 2048-word English wordlist.
 - **ledger** — Block production with fee market (EIP-1559 style base fee adjustment). Genesis validation, block/transaction serialization (binary + JSON). Economics with block rewards, inflation, burned fees.
 - **p2p** — libp2p networking with peer manager (add/remove/ban/evict), reputation scoring (trusted/healthy/suspicious/toxic), rate limiter (message + byte), message propagation with TTL, handshake protocol.
 - **state** — Merkle-Patricia Trie with proof generation/verification. BadgerDB persistent store. Account state management (balance, nonce, code, storage).

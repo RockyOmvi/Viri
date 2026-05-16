@@ -17,7 +17,6 @@ import (
 	"github.com/viri-chain/viri/internal/layer2/mev"
 	"github.com/viri-chain/viri/internal/layer2/privacy"
 	"github.com/viri-chain/viri/internal/layer2/rollups"
-	"github.com/viri-chain/viri/internal/layer2/zk"
 )
 
 type chainBlockProducer struct {
@@ -32,12 +31,11 @@ type chainBlockProducer struct {
 	gasOracle       *gas.GasOracle
 	mevState        *mev.MEVState
 	shieldedPool    *privacy.ShieldedPool
-	zkVerifier      *zk.Verifier
 	rollupChain     *rollups.RollupChain
 	agentMgr        *agents.AgentManager
 }
 
-func newChainBlockProducer(bc *ledger.PersistentBlockchain, key *crypto.PrivateKey, exec *execution.ExecutionEngine, sm *state.StateManager, gobj *gas.GasOracle, mevObj *mev.MEVState, sp *privacy.ShieldedPool, zv *zk.Verifier, rc *rollups.RollupChain, am *agents.AgentManager) *chainBlockProducer {
+func newChainBlockProducer(bc *ledger.PersistentBlockchain, key *crypto.PrivateKey, exec *execution.ExecutionEngine, sm *state.StateManager, gobj *gas.GasOracle, mevObj *mev.MEVState, sp *privacy.ShieldedPool, rc *rollups.RollupChain, am *agents.AgentManager) *chainBlockProducer {
 	return &chainBlockProducer{
 		blockchain:      bc,
 		key:             key,
@@ -47,7 +45,6 @@ func newChainBlockProducer(bc *ledger.PersistentBlockchain, key *crypto.PrivateK
 		gasOracle:       gobj,
 		mevState:        mevObj,
 		shieldedPool:    sp,
-		zkVerifier:      zv,
 		rollupChain:     rc,
 		agentMgr:        am,
 		pendingBlocks:   make(map[uint64]*ledger.Block),

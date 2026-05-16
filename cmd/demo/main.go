@@ -199,7 +199,7 @@ func main() {
 	// ── 9. Account Abstraction ──
 	fmt.Println("\n🤖 Testing Account Abstraction...")
 	mgr := accounts.NewAccountManager()
-	ep := accounts.NewEntryPoint(mgr, 1337)
+	ep := accounts.NewEntryPoint(mgr, 1337, nil)
 	mgr.CreateAccount([]byte("faucet"), accounts.AccountTypeNormal, 10000000)
 
 	aaCode := []byte{0x60, 0x42, 0x60, 0x00, 0x53, 0x60, 0x01, 0x60, 0x00, 0xf3}

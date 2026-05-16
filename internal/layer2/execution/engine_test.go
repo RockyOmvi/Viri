@@ -357,13 +357,16 @@ func TestPrecompileGnarkVerifyTamperedProof(t *testing.T) {
 		t.Fatalf("prove failed: %v", err)
 	}
 
-	// use old-format data with tampered bytes to ensure real verification rejects it
-	data := make([]byte, 96+64)
-	validProof.A[0].FillBytes(data[:32])
-	validProof.B[0].FillBytes(data[32:64])
-	big.NewInt(999).FillBytes(data[64:96])
-	big.NewInt(3).FillBytes(data[96:128])
-	big.NewInt(5).FillBytes(data[128:160])
+	// Serialize valid proof then tamper with bytes to ensure real verification rejects it
+	validData, err := zk.SerializeProofForTx(validProof, []*big.Int{big.NewInt(3), big.NewInt(5)})
+	if err != nil {
+		t.Fatalf("serialize: %v", err)
+	}
+	data := make([]byte, len(validData))
+	copy(data, validData)
+	if len(data) > 42 {
+		data[42] ^= 0xFF
+	}
 
 	tx := &ledger.Transaction{
 		Nonce:    0,

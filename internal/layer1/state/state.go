@@ -142,7 +142,7 @@ func (sm *StateManager) GetStorage(address []byte, key []byte) ([]byte, error) {
 	defer sm.mu.RUnlock()
 	account, err := sm.accountState.GetAccount(address)
 	if err != nil {
-		return nil, nil
+		return nil, err
 	}
 	if account.Storage == nil {
 		return nil, nil
@@ -171,16 +171,22 @@ func (sm *StateManager) Commit(blockHeight uint64) error {
 	sm.blockHeight = blockHeight
 
 	// Compute real state root from account data
-	sm.stateRoot = sm.computeStateRoot()
+	root, err := sm.computeStateRoot()
+	if err != nil {
+		return fmt.Errorf("failed to compute state root: %w", err)
+	}
+	sm.stateRoot = root
 
 	return sm.saveState()
 }
 
 // computeStateRoot builds a Merkle root from all account state.
-func (sm *StateManager) computeStateRoot() []byte {
+// WARNING: This is O(n) in the number of accounts and called on every Commit.
+// A production system should use an incremental sparse Merkle tree instead.
+func (sm *StateManager) computeStateRoot() ([]byte, error) {
 	accounts, err := sm.accountState.AllAccounts()
 	if err != nil || len(accounts) == 0 {
-		return crypto.SHA256([]byte("empty-state"))
+		return crypto.SHA256([]byte("empty-state")), nil
 	}
 
 	// Build leaf hashes from each serialized account
@@ -194,15 +200,15 @@ func (sm *StateManager) computeStateRoot() []byte {
 	}
 
 	if len(leaves) == 0 {
-		return crypto.SHA256([]byte("empty-state"))
+		return crypto.SHA256([]byte("empty-state")), nil
 	}
 
 	tree, err := crypto.NewMerkleTree(leaves)
 	if err != nil || tree.RootHash == nil {
-		return crypto.SHA256([]byte("empty-state"))
+		return crypto.SHA256([]byte("empty-state")), nil
 	}
 
-	return tree.RootHash
+	return tree.RootHash, nil
 }
 
 func (sm *StateManager) Snapshot() *StateSnapshot {

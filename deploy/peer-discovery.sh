@@ -7,14 +7,23 @@ set -e
 
 OWN_INDEX="${1:-0}"
 RPC_PORT=8545
-MAX_RETRIES=30
+MAX_RETRIES=60
 RETRY_DELAY=2
+API_KEY_FILE="/home/viri/.viri/api_key.txt"
 
 # Validator service names
 VALIDATORS="validator-0 validator-1 validator-2 validator-3"
 
+API_KEY=""
+
 log() {
     echo "[peer-discovery] $1"
+}
+
+load_api_key() {
+    if [ -f "$API_KEY_FILE" ]; then
+        API_KEY=$(cat "$API_KEY_FILE" 2>/dev/null)
+    fi
 }
 
 rpc_call() {
@@ -22,9 +31,16 @@ rpc_call() {
     local method="$2"
     local params="$3"
     
-    curl -sf -X POST "http://${host}:${RPC_PORT}" \
-        -H "Content-Type: application/json" \
-        -d "{\"jsonrpc\":\"2.0\",\"method\":\"${method}\",\"params\":${params},\"id\":1}" 2>/dev/null
+    if [ -n "$API_KEY" ]; then
+        curl -sf -X POST "http://${host}:${RPC_PORT}" \
+            -H "Content-Type: application/json" \
+            -H "X-API-Key: ${API_KEY}" \
+            -d "{\"jsonrpc\":\"2.0\",\"method\":\"${method}\",\"params\":${params},\"id\":1}" 2>/dev/null
+    else
+        curl -sf -X POST "http://${host}:${RPC_PORT}" \
+            -H "Content-Type: application/json" \
+            -d "{\"jsonrpc\":\"2.0\",\"method\":\"${method}\",\"params\":${params},\"id\":1}" 2>/dev/null
+    fi
 }
 
 wait_for_ready() {
@@ -56,9 +72,6 @@ done
 
 log "Will connect to peers:${PEER_SERVICES}"
 
-# Wait a bit for network to stabilize
-sleep 5
-
 # Connect to each peer
 for peer in $PEER_SERVICES; do
     log "Discovering peer: ${peer}..."
@@ -67,6 +80,12 @@ for peer in $PEER_SERVICES; do
     if ! wait_for_ready "$peer"; then
         log "WARN: Peer ${peer} not ready, skipping"
         continue
+    fi
+    
+    # Load API key after RPC is ready (file created by virid during startup)
+    load_api_key
+    if [ -n "$API_KEY" ]; then
+        log "API key loaded"
     fi
     
     # Get peer's full multiaddress via nodeInfo

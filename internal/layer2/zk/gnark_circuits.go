@@ -35,19 +35,6 @@ func (c *MulCircuit) Define(api frontend.API) error {
 	return nil
 }
 
-// detectGnarkCircuit returns the appropriate gnark circuit type name
-// based on the constraint structure. Currently supports:
-//   - "add" — for circuits with only Add constraints
-//   - "mul" — for circuits with at least one Mul constraint
-func detectGnarkCircuit(circuit *Circuit) string {
-	for _, c := range circuit.Constraints {
-		if c.Type == ConstraintTypeMul {
-			return "mul"
-		}
-	}
-	return "add"
-}
-
 // assignFn maps a *big.Int to a frontend.Variable.
 func assignFn(n *big.Int) frontend.Variable {
 	if n == nil {

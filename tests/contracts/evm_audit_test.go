@@ -39,6 +39,13 @@ func (a *auditState) Transfer(from, to []byte, amt *big.Int) {
 	}
 	a.balance[string(to)] = new(big.Int).Add(a.GetBalance(to), amt)
 }
+func (a *auditState) AddLog(addr []byte, topics [][]byte, data []byte) {
+}
+
+func (a *auditState) Snapshot() int { return 0 }
+
+func (a *auditState) RevertToSnapshot(int) {}
+
 func (a *auditState) CreateAccount(addr []byte) {}
 
 func auditCode(t *testing.T, name string, code []byte, ctx *vm.EVMContext, want []byte) {
@@ -245,17 +252,15 @@ func TestAuditEnvironment(t *testing.T) {
 }
 
 func TestAuditCODECOPY(t *testing.T) {
-	// CODECOPY: copy 4 bytes from code offset 8 to memory, return them
-	// Bytecode layout:
-	// 0-7:  60 20 60 00 52 60 20 60 (prologue: MSTORE(0,0), RETURN(0,32))
-	// 8-11:  DE AD BE EF (target data to copy)
-	// 12-...: codecopy + return
+	// CODECOPY: copy 4 bytes from code to memory, return them
+	// Layout: JUMP over data, data, JUMPDEST, then CODECOPY + RETURN
 	code := []byte{
-		0x60, 0x20, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, // prologue (overwritten below)
-		0xDE, 0xAD, 0xBE, 0xEF, // target data at offset 8
-		// Now CODECOPY: copy 4 bytes from offset 8 to mem 0, then RETURN
+		0x60, 0x07,       // PUSH1 7 (jump dest after data)
+		0x56,             // JUMP
+		0xDE, 0xAD, 0xBE, 0xEF, // target data at offset 3
+		0x5B,             // JUMPDEST at offset 7
 		0x60, 0x04,       // size = 4
-		0x60, 0x08,       // code offset = 8
+		0x60, 0x03,       // code offset = 3
 		0x60, 0x00,       // mem offset = 0
 		0x39,             // CODECOPY
 		0x60, 0x04,       // size = 4

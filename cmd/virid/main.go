@@ -74,7 +74,6 @@ type nodeFlags struct {
 	explorerMode   bool
 	faucetMode     bool
 	tlsAuto        bool
-	enableWASM     bool
 	parallelExec   bool
 	gnarkProver    bool
 	testnet        bool
@@ -108,7 +107,6 @@ func parseFlags() nodeFlags {
 	flag.BoolVar(&f.explorerMode, "explorer", false, "Run as block explorer")
 	flag.BoolVar(&f.faucetMode, "faucet", false, "Run as testnet faucet")
 	flag.BoolVar(&f.tlsAuto, "tls-auto", false, "Auto-generate self-signed TLS certificates")
-	flag.BoolVar(&f.enableWASM, "wasm", false, "Use wazero WASM runtime for smart contracts")
 	flag.BoolVar(&f.parallelExec, "parallel-exec", false, "Enable parallel transaction execution")
 	flag.BoolVar(&f.gnarkProver, "gnark-prover", false, "Use gnark-based ZK prover/verifier")
 	flag.BoolVar(&f.testnet, "testnet", false, "Run in testnet mode (shorthand for --config configs/node-testnet.json)")
@@ -268,7 +266,7 @@ func main() {
 	log := logging.NewLogger("virid", logging.ParseLogLevel(cfg.Logging.Level), cfg.Logging.Level)
 
 	// Set up file-based log rotation if output path is configured
-	if cfg.Logging.Output != "" {
+	if cfg.Logging.Output != "" && cfg.Logging.Output != "stdout" {
 		maxSize := cfg.Logging.MaxSize
 		if maxSize <= 0 {
 			maxSize = 100
@@ -385,13 +383,10 @@ func main() {
 
 	// Initialize L2 Execution Engine
 	execEngine := execution.NewExecutionEngine()
-	if flags.enableWASM {
-		execEngine.SetVMType(execution.VMTypeWASM)
-	}
 	if flags.parallelExec {
 		execEngine.SetParallel(true)
 	}
-	log.WithField("vm", map[bool]string{false: "evm", true: "wasm"}[flags.enableWASM]).
+	log.WithField("vm", "evm").
 		WithField("parallel", flags.parallelExec).
 		Info("L2 Execution Engine initialized (transfers, deploys, calls)")
 
@@ -404,21 +399,14 @@ func main() {
 	mevState := mev.NewMEVState(mev.StandardMode)
 	rollupChain := rollups.NewRollupChain("main", rollups.RollupTypeOptimistic, 100)
 	zkCircuit := zk.NewShieldedTransferCircuit()
-	zkProvingKey := zk.GenerateProvingKey(zkCircuit)
-	zkVerifyingKey := zk.GenerateVerifyingKey(zkProvingKey, zkCircuit)
-	zkProver := zk.NewProver(zkProvingKey, zkCircuit)
-	zkVerifier := zk.NewVerifier(zkVerifyingKey, zkCircuit)
-	_ = zkProver
-	if flags.gnarkProver {
-		gp := zk.NewGnarkProver()
-		gv := zk.NewGnarkVerifier()
-		_ = gp
-		execEngine.SetGnarkVerifier(gv, zkCircuit)
-		log.Info("Gnark-based ZK prover/verifier enabled (structural constraint verification)")
-	}
+	gp := zk.NewGnarkProver()
+	gv := zk.NewGnarkVerifier()
+	_ = gp
+	execEngine.SetGnarkVerifier(gv, zkCircuit)
+	log.Info("Gnark-based ZK prover/verifier enabled")
+
 	// Wire modules into the execution engine
 	execEngine.SetShieldedPool(shieldedPool)
-	execEngine.SetZKVerifier(zkVerifier)
 	execEngine.SetContractManager(contractMgr)
 
 	log.WithField("modules", "accounts,agents,contracts,gas,mev,privacy,rollups,zk").
@@ -436,7 +424,7 @@ func main() {
 	// Wire rollups and agents into block producer
 	var l3APIServer *api.L3APIServer
 	var wsServer *WSServer
-	eventBus := events.NewEventBus(1000)
+	eventBus := events.NewEventBus()
 	eventBus.Subscribe(events.EventBlockAdded, func(event events.Event) {
 		block := event.Data.(*ledger.Block)
 		log.WithField("height", block.Header.Height).Info("New block added")
@@ -602,7 +590,7 @@ func main() {
 		WithField("addresses", viriNet.Addresses()).
 		Info("P2P network initialized")
 
-	blockProducer := newChainBlockProducer(blockchain, key, execEngine, stateMgr, gasOracle, mevState, shieldedPool, zkVerifier, rollupChain, agentMgr)
+	blockProducer := newChainBlockProducer(blockchain, key, execEngine, stateMgr, gasOracle, mevState, shieldedPool, rollupChain, agentMgr)
 
 	validators := make([]*consensus.Validator, 0, len(genesis.InitialValidators))
 	for _, gv := range genesis.InitialValidators {
@@ -633,7 +621,13 @@ func main() {
 
 	validatorSet := consensus.NewValidatorSet(validators, 1)
 	staking := consensus.NewStakingModule(21*24*time.Hour, 0.01)
-	staking.Stake(key.PubKey().Address(), key.PubKey().Bytes(), 1000000)
+	for _, v := range validators {
+		if err := staking.Stake(v.Address, v.PublicKey, v.Stake); err != nil {
+			log.WithField("address", fmt.Sprintf("%x", v.Address)).
+				WithField("error", err.Error()).
+				Warn("Failed to stake genesis validator")
+		}
+	}
 
 	consensusConfig := consensus.DefaultConsensusConfig()
 	consensusConfig.BlockTime = cfg.Chain.BlockTime.Duration()
@@ -778,7 +772,7 @@ func main() {
 	}
 
 	if flags.rpc {
-		entryPoint := accounts.NewEntryPoint(accountMgr, cfg.Chain.ChainID)
+		entryPoint := accounts.NewEntryPoint(accountMgr, cfg.Chain.ChainID, nil)
 		rpcServer = NewRPCServer(flags.rpcPort, blockchain, stateMgr, viriNet, engine, log, cfg.Chain.ChainID, flags.validator, key.PubKey().Address(), tlsCert, tlsKey, cfg.Node.APIKeyHash, obsAuditLog, nodeSyncer, entryPoint)
 		if err := rpcServer.Start(); err != nil {
 			log.Error(fmt.Sprintf("Failed to start RPC server: %v", err))
@@ -813,6 +807,10 @@ func main() {
 	}
 	log.WithField("port", adminPort).Info("Admin API server started")
 
+	stopCh := make(chan struct{})
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
 	go func() {
 		time.Sleep(5 * time.Second)
 		viriNet.BroadcastGetPeers()
@@ -822,37 +820,54 @@ func main() {
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
-		for range ticker.C {
-			stats := viriNet.Stats().Snapshot()
-			connStats := viriNet.ConnManager().Stats()
-			log.WithField("peers", stats.CurrentPeers).
-				WithField("blocks_in", stats.TotalBlocksIn).
-				WithField("blocks_out", stats.TotalBlocksOut).
-				WithField("txs_in", stats.TotalTxsIn).
-				WithField("txs_out", stats.TotalTxsOut).
-				WithField("bytes_in", stats.TotalBytesIn).
-				WithField("bytes_out", stats.TotalBytesOut).
-				WithField("rejected", stats.RejectedMessages).
-				WithField("conn_active", connStats.ActivePeers).
-				WithField("uptime", stats.Uptime.String()).
-				Info("Network stats")
+		for {
+			select {
+			case <-ticker.C:
+				stats := viriNet.Stats().Snapshot()
+				connStats := viriNet.ConnManager().Stats()
+				log.WithField("peers", stats.CurrentPeers).
+					WithField("blocks_in", stats.TotalBlocksIn).
+					WithField("blocks_out", stats.TotalBlocksOut).
+					WithField("txs_in", stats.TotalTxsIn).
+					WithField("txs_out", stats.TotalTxsOut).
+					WithField("bytes_in", stats.TotalBytesIn).
+					WithField("bytes_out", stats.TotalBytesOut).
+					WithField("rejected", stats.RejectedMessages).
+					WithField("conn_active", connStats.ActivePeers).
+					WithField("uptime", stats.Uptime.String()).
+					Info("Network stats")
+			case <-stopCh:
+				return
+			}
 		}
 	}()
 
 	go func() {
 		ticker := time.NewTicker(10 * time.Second)
 		defer ticker.Stop()
-		for range ticker.C {
-			metricsCollector.UpdateUptime()
-			syncing := nodeSyncer != nil && nodeSyncer.IsSyncing()
-			metricsCollector.SetNodeIsSyncing(syncing)
-			metricsCollector.SetMempoolPendingTxs(blockchain.TxPool().Size())
-			metricsCollector.SetHealthData(blockchain.Height(), viriNet.PeerCount(), syncing)
+		for {
+			select {
+			case <-ticker.C:
+				metricsCollector.UpdateUptime()
+				syncing := nodeSyncer != nil && nodeSyncer.IsSyncing()
+				mempoolSize := blockchain.TxPool().Size()
+				metricsCollector.SetNodeIsSyncing(syncing)
+				metricsCollector.SetMempoolPendingTxs(mempoolSize)
+				metricsCollector.SetHealthData(blockchain.Height(), viriNet.PeerCount(), syncing)
+
+				if mempoolSize > 0 && txPool != nil {
+					pressure := txPool.PressureLevel()
+					if pressure > 0.9 {
+						log.WithField("pressure", pressure).
+							WithField("pending", mempoolSize).
+							Warn("Mempool under high pressure")
+					}
+				}
+			case <-stopCh:
+				return
+			}
 		}
 	}()
-
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 
 	log.WithField("rpc_port", flags.rpcPort).
 		WithField("api_port", flags.apiPort).
@@ -862,7 +877,10 @@ func main() {
 		Info("Viri node is running")
 
 	fmt.Println("Press Ctrl+C to stop.")
-	<-stop
+	select {
+	case <-sigCh:
+	case <-stopCh:
+	}
 
 	log.Info("Shutting down gracefully...")
 

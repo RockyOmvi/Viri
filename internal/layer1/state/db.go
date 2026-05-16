@@ -1,6 +1,11 @@
 package state
 
-import "fmt"
+import (
+	"errors"
+	"sync"
+)
+
+var ErrKeyNotFound = errors.New("key not found")
 
 type KVStore interface {
 	Get(key []byte) ([]byte, error)
@@ -32,6 +37,7 @@ type Iterator interface {
 }
 
 type MemoryStore struct {
+	mu   sync.RWMutex
 	data map[string][]byte
 }
 
@@ -42,29 +48,41 @@ func NewMemoryStore() *MemoryStore {
 }
 
 func (m *MemoryStore) Get(key []byte) ([]byte, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	val, exists := m.data[string(key)]
 	if !exists {
-		return nil, fmt.Errorf("key not found")
+		return nil, ErrKeyNotFound
 	}
 	return val, nil
 }
 
 func (m *MemoryStore) Put(key []byte, value []byte) error {
-	m.data[string(key)] = value
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	v := make([]byte, len(value))
+	copy(v, value)
+	m.data[string(key)] = v
 	return nil
 }
 
 func (m *MemoryStore) Delete(key []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	delete(m.data, string(key))
 	return nil
 }
 
 func (m *MemoryStore) Has(key []byte) (bool, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	_, exists := m.data[string(key)]
 	return exists, nil
 }
 
 func (m *MemoryStore) Close() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.data = make(map[string][]byte)
 	return nil
 }
@@ -83,6 +101,8 @@ func (m *MemoryStore) Iterator(prefix []byte) (Iterator, error) {
 }
 
 func (m *MemoryStore) keysWithPrefix(prefix []byte) [][]byte {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	var keys [][]byte
 	prefixStr := string(prefix)
 	for k := range m.data {
@@ -105,21 +125,31 @@ type MemoryBatch struct {
 }
 
 func (b *MemoryBatch) Put(key []byte, value []byte) error {
-	b.ops = append(b.ops, batchOp{key: key, value: value})
+	k := make([]byte, len(key))
+	copy(k, key)
+	v := make([]byte, len(value))
+	copy(v, value)
+	b.ops = append(b.ops, batchOp{key: k, value: v})
 	return nil
 }
 
 func (b *MemoryBatch) Delete(key []byte) error {
-	b.ops = append(b.ops, batchOp{key: key, delete: true})
+	k := make([]byte, len(key))
+	copy(k, key)
+	b.ops = append(b.ops, batchOp{key: k, delete: true})
 	return nil
 }
 
 func (b *MemoryBatch) Write() error {
+	b.store.mu.Lock()
+	defer b.store.mu.Unlock()
 	for _, op := range b.ops {
 		if op.delete {
 			delete(b.store.data, string(op.key))
 		} else {
-			b.store.data[string(op.key)] = op.value
+			v := make([]byte, len(op.value))
+			copy(v, op.value)
+			b.store.data[string(op.key)] = v
 		}
 	}
 	b.ops = b.ops[:0]

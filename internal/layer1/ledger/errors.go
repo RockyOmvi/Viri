@@ -17,4 +17,6 @@ var (
 	ErrInvalidSignature  = errors.New("invalid transaction signature")
 	ErrEmptyBlock        = errors.New("block has no transactions")
 	ErrMaxSupplyExceeded = errors.New("max supply would be exceeded")
+	ErrValidatorJailed   = errors.New("validator is jailed")
+	ErrAlreadySlashed    = errors.New("validator already slashed for this offense")
 )

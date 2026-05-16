@@ -10,7 +10,7 @@ func TestTxPoolAdd(t *testing.T) {
 	pool := NewTxPool(nil, nil)
 
 	key, _ := crypto.GenerateKey()
-	tx, _ := NewTransactionFromKey(0, key.PubKey().Address(), 100, 1000, 10, nil, key)
+	tx, _ := NewTransactionFromKey(0, key.PubKey().Address(), 100, 1000, 10, nil, 1337, key)
 
 	if err := pool.Add(tx); err != nil {
 		t.Fatalf("Failed to add tx to pool: %v", err)
@@ -29,7 +29,7 @@ func TestTxPoolDuplicate(t *testing.T) {
 	pool := NewTxPool(nil, nil)
 
 	key, _ := crypto.GenerateKey()
-	tx, _ := NewTransactionFromKey(0, key.PubKey().Address(), 100, 1000, 10, nil, key)
+	tx, _ := NewTransactionFromKey(0, key.PubKey().Address(), 100, 1000, 10, nil, 1337, key)
 
 	if err := pool.Add(tx); err != nil {
 		t.Fatalf("First add failed: %v", err)
@@ -46,7 +46,7 @@ func TestTxPoolGasPriceFilter(t *testing.T) {
 	pool := NewTxPool(config, nil)
 
 	key, _ := crypto.GenerateKey()
-	tx, _ := NewTransactionFromKey(0, key.PubKey().Address(), 100, 1000, 50, nil, key)
+	tx, _ := NewTransactionFromKey(0, key.PubKey().Address(), 100, 1000, 50, nil, 1337, key)
 
 	if err := pool.Add(tx); err != ErrGasPriceTooLow {
 		t.Errorf("Expected gas price too low error, got %v", err)
@@ -59,8 +59,8 @@ func TestTxPoolGasPriceOrdering(t *testing.T) {
 	key1, _ := crypto.GenerateKey()
 	key2, _ := crypto.GenerateKey()
 
-	tx1, _ := NewTransactionFromKey(0, key1.PubKey().Address(), 100, 1000, 10, nil, key1)
-	tx2, _ := NewTransactionFromKey(0, key2.PubKey().Address(), 200, 1000, 20, nil, key2)
+	tx1, _ := NewTransactionFromKey(0, key1.PubKey().Address(), 100, 1000, 10, nil, 1337, key1)
+	tx2, _ := NewTransactionFromKey(0, key2.PubKey().Address(), 200, 1000, 20, nil, 1337, key2)
 
 	pool.Add(tx1)
 	pool.Add(tx2)
@@ -79,7 +79,7 @@ func TestTxPoolRemove(t *testing.T) {
 	pool := NewTxPool(nil, nil)
 
 	key, _ := crypto.GenerateKey()
-	tx, _ := NewTransactionFromKey(0, key.PubKey().Address(), 100, 1000, 10, nil, key)
+	tx, _ := NewTransactionFromKey(0, key.PubKey().Address(), 100, 1000, 10, nil, 1337, key)
 
 	pool.Add(tx)
 	pool.Remove(string(tx.Hash))
@@ -95,8 +95,8 @@ func TestTxPoolRemoveConfirmed(t *testing.T) {
 	key1, _ := crypto.GenerateKey()
 	key2, _ := crypto.GenerateKey()
 
-	tx1, _ := NewTransactionFromKey(0, key1.PubKey().Address(), 100, 1000, 10, nil, key1)
-	tx2, _ := NewTransactionFromKey(0, key2.PubKey().Address(), 200, 1000, 20, nil, key2)
+	tx1, _ := NewTransactionFromKey(0, key1.PubKey().Address(), 100, 1000, 10, nil, 1337, key1)
+	tx2, _ := NewTransactionFromKey(0, key2.PubKey().Address(), 200, 1000, 20, nil, 1337, key2)
 
 	pool.Add(tx1)
 	pool.Add(tx2)
@@ -117,7 +117,7 @@ func TestTxPoolClear(t *testing.T) {
 
 	for i := 0; i < 10; i++ {
 		key, _ := crypto.GenerateKey()
-		tx, _ := NewTransactionFromKey(uint64(i), key.PubKey().Address(), 100, 1000, 10, nil, key)
+		tx, _ := NewTransactionFromKey(uint64(i), key.PubKey().Address(), 100, 1000, 10, nil, 1337, key)
 		pool.Add(tx)
 	}
 
@@ -136,7 +136,7 @@ func TestTxPoolStats(t *testing.T) {
 	pool := NewTxPool(nil, nil)
 
 	key, _ := crypto.GenerateKey()
-	tx, _ := NewTransactionFromKey(0, key.PubKey().Address(), 100, 1000, 10, nil, key)
+	tx, _ := NewTransactionFromKey(0, key.PubKey().Address(), 100, 1000, 10, nil, 1337, key)
 
 	pool.Add(tx)
 
@@ -158,7 +158,7 @@ func TestTxPoolMaxTransactions(t *testing.T) {
 
 	for i := 0; i < 3; i++ {
 		key, _ := crypto.GenerateKey()
-		tx, _ := NewTransactionFromKey(uint64(i), key.PubKey().Address(), 100, 1000, 10, nil, key)
+		tx, _ := NewTransactionFromKey(uint64(i), key.PubKey().Address(), 100, 1000, 10, nil, 1337, key)
 
 		if i < 2 {
 			if err := pool.Add(tx); err != nil {
@@ -176,7 +176,7 @@ func TestTxPoolGasUsed(t *testing.T) {
 	pool := NewTxPool(nil, nil)
 
 	key, _ := crypto.GenerateKey()
-	tx, _ := NewTransactionFromKey(0, key.PubKey().Address(), 100, 5000, 10, nil, key)
+	tx, _ := NewTransactionFromKey(0, key.PubKey().Address(), 100, 5000, 10, nil, 1337, key)
 
 	pool.Add(tx)
 
