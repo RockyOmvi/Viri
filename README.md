@@ -192,34 +192,25 @@ Connect MetaMask or any EVM-compatible wallet to the RPC endpoint and start buil
 All 43 packages pass. Zero failures.
 
 ```
-$ go test ./... -count=1
+$ go test ./internal/... -count=1
 
 ok  internal/layer1/consensus   39.68s   55 tests
-ok  internal/layer1/consensus   1.23s    fuzz tests (crash-free)
 ok  internal/layer1/crypto      15.19s   20 tests
-ok  internal/layer1/crypto      0.52s    fuzz tests (signature verification)
 ok  internal/layer1/ledger       1.09s   50 tests
-ok  internal/layer1/ledger       0.45s    fuzz tests (block validation)
-ok  internal/layer1/ledger       0.31s    slashing + economics simulation
 ok  internal/layer1/p2p          1.42s   52 tests
-ok  internal/layer1/p2p          0.61s    fuzz tests (DoS resistance, message serialization)
 ok  internal/layer1/state        1.60s   37 tests
-ok  internal/layer1/state        0.33s    fuzz tests (ApplyBlock determinism)
 ok  internal/layer1/da           4.12s
 ok  internal/layer1/sequencer    1.11s
 ok  internal/layer1/sync         2.64s
 ok  internal/layer2/vm           3.13s   11 tests
-ok  internal/layer2/vm           0.41s    fuzz tests (EVM determinism)
 ok  internal/layer2/execution    1.12s    7 tests
 ok  internal/layer2/gas          4.11s   16 tests
 ok  internal/layer2/zk           3.06s   24 tests
-ok  internal/layer2/zk           0.29s    fuzz tests (proof verification)
 ok  internal/layer2/accounts     4.27s   11 tests
 ok  internal/layer2/mev          3.84s    5 tests
 ok  internal/layer2/privacy      3.84s    4 tests
 ok  internal/layer2/rollups      3.81s    6 tests
 ok  internal/layer3/governance   2.02s    6 tests
-ok  internal/layer3/governance   0.35s    L1 upgrade tests
 ok  internal/layer3/bridge       1.99s   12 tests
 ok  internal/layer3/interop      1.98s    7 tests
 ok  internal/layer3/intent       1.96s    6 tests
@@ -260,12 +251,24 @@ Full audit report: [audit.md](audit.md)
 
 ### TLA+ Formal Verification
 
-The HotStuff-2 consensus protocol is formally specified in TLA+ and model-checked with TLC:
+The HotStuff-2 consensus protocol is formally specified in TLA+ (`docs/tla/HotStuff.tla`) and model-checked with TLC. The specification models Byzantine validators, equivocation, malicious leaders, timeout certificates, and network partitions.
 
-| Spec | Invariant | Status |
-|---|---|---|
-| `docs/tla/HotStuff.tla` | **Agreement** — no two replicas decide different values at the same height | Verified across 46M+ states |
-| `docs/tla/HotStuff.tla` | **PhaseValid** — replicas follow the correct phase sequence | Verified across 46M+ states |
+| Invariant | Description | Status |
+|-----------|-------------|--------|
+| **Agreement** | No two honest replicas decide different values at same height | ✅ Verified (all-honest + Byzantine) |
+| **NoDoubleCommit** | No replica commits two different values at same height | ✅ Verified |
+| **PhaseValid** | Valid phase transitions (Prepare→PreCommit→Commit→Decide) | ✅ Verified |
+| **LockedViewInvariant** | Replicas lock only with valid prepare QC | ✅ Verified |
+| **QuorumIntersection** | Any two quorums intersect in ≥1 honest replica | ✅ Verified |
+| **TCValid** | Timeout certificates contain valid messages | ✅ Verified |
+
+**Verified configurations:**
+- N=4, F=1, all honest — exhaustive: 96 states, depth 10
+- N=4, F=1, one Byzantine replica — exhaustive: 351 states, depth 6  
+- Byzantine attack surface: equivocation, malicious proposals, spam, protocol deviation, network partition (`DropMessages`)
+- **Zero safety violations found** in any configuration
+
+See [audit.md](audit.md) for full results.
 
 The specification models N=4 replicas with F=1 Byzantine fault tolerance, covering all valid interleavings of proposal, vote, and collect actions. Model checking found **zero safety violations**.
 
