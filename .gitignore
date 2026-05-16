@@ -41,4 +41,7 @@ frontend/.next/
 # Generated archives
 stitch_viri_explorer.zip
 stitch_viri_explorer/
+
+# TLC model checker state snapshots (binary, regenerated each run)
+states/
  
