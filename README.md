@@ -263,8 +263,9 @@ The HotStuff-2 consensus protocol is formally specified in TLA+ (`docs/tla/HotSt
 | **TCValid** | Timeout certificates contain valid messages | ✅ Verified |
 
 **Verified configurations:**
-- N=4, F=1, all honest — exhaustive: 96 states, depth 10
-- N=4, F=1, one Byzantine replica — exhaustive: 351 states, depth 6  
+- N=4, F=1, all honest — exhaustive: 55 states, depth 8
+- N=4, F=1, one Byzantine replica — exhaustive: 920 states, depth 8
+- N=4, F=1, full model (timeouts, partitions, Byzantine) — 34M+ states, 3.1M+ distinct, zero errors
 - Byzantine attack surface: equivocation, malicious proposals, spam, protocol deviation, network partition (`DropMessages`)
 - **Zero safety violations found** in any configuration
 

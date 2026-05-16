@@ -351,7 +351,7 @@ Safety ==
 (***************************************************************************)
 (* Model-checking constraint — bound total messages                       *)
 (***************************************************************************)
-MessagesLimited == Cardinality(messages) < 6
+MessagesLimited == Cardinality(messages) < 8
 ViewLimited == \A r \in Replicas : view[r] < 3
 
 (***************************************************************************)

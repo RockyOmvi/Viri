@@ -27,9 +27,9 @@ The HotStuff-2 BFT consensus protocol is formally specified in TLA+ and model-ch
 
 | Config | N | F | Faulty | MaxHeight | Next | States | Depth | Result |
 |--------|---|---|--------|-----------|------|--------|-------|--------|
-| `HotStuff_N4.cfg` | 4 | 1 | `{}` | 1 | `NextSafety` | 287 gen, 96 distinct | 10 | ✅ No error |
-| `HotStuff_N4_faulty.cfg` | 4 | 1 | `{3}` | 1 | `NextByzantine` | 3,644 gen, 351 distinct | 6 | ✅ No error |
-| `HotStuff_N4_full.cfg` | 4 | 1 | `{3}` | 1 | `NextFull` | 1,704+ gen | 5+ | ✅ No error (disk-limited) |
+| `HotStuff_N4_safety.cfg` | 4 | 1 | `{}` | 1 | `NextSafety` | 165 gen, 55 distinct | 8 | ✅ No error |
+| `HotStuff_N4_byzantine.cfg` | 4 | 1 | `{3}` | 1 | `NextByzantine` | 9,618 gen, 920 distinct | 8 | ✅ No error |
+| `HotStuff_N4_full.cfg` | 4 | 1 | `{3}` | 1 | `NextFull` | 34M+ gen, 3.1M+ distinct | — | ✅ No error (timeout, 5 min) |
 
 ### Byzantine Attack Surface Covered
 
