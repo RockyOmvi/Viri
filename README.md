@@ -3,7 +3,7 @@
 [![CI](https://github.com/viri-chain/viri/actions/workflows/ci.yml/badge.svg)](https://github.com/viri-chain/viri/actions/workflows/ci.yml)
 [![Go](https://img.shields.io/badge/Go-1.22+-00ADD8?logo=go)](https://go.dev)
 [![License](https://img.shields.io/badge/license-MIT-brightgreen)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-43_packages_·_0_failures-brightgreen)](#test-results)
+[![Tests](https://img.shields.io/badge/tests-44_packages_·_0_failures-brightgreen)](#test-results)
 [![Testnet](https://img.shields.io/badge/testnet-in_development-yellow)](#public-testnet)
 
 **A production-grade 3-layer modular blockchain built in Go.**
@@ -189,37 +189,48 @@ Connect MetaMask or any EVM-compatible wallet to the RPC endpoint and start buil
 
 ## Test Results
 
-All 43 packages pass. Zero failures.
+All 44 packages pass. Zero failures.
 
 ```
-$ go test ./internal/... -count=1
+$ go test ./internal/... ./tests/... -count=1
 
-ok  internal/layer1/consensus   39.68s   55 tests
-ok  internal/layer1/crypto      15.19s   20 tests
-ok  internal/layer1/ledger       1.09s   50 tests
-ok  internal/layer1/p2p          1.42s   52 tests
-ok  internal/layer1/state        1.60s   37 tests
-ok  internal/layer1/da           4.12s
-ok  internal/layer1/sequencer    1.11s
-ok  internal/layer1/sync         2.64s
-ok  internal/layer2/vm           3.13s   11 tests
-ok  internal/layer2/execution    1.12s    7 tests
-ok  internal/layer2/gas          4.11s   16 tests
-ok  internal/layer2/zk           3.06s   24 tests
-ok  internal/layer2/accounts     4.27s   11 tests
-ok  internal/layer2/mev          3.84s    5 tests
-ok  internal/layer2/privacy      3.84s    4 tests
-ok  internal/layer2/rollups      3.81s    6 tests
-ok  internal/layer3/governance   2.02s    6 tests
-ok  internal/layer3/bridge       1.99s   12 tests
-ok  internal/layer3/interop      1.98s    7 tests
-ok  internal/layer3/intent       1.96s    6 tests
-ok  internal/layer3/api          3.63s   12 tests
-ok  internal/layer3/appchain     1.05s    6 tests
-ok  internal/layer3/sdk          3.24s    7 tests
-ok  tests/integration           28.57s   46 tests
-ok  tests/contracts              1.37s   43 tests
-ok  tests/fuzz                   0.37s   10 fuzz harnesses
+ok  internal/layer1/consensus   39.88s   55 tests
+ok  internal/layer1/crypto      17.90s   20 tests
+ok  internal/layer1/ledger       9.95s   50 tests
+ok  internal/layer1/p2p          1.44s   52 tests
+ok  internal/layer1/state        1.36s   37 tests
+ok  internal/layer1/da           5.10s
+ok  internal/layer1/sequencer    0.92s
+ok  internal/layer1/sync         2.49s
+ok  internal/layer1/genesis      5.68s
+ok  internal/layer1/node         1.07s
+ok  internal/layer1/recovery     5.09s
+ok  internal/layer2/vm           5.77s   11 tests
+ok  internal/layer2/execution    1.19s    7 tests
+ok  internal/layer2/gas          4.98s   16 tests
+ok  internal/layer2/zk           1.01s   24 tests
+ok  internal/layer2/accounts     5.32s   11 tests
+ok  internal/layer2/agents       4.65s
+ok  internal/layer2/contracts    5.20s
+ok  internal/layer2/mev          4.66s    5 tests
+ok  internal/layer2/privacy      3.22s    4 tests
+ok  internal/layer2/rollups      4.08s    6 tests
+ok  internal/layer3/governance   2.42s    6 tests
+ok  internal/layer3/bridge       4.19s   12 tests
+ok  internal/layer3/interop      2.33s    7 tests
+ok  internal/layer3/intent       2.34s    6 tests
+ok  internal/layer3/api          4.77s   12 tests
+ok  internal/layer3/appchain     2.38s    6 tests
+ok  internal/layer3/sdk          4.09s    7 tests
+ok  internal/pkg/audit          4.38s
+ok  internal/pkg/metrics        4.20s
+ok  internal/pkg/observability  4.05s
+ok  internal/pkg/security       15.87s
+ok  internal/pkg/tee            2.48s
+ok  tests/integration           28.09s   24 tests
+ok  tests/contracts              2.52s   43 tests
+ok  tests/fuzz                   0.80s   10 fuzz harnesses
+ok  tests/benchmarks             1.70s   12 benchmarks
 ```
 
 ### Consensus Performance
@@ -233,6 +244,32 @@ ok  tests/fuzz                   0.37s   10 fuzz harnesses
 | 20-validator convergence | Min/max spread of 1 block |
 | 100-validator supermajority | **2,015 ops/sec** |
 | Message throughput | **4,958 msgs/sec · 130 blocks/sec** |
+
+### Benchmarks
+
+| Benchmark | Iterations | Time/op | Memory/op | Allocs/op |
+|---|---|---|---|---|
+| `BlockchainAddBlock` | 4,898 | 241 µs | 17 kB | 239 |
+| `TransactionPool` | 10,000 | 115 µs | 22 kB | 353 |
+| `CryptoSign` | 40,482 | 28 µs | 1.8 kB | 35 |
+| `CryptoVerify` | 8,870 | 123 µs | 808 B | 18 |
+| `StateAccountCreation` | 5,802,103 | 214 ns | 64 B | 5 |
+| `ConsensusEngine` | 100,000,000 | 11 ns | 0 B | 0 |
+| `P2PMessageEncode` | 49,528,243 | 37 ns | 48 B | 1 |
+| `MerkleTree` (1000 leaves) | 3,572 | 337 µs | 214 kB | 3,058 |
+| `ConcurrentTxSubmission` (32 goroutines) | 40,675 | 49 µs | 10 kB | 168 |
+| `BlockProductionConcurrent` (16 submitters) | 342 | 3.2 ms | 158 kB | 2,205 |
+| `AccountTransfer` | 18,526,495 | 101 ns | 53 B | 3 |
+| `RegisterAgent` | 1,724,294 | 598 ns | 226 B | 5 |
+| `DeployContract` | 1,000,000 | 1.4 µs | 415 B | 7 |
+| `MEVBatch` | 100,000,000 | 11 ns | 0 B | 0 |
+| `SubmitBatch` | 10,257,619 | 103 ns | 129 B | 3 |
+| `InitiateTransfer` | 1,784,736 | 588 ns | 346 B | 7 |
+| `SubmitProposal` | 1,761,396 | 619 ns | 336 B | 3 |
+| `SubmitIntent` | 2,021,738 | 820 ns | 398 B | 7 |
+| `SendPacket` | 2,186,780 | 634 ns | 330 B | 5 |
+| `RateLimiterAllow` | 29,955,067 | 34 ns | 0 B | 0 |
+| `DDoSDetectorCheck` | 10,712,095 | 105 ns | 82 B | 2 |
 
 ### Fuzz Tests
 

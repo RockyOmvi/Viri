@@ -439,6 +439,56 @@ TestHealthCheck         PASS
 
 ---
 
+## Performance Benchmarks
+
+Benchmarks executed on `Intel i7-14650HX (24 cores), 64GB RAM, Windows 11`.
+
+### L1 — Core
+
+| Benchmark | Iterations | Time/op | Memory/op | Allocs/op |
+|---|---|---|---|---|
+| `BlockchainAddBlock` | 4,898 | 241 µs | 17 kB | 239 |
+| `TransactionPool` | 10,000 | 115 µs | 22 kB | 353 |
+| `CryptoSign` (P-256) | 40,482 | 28 µs | 1.8 kB | 35 |
+| `CryptoVerify` (P-256) | 8,870 | 123 µs | 808 B | 18 |
+| `StateAccountCreation` | 5,802,103 | 214 ns | 64 B | 5 |
+| `ConsensusEngine` | 100,000,000 | 11 ns | 0 B | 0 |
+| `P2PMessageEncode` | 49,528,243 | 37 ns | 48 B | 1 |
+| `ConfigValidation` | 10,933,964 | 114 ns | 0 B | 0 |
+| `MerkleTree` (1000 leaves) | 3,572 | 337 µs | 214 kB | 3,058 |
+| `ConcurrentTxSubmission` (32 goroutines) | 40,675 | 49 µs | 10 kB | 168 |
+| `BlockProductionConcurrent` (16 submitters) | 342 | 3.2 ms | 158 kB | 2,205 |
+
+### L2 — Execution
+
+| Benchmark | Iterations | Time/op | Memory/op | Allocs/op |
+|---|---|---|---|---|
+| `AccountTransfer` | 18,526,495 | 101 ns | 53 B | 3 |
+| `RegisterAgent` | 1,724,294 | 598 ns | 226 B | 5 |
+| `DeployContract` | 1,000,000 | 1.4 µs | 415 B | 7 |
+| `MEVBatch` | 100,000,000 | 11 ns | 0 B | 0 |
+| `SubmitBatch` | 10,257,619 | 103 ns | 129 B | 3 |
+
+### L3 — Application
+
+| Benchmark | Iterations | Time/op | Memory/op | Allocs/op |
+|---|---|---|---|---|
+| `InitiateTransfer` | 1,784,736 | 588 ns | 346 B | 7 |
+| `SubmitProposal` | 1,761,396 | 619 ns | 336 B | 3 |
+| `SubmitIntent` | 2,021,738 | 820 ns | 398 B | 7 |
+| `SendPacket` | 2,186,780 | 634 ns | 330 B | 5 |
+| `HealthCheck` | 20,850 | 57 µs | 5.6 kB | 65 |
+
+### Security
+
+| Benchmark | Iterations | Time/op | Memory/op | Allocs/op |
+|---|---|---|---|---|
+| `RateLimiterAllow` | 29,955,067 | 34 ns | 0 B | 0 |
+| `ConnectionLimiterAcquire` | 15,042,739 | 74 ns | 0 B | 0 |
+| `DDoSDetectorCheck` | 10,712,095 | 105 ns | 82 B | 2 |
+
+---
+
 ## Complete Test Output
 
 ```
@@ -496,7 +546,7 @@ ok  github.com/viri-chain/viri/tests/integration          28.565s
 ## Summary
 
 ```
-43 packages tested
+44 packages tested
 0 failures
 0 skipped tests
 ```
