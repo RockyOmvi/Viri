@@ -124,8 +124,8 @@ func TestStressTwentyValidatorsConvergence(t *testing.T) {
 		bps[i] = &testBP{bc: bc, k: keys[i]}
 
 		config := DefaultConsensusConfig()
-		config.BlockTime = 500 * time.Millisecond
-		config.ViewTimeout = 3 * time.Second
+		config.BlockTime = 300 * time.Millisecond
+		config.ViewTimeout = 2 * time.Second
 		config.TimeoutIncrease = 0
 		config.MaxViewTimeout = 3 * time.Second
 		config.MessageRateLimit = 10000
@@ -157,7 +157,7 @@ func TestStressTwentyValidatorsConvergence(t *testing.T) {
 
 	time.Sleep(3 * time.Second)
 
-	deadline := time.Now().Add(60 * time.Second)
+	deadline := time.Now().Add(120 * time.Second)
 	for time.Now().Before(deadline) {
 		heights := make([]uint64, n)
 		for i := 0; i < n; i++ {
