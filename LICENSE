@@ -1,22 +1,132 @@
-Copyright (c) 2026 RockyOmvi
+Business Source License 1.1
 
-Permission is granted to any person obtaining a copy of this software and
-associated documentation files (the "Software") to use, copy, modify, merge,
-and distribute the Software for **non-commercial purposes only**.
+Licensor:             RockyOmvi (github.com/RockyOmvi)
+Licensed Work:        Viri Blockchain
+                      Copyright (c) 2026 RockyOmvi
+                      github.com/viri-chain/viri
+Change Date:          2030-05-17
+Change License:       MIT
 
-**Commercial use is strictly prohibited** without prior written permission
-from the copyright holder. Commercial use includes, but is not limited to:
-- Selling, licensing, or renting the Software or derivatives
-- Using the Software in a commercial product or service
-- Operating the Software as part of a revenue-generating business
-- Charging fees for access to or use of the Software
+-----------------------------------------------------------------------------
+
+TERMS
+
+The Licensor hereby grants you the right to copy, modify, create derivative
+works, redistribute, and make non-production use of the Licensed Work.
+
+The Licensor may make an Additional Use Grant, above, permitting limited
+production use.
+
+Effective on the Change Date, or the fourth anniversary of the first publicly
+available distribution of a specific version of the Licensed Work under this
+License, whichever comes first, the Licensor hereby grants you rights under
+the terms of the Change License, and these terms do not apply to the Licensed
+Work after the Change Date.
+
+-----------------------------------------------------------------------------
+
+USE LIMITATION
+
+The Licensed Work may not be used in production for commercial purposes
+without a separate commercial license from the Licensor.
+
+Commercial use includes, but is not limited to:
+
+  - Selling, licensing, or renting the Software or any derivative works
+  - Using the Software as part of a commercial product or service
+  - Operating the Software as part of a revenue-generating business
+  - Charging fees for access to or use of the Software
+  - Deploying the Software as infrastructure for a paid service
+  - Using the Software to issue or operate a token with commercial intent
+    without prior written permission
+
+-----------------------------------------------------------------------------
+
+PERMITTED FREE USE
+
+The following uses are explicitly permitted at no cost and without requiring
+a commercial license:
+
+  - Personal and hobby projects
+  - Academic and university research
+  - Non-commercial open source projects
+  - Security research and auditing
+  - Protocol research and formal verification work
+  - Educational use and teaching
+  - Running a personal non-commercial node or validator
+  - Contributing to the Viri codebase itself
+  - Grant-funded public goods research (EF ESP, Gitcoin, Filecoin, etc.)
+
+-----------------------------------------------------------------------------
+
+GRANT PROGRAM COMPATIBILITY
+
+This license is compatible with open source grant programs for non-commercial
+research, academic, and public goods infrastructure purposes, including the
+Ethereum Foundation Ecosystem Support Program, Gitcoin Grants, Filecoin
+Developer Grants, and similar programs. Projects funded under such programs
+are considered non-commercial for the purposes of this license.
+
+-----------------------------------------------------------------------------
+
+COMMERCIAL LICENSING
+
+Organizations or individuals wishing to use the Licensed Work for commercial
+purposes may obtain a commercial license from the Licensor.
+
+Commercial licensing inquiries:
+
+  GitHub:   github.com/viri-chain/viri
+  Handle:   RockyOmvi
+
+The Licensor is open to fair commercial licensing arrangements including
+revenue sharing, equity, token allocation, or flat fee structures depending
+on the use case.
+
+-----------------------------------------------------------------------------
+
+AUTOMATIC CONVERSION
+
+On the Change Date (2030-05-17), this License automatically converts to the
+MIT License for all versions of the Licensed Work released prior to that
+date. After that date, this software is free for all purposes including
+commercial use, subject only to the terms of the MIT License.
+
+-----------------------------------------------------------------------------
+
+MIT LICENSE (Applies after Change Date: 2030-05-17)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
 AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
 
-For commercial licensing inquiries, contact: RockyOmvi
+-----------------------------------------------------------------------------
+
+DISCLAIMER
+
+THE LICENSED WORK IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE LICENSOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE LICENSED WORK OR THE USE OR OTHER
+DEALINGS IN THE LICENSED WORK.
+
+-----------------------------------------------------------------------------
+
+For the full text of the Business Source License 1.1, see:
+https://mariadb.com/bsl11/
