@@ -24,6 +24,7 @@ import (
 	"github.com/viri-chain/viri/internal/layer2/accounts"
 	"github.com/viri-chain/viri/internal/layer2/execution"
 	"github.com/viri-chain/viri/internal/layer2/vm"
+	"github.com/viri-chain/viri/internal/pkg/jsonrpc"
 	"github.com/viri-chain/viri/internal/pkg/observability"
 	"github.com/viri-chain/viri/internal/pkg/security"
 )
@@ -68,8 +69,9 @@ type JSONRPCResponse struct {
 }
 
 type RPCError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
+	Code    int         `json:"code"`
+	Message string      `json:"message"`
+	Data    interface{} `json:"data,omitempty"`
 }
 
 type LogFilter struct {
@@ -196,6 +198,7 @@ func (s *RPCServer) Start() error {
 	baseHandler := observability.InstrumentHandler("rpc", mux, func() {
 		observability.SetChainStats("rpc", s.blockchain.Height(), s.network.PeerCount())
 		observability.UpdateReadiness(s.network.PeerCount(), s.blockchain.Height())
+		security.ExportRateLimitMetrics(rateLimiter, methodRateLimiter)
 	})
 
 	tlsEnabled := s.tlsCert != "" && s.tlsKey != ""
@@ -315,18 +318,25 @@ func (s *RPCServer) handleRequest(w http.ResponseWriter, r *http.Request) {
 
 	var req JSONRPCRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.sendError(w, nil, -32700, "Parse error")
+		s.sendError(w, nil, jsonrpc.CodeParseError, "Parse error", map[string]string{
+			"detail": err.Error(),
+		})
 		return
 	}
 
 	if req.JSONRPC != "2.0" {
-		s.sendError(w, req.ID, -32600, "Invalid request")
+		s.sendError(w, req.ID, jsonrpc.CodeInvalidRequest, "Invalid request", map[string]string{
+			"expected": "2.0",
+			"received": req.JSONRPC,
+		})
 		return
 	}
 
 	handler, exists := s.methods[req.Method]
 	if !exists {
-		s.sendError(w, req.ID, -32601, "Method not found")
+		s.sendError(w, req.ID, jsonrpc.CodeMethodNotFound, "Method not found", map[string]string{
+			"method": req.Method,
+		})
 		return
 	}
 
@@ -342,19 +352,24 @@ func (s *RPCServer) handleRequest(w http.ResponseWriter, r *http.Request) {
 	if sensitiveMethods[req.Method] && s.apiKeyHash != "" {
 		key := security.ExtractAPIKey(r)
 		if key == "" {
-			s.sendError(w, req.ID, -32000, "missing API key")
+			s.sendError(w, req.ID, jsonrpc.CodeServerError, "missing API key", map[string]string{
+				"method": req.Method,
+			})
 			return
 		}
 		auth := security.NewAPIKeyAuthFromHash(s.apiKeyHash)
 		if !auth.IsValid(key) {
-			s.sendError(w, req.ID, -32000, "invalid API key")
+			s.sendError(w, req.ID, jsonrpc.CodeServerError, "invalid API key", nil)
 			return
 		}
 	}
 
 	result, err := handler(r.Context(), req.Params)
 	if err != nil {
-		s.sendError(w, req.ID, -32000, err.Error())
+		code := jsonrpc.CodeForHandlerError(err)
+		s.sendError(w, req.ID, code, err.Error(), map[string]string{
+			"method": req.Method,
+		})
 		return
 	}
 
@@ -370,13 +385,14 @@ func (s *RPCServer) sendResult(w http.ResponseWriter, id interface{}, result int
 	})
 }
 
-func (s *RPCServer) sendError(w http.ResponseWriter, id interface{}, code int, message string) {
+func (s *RPCServer) sendError(w http.ResponseWriter, id interface{}, code int, message string, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(JSONRPCResponse{
 		JSONRPC: "2.0",
 		Error: &RPCError{
 			Code:    code,
 			Message: message,
+			Data:    data,
 		},
 		ID: id,
 	})
