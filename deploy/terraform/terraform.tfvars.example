@@ -5,8 +5,9 @@
 # 3. Copy this file to terraform.tfvars and fill in your values
 # 4. Run: terraform init && terraform plan && terraform apply
 #
-# Cost estimate (7 x Standard_B2s = ~$210/month, $100 credit lasts ~14 days)
-# To save cost: set vm_sku = "Standard_B1ms" (~$91/month, 100 credit lasts ~33 days)
+# Cost: 5 x Standard_B1s = ~$38/month → $100 credit lasts ~79 days
+# To save more: reduce to 4 VMs by merging validator-3 into services
+# For more RAM: set vm_sku = "Standard_B1ms" (~$65/month, 46 days)
 
 # Azure region — pick the closest to you
 #   eastus, eastus2, westeurope, southeastasia, japaneast, etc.
@@ -19,8 +20,8 @@ ssh_public_key = "ssh-ed25519 AAAAC3NzaC1lZ..."
 # Admin username for VM access (default: viriadmin)
 # admin_username = "viriadmin"
 
-# VM size — B2s (2vCPU/4GB) for performance, B1ms (1vCPU/2GB) for cost savings
-# vm_sku = "Standard_B2s"
+# VM size — B1s (1vCPU/1GB) for max duration, B1ms (1vCPU/2GB) for more headroom
+# vm_sku = "Standard_B1s"
 
 # Optional: domain for TLS certificates (leave empty if not using TLS)
 # domain = "testnet.viri.io"

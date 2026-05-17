@@ -45,17 +45,17 @@ variable "faucet_wallet_key" {
 }
 
 variable "vm_sku" {
-  description = "Azure VM SKU (size). B2s=2vCPU/4GB ~$30/mo, B1ms=1vCPU/2GB ~$13/mo"
+  description = "Azure VM SKU. B1s=1vCPU/1GB ~$7.50/mo, B1ms=1vCPU/2GB ~$13/mo"
   type        = string
-  default     = "Standard_B2s"
+  default     = "Standard_B1s"
 }
 
 # --- Locals ---
 locals {
   network_cidr  = "10.0.0.0/16"
   subnet_cidr   = "10.0.1.0/24"
-  instance_count = 7
-  instance_names = ["bootstrap", "validator-0", "validator-1", "validator-2", "validator-3", "faucet", "monitoring"]
+  instance_count = 5
+  instance_names = ["bootstrap-validator", "validator-1", "validator-2", "validator-3", "services"]
   resource_prefix = "viri-testnet"
   tags = {
     Environment = "testnet"
@@ -323,16 +323,12 @@ output "bootstrap_fqdn" {
 
 output "validator_ips" {
   value = {
-    for i in range(1, 5) : local.instance_names[i] => azurerm_public_ip.vms[i].ip_address
+    for i in range(1, 4) : local.instance_names[i] => azurerm_public_ip.vms[i].ip_address
   }
 }
 
-output "faucet_ip" {
-  value = azurerm_public_ip.vms[5].ip_address
-}
-
-output "monitoring_ip" {
-  value = azurerm_public_ip.vms[6].ip_address
+output "services_ip" {
+  value = azurerm_public_ip.vms[4].ip_address
 }
 
 output "resource_group" {

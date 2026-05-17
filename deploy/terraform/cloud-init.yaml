@@ -23,7 +23,7 @@ runcmd:
 
   - mkdir -p /opt/viri/{config,data,logs,genesis}
 
-%{ if instance_name == "bootstrap" ~}
+%{ if instance_name == "bootstrap-validator" ~}
 
   - |
     if [ ! -f /opt/viri/config/bootstrap.key ]; then
@@ -32,8 +32,13 @@ runcmd:
     fi
   - |
     PEER_ID=$(grep -oP 'peer_id:\s*\K\S+' /opt/viri/config/bootstrap.key || echo "")
-    echo "Bootstrap Peer ID: $PEER_ID" > /opt/viri/logs/bootstrap-info.txt
     echo "{\"peer_id\":\"$PEER_ID\"}" > /opt/viri/config/bootstrap-id.json
+
+  - |
+    if [ ! -f /opt/viri/config/validator.key ]; then
+      docker run --rm -v /opt/viri/config:/config ghcr.io/viri-chain/viri:latest \
+        virid --generate-validator-key --key-file /config/validator.key
+    fi
 
   - |
     cat > /opt/viri/genesis/genesis.json << 'GENESIS'
@@ -63,9 +68,33 @@ services:
       - VIRI_API_PORT=8546
     restart: unless-stopped
     command: ["virid", "--config", "/home/viri/config/config.json"]
+
+  validator-0:
+    image: ghcr.io/viri-chain/viri:latest
+    container_name: viri-validator-0
+    ports:
+      - "30304:30303"
+      - "8555:8545"
+      - "8556:8546"
+    volumes:
+      - /opt/viri/config:/home/viri/config:ro
+      - /opt/viri/genesis:/home/viri/genesis:ro
+      - /opt/viri/data/validator-0:/home/viri/.viri
+      - /opt/viri/logs:/home/viri/logs
+    environment:
+      - VIRI_NODE_NAME=validator-0
+      - VIRI_LOG_LEVEL=info
+      - VIRI_TESTNET=true
+      - VIRI_VALIDATOR_MODE=true
+      - VIRI_VALIDATOR_KEY=/home/viri/config/validator.key
+      - VIRI_RPC_PORT=8545
+      - VIRI_API_PORT=8546
+      - VIRI_BOOTSTRAP_PEER=/ip4/127.0.0.1/tcp/30303/p2p/$(cat /opt/viri/config/bootstrap-id.json | jq -r '.peer_id')
+    restart: unless-stopped
+    command: ["virid", "--config", "/home/viri/config/config.json"]
 COMPOSE
 
-%{ elif instance_name == "faucet" ~}
+%{ elif instance_name == "services" ~}
 
   - |
     cat > /opt/viri/genesis/genesis.json << 'GENESIS'
@@ -93,7 +122,7 @@ services:
       - FAUCET_DAILY_LIMIT=1000000000000000000000
       - FAUCET_PER_CLAIM=10000000000000000000
       - FAUCET_COOLDOWN=86400
-      - VIRI_RPC_URL=http://bootstrap:8545
+      - VIRI_RPC_URL=http://BOOTSTRAP_PUBLIC_IP:8545
     restart: unless-stopped
     command: ["virid", "--faucet"]
 
@@ -106,23 +135,15 @@ services:
       - /opt/viri/config:/home/viri/config:ro
     environment:
       - EXPLORER_PORT=8080
-      - VIRI_RPC_URL=http://bootstrap:8545
+      - VIRI_RPC_URL=http://BOOTSTRAP_PUBLIC_IP:8545
     restart: unless-stopped
     command: ["virid", "--explorer"]
-COMPOSE
 
-%{ elif instance_name == "monitoring" ~}
-
-  - |
-    cat > /opt/viri/docker-compose.yml << 'COMPOSE'
-services:
   prometheus:
     image: prom/prometheus:latest
     container_name: viri-prometheus
     ports:
       - "9090:9090"
-    volumes:
-      - /opt/viri/config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
     restart: unless-stopped
 
   grafana:
@@ -130,15 +151,6 @@ services:
     container_name: viri-grafana
     ports:
       - "3000:3000"
-    volumes:
-      - /opt/viri/data/grafana:/var/lib/grafana
-    restart: unless-stopped
-
-  alertmanager:
-    image: prom/alertmanager:latest
-    container_name: viri-alertmanager
-    ports:
-      - "9093:9093"
     restart: unless-stopped
 COMPOSE
 
@@ -179,7 +191,7 @@ services:
       - VIRI_VALIDATOR_KEY=/home/viri/config/validator.key
       - VIRI_RPC_PORT=8545
       - VIRI_API_PORT=8546
-      - VIRI_CONSENSUS_DELAY=60s
+      - VIRI_BOOTSTRAP_PEER=/ip4/BOOTSTRAP_PUBLIC_IP/tcp/30303/p2p/BOOTSTRAP_PEER_ID
     restart: unless-stopped
     command: ["virid", "--config", "/home/viri/config/config.json"]
 COMPOSE
