@@ -5,8 +5,8 @@
 # 3. Copy this file to terraform.tfvars and fill in your values
 # 4. Run: terraform init && terraform plan && terraform apply
 #
-# Cost estimate (5 x Standard_B2s = ~$150/month, $100 credit lasts ~20 days)
-# To save cost: set vm_sku = "Standard_B1ms" (~$65/month, 100 credit lasts ~46 days)
+# Cost estimate (7 x Standard_B2s = ~$210/month, $100 credit lasts ~14 days)
+# To save cost: set vm_sku = "Standard_B1ms" (~$91/month, 100 credit lasts ~33 days)
 
 # Azure region — pick the closest to you
 #   eastus, eastus2, westeurope, southeastasia, japaneast, etc.

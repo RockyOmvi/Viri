@@ -54,8 +54,8 @@ variable "vm_sku" {
 locals {
   network_cidr  = "10.0.0.0/16"
   subnet_cidr   = "10.0.1.0/24"
-  instance_count = 5
-  instance_names = ["bootstrap", "validator-0", "validator-1", "validator-2", "faucet"]
+  instance_count = 7
+  instance_names = ["bootstrap", "validator-0", "validator-1", "validator-2", "validator-3", "faucet", "monitoring"]
   resource_prefix = "viri-testnet"
   tags = {
     Environment = "testnet"
@@ -284,6 +284,7 @@ resource "azurerm_linux_virtual_machine" "vms" {
     instance_name     = local.instance_names[count.index]
     domain            = var.domain
     faucet_wallet_key = var.faucet_wallet_key
+    genesis_json      = file("${path.module}/../../configs/genesis/mainnet.json")
   }))
 
   boot_diagnostics {
@@ -321,13 +322,17 @@ output "bootstrap_fqdn" {
 }
 
 output "validator_ips" {
-  value = [
-    for i in range(1, 4) : azurerm_public_ip.vms[i].ip_address
-  ]
+  value = {
+    for i in range(1, 5) : local.instance_names[i] => azurerm_public_ip.vms[i].ip_address
+  }
 }
 
 output "faucet_ip" {
-  value = azurerm_public_ip.vms[4].ip_address
+  value = azurerm_public_ip.vms[5].ip_address
+}
+
+output "monitoring_ip" {
+  value = azurerm_public_ip.vms[6].ip_address
 }
 
 output "resource_group" {
