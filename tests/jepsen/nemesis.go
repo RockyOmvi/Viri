@@ -3,6 +3,7 @@ package jepsen
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"os/exec"
 	"strings"
 	"time"
@@ -24,9 +25,17 @@ func NewDockerNemesis(composeDir string) *DockerNemesis {
 	return &DockerNemesis{
 		composeDir: composeDir,
 		containers: []string{
-			"validator-0", "validator-1", "validator-2", "validator-3",
+			"viri-validator-0", "viri-validator-1", "viri-validator-2", "viri-validator-3",
 		},
 	}
+}
+
+func GetNetworkName() string {
+	return "testnet_default"
+}
+
+func init() {
+	rand.Seed(time.Now().UnixNano())
 }
 
 func (d *DockerNemesis) Setup(ctx context.Context) error { return nil }
@@ -47,20 +56,30 @@ func (d *DockerNemesis) runCmd(ctx context.Context, args ...string) error {
 
 type PartitionNemesis struct {
 	*DockerNemesis
+	network string
 }
 
 func (p *PartitionNemesis) Inject(ctx context.Context) string {
-	c1, c2 := p.containers[0], p.containers[1]
-	err := p.runCmd(ctx, "network", "disconnect", "viri-testnet_default", c1)
+	idx1 := rand.Intn(len(p.containers))
+	idx2 := rand.Intn(len(p.containers))
+	for idx2 == idx1 {
+		idx2 = rand.Intn(len(p.containers))
+	}
+	c1 := p.containers[idx1]
+
+	p.runCmd(ctx, "network", "connect", p.network, c1)
+	time.Sleep(500 * time.Millisecond)
+
+	err := p.runCmd(ctx, "network", "disconnect", p.network, c1)
 	if err != nil {
 		return fmt.Sprintf("partition: failed to disconnect %s: %v", c1, err)
 	}
 	time.Sleep(5 * time.Second)
-	err = p.runCmd(ctx, "network", "connect", "viri-testnet_default", c1)
+	err = p.runCmd(ctx, "network", "connect", p.network, c1)
 	if err != nil {
 		return fmt.Sprintf("partition: failed to reconnect %s: %v", c1, err)
 	}
-	return fmt.Sprintf("partition: isolated %s from %s for 5s", c2, c1)
+	return fmt.Sprintf("partition: isolated %s from peers for 5s", c1)
 }
 
 type KillNemesis struct {
@@ -68,7 +87,7 @@ type KillNemesis struct {
 }
 
 func (k *KillNemesis) Inject(ctx context.Context) string {
-	target := k.containers[2]
+	target := k.containers[rand.Intn(len(k.containers))]
 	err := k.runCmd(ctx, "kill", "--signal", "SIGTERM", target)
 	if err != nil {
 		return fmt.Sprintf("kill: failed to stop %s: %v", target, err)
@@ -86,7 +105,12 @@ type PauseNemesis struct {
 }
 
 func (p *PauseNemesis) Inject(ctx context.Context) string {
-	targets := p.containers[1:3]
+	i1 := rand.Intn(len(p.containers))
+	i2 := rand.Intn(len(p.containers))
+	for i2 == i1 {
+		i2 = rand.Intn(len(p.containers))
+	}
+	targets := []string{p.containers[i1], p.containers[i2]}
 	for _, t := range targets {
 		p.runCmd(ctx, "pause", t)
 	}
@@ -116,10 +140,10 @@ type RandomNemesis struct {
 	nemeses []Nemesis
 }
 
-func NewRandomNemesis(d *DockerNemesis) *RandomNemesis {
+func NewRandomNemesis(d *DockerNemesis, network string) *RandomNemesis {
 	return &RandomNemesis{
 		nemeses: []Nemesis{
-			&PartitionNemesis{DockerNemesis: d},
+			&PartitionNemesis{DockerNemesis: d, network: network},
 			&KillNemesis{DockerNemesis: d},
 			&PauseNemesis{DockerNemesis: d},
 			&ClockSkewNemesis{DockerNemesis: d},
@@ -146,6 +170,6 @@ func (r *RandomNemesis) Teardown(ctx context.Context) error {
 func (r *RandomNemesis) Name() string { return "random" }
 
 func (r *RandomNemesis) Inject(ctx context.Context) string {
-	n := r.nemeses[int(time.Now().UnixNano())%len(r.nemeses)]
+	n := r.nemeses[rand.Intn(len(r.nemeses))]
 	return n.Inject(ctx)
 }

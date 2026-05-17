@@ -59,7 +59,7 @@ func RunTest(ctx context.Context, cfg Config) (*TestResult, error) {
 
 	history := NewHistory()
 	gen := NewWorkloadGen()
-	nemesis := NewRandomNemesis(NewDockerNemesis("../.."))
+	nemesis := NewRandomNemesis(NewDockerNemesis("../.."), GetNetworkName())
 
 	var faults []string
 	var wg sync.WaitGroup
@@ -85,7 +85,7 @@ func RunTest(ctx context.Context, cfg Config) (*TestResult, error) {
 	}
 
 	go func() {
-		ticker := time.NewTicker(10 * time.Second)
+		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
 		for {
 			select {
@@ -119,7 +119,6 @@ func RunTest(ctx context.Context, cfg Config) (*TestResult, error) {
 }
 
 func (w *Worker) Run(ctx context.Context, faultCh chan<- string) {
-	ops := 0
 	for {
 		select {
 		case <-ctx.Done():
@@ -127,23 +126,21 @@ func (w *Worker) Run(ctx context.Context, faultCh chan<- string) {
 		default:
 		}
 
-		if ops >= w.cfg.OpsPerClient {
-			return
-		}
-		ops++
-
 		height, err := w.client.BlockNumber()
 		if err != nil {
 			w.history.Record(OpCheckState,
 				map[string]interface{}{"error": err.Error(), "height": uint64(0)},
 				OpFail, w.id)
-			time.Sleep(500 * time.Millisecond)
-			continue
+		} else {
+			w.history.Record(OpCheckState,
+				map[string]interface{}{"height": height, "node": w.cfg.Endpoints[w.id%len(w.cfg.Endpoints)]},
+				OpOk, w.id)
 		}
-		w.history.Record(OpCheckState,
-			map[string]interface{}{"height": height, "node": w.cfg.Endpoints[w.id%len(w.cfg.Endpoints)]},
-			OpOk, w.id)
 
-		time.Sleep(time.Duration(100+rand.Intn(400)) * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(time.Duration(500+rand.Intn(1000)) * time.Millisecond):
+		}
 	}
 }

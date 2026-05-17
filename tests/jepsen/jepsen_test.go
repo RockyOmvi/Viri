@@ -27,13 +27,13 @@ func TestJepsenFaultInjection(t *testing.T) {
 	cfg := jepsen.Config{
 		Endpoints:    endpoints,
 		ClientCount:  4,
-		OpsPerClient: 15,
+		OpsPerClient: 999999,
 		NemesisFreq:  3,
-		TestDuration: 120 * time.Second,
+		TestDuration: 60 * time.Second,
 	}
 
-	t.Logf("Starting Jepsen test: %d clients, %d ops each, %ds duration",
-		cfg.ClientCount, cfg.OpsPerClient, int(cfg.TestDuration.Seconds()))
+	t.Logf("Starting Jepsen test: %d clients, %ds duration",
+		cfg.ClientCount, int(cfg.TestDuration.Seconds()))
 
 	result, err := jepsen.RunTest(ctx, cfg)
 	if err != nil {
