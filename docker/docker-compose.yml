@@ -43,6 +43,12 @@ services:
         condition: service_healthy
     environment:
       - BOOTSTRAP_PEER_ID
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8545/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
 
   validator-2:
     build:
@@ -68,6 +74,12 @@ services:
         condition: service_healthy
     environment:
       - BOOTSTRAP_PEER_ID
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8545/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
 
   validator-3:
     build:
@@ -93,6 +105,12 @@ services:
         condition: service_healthy
     environment:
       - BOOTSTRAP_PEER_ID
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8545/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
 
   validator-4:
     build:
@@ -118,6 +136,12 @@ services:
         condition: service_healthy
     environment:
       - BOOTSTRAP_PEER_ID
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8545/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
 
   explorer:
     build:
