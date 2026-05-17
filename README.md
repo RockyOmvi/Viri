@@ -1,6 +1,6 @@
 # Viri
 
-[![CI](https://github.com/viri-chain/viri/actions/workflows/ci.yml/badge.svg)](https://github.com/viri-chain/viri/actions/workflows/ci.yml)
+[![CI](https://github.com/RockyOmvi/Viri/actions/workflows/ci.yml/badge.svg)](https://github.com/RockyOmvi/Viri/actions/workflows/ci.yml)
 [![Go](https://img.shields.io/badge/Go-1.22+-00ADD8?logo=go)](https://go.dev)
 [![License](https://img.shields.io/badge/license-MIT-brightgreen)](LICENSE)
 [![Tests](https://img.shields.io/badge/tests-44_packages_·_0_failures-brightgreen)](#test-results)
