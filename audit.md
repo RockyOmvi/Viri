@@ -17,7 +17,7 @@ The HotStuff-2 BFT consensus protocol is formally specified in TLA+ and model-ch
 | Invariant | Description | N=4,F=1 ✓ | N=4,F=1,BYZ ✓ |
 |-----------|-------------|-----------|----------------|
 | **Agreement** | No two honest replicas decide different values at the same height | PASS (96 states) | PASS (351 states) |
-| **NoDoubleCommit** | No honest replica decides two different values | PASS | PASS |
+| **NoDoubleCommit** | No honest replica decides two different values at same height | PASS | PASS |
 | **QuorumIntersection** | Any two quorums intersect in ≥1 honest replica | PASS | PASS |
 | **PhaseValid** | All replicas follow valid phase transitions | PASS | PASS |
 | **LockedViewInvariant** | Replicas only lock with a valid prepare QC | PASS | PASS |
