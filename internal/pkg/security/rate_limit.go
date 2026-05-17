@@ -489,6 +489,7 @@ func RateLimitMiddleware(rl *RateLimiter, getClientID func(*http.Request) string
 			w.Header().Set("X-RateLimit-Reset", fmt.Sprintf("%d", time.Now().Add(time.Second).Unix()))
 
 			if !rl.Allow(clientID) {
+				recordThrottled("client")
 				w.Header().Set("Retry-After", "60")
 				http.Error(w, "Rate limit exceeded", http.StatusTooManyRequests)
 				return
