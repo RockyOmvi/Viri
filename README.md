@@ -228,6 +228,7 @@ ok  internal/pkg/observability  4.05s
 ok  internal/pkg/security       15.87s
 ok  internal/pkg/tee            2.48s
 ok  tests/integration           28.09s   24 tests
+ok  tests/jepsen                 build     (requires Docker testnet runtime)
 ok  tests/contracts              2.52s   43 tests
 ok  tests/fuzz                   0.80s   10 fuzz harnesses
 ok  tests/benchmarks             1.70s   12 benchmarks
@@ -308,7 +309,19 @@ The HotStuff-2 consensus protocol is formally specified in TLA+ (`docs/tla/HotSt
 
 See [audit.md](audit.md) for full results.
 
-The specification models N=4 replicas with F=1 Byzantine fault tolerance, covering all valid interleavings of proposal, vote, and collect actions. Model checking found **zero safety violations**.
+### Jepsen-Style Fault Injection Testing
+
+The `tests/jepsen` package implements a Jepsen-style fault injection test suite that validates consensus safety under network faults:
+
+| Fault Type | Method | Duration |
+|---|---|---|
+| **Network partition** | Docker network disconnect/reconnect | 5s isolation |
+| **Process crash** | SIGTERM + restart via Docker | ~3s downtime |
+| **Process pause** | Docker pause/unpause | 8s freeze |
+| **Clock skew** | CPU stress simulation | 5s |
+| **Random** | Picks from all of the above | varies |
+
+Checkers validate block consistency, height monotonicity, and chain growth after each fault injection round.
 
 ### Operations Documentation
 
