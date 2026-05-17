@@ -1,10 +1,33 @@
 {
   "chain_id": 1,
-  "initial_validators": [],
-  "initial_supply": 1000000000,
-  "block_time": "1s",
-  "max_block_size": 10485760,
-  "max_gas_per_block": 30000000,
-  "network": "mainnet",
-  "description": "Viri Mainnet Genesis Configuration"
+  "network_name": "viri-mainnet",
+  "genesis_time": "2026-05-17T00:00:00Z",
+  "validators": [
+    {
+      "name": "validator-0",
+      "address": "0x0489d8cf905437eacd055fc2e6f9a2787b9790d0",
+      "public_key": "0489d8cf905437eacd055fc2e6f9a2787b9790d04f079aec22b7e2b57afd4223a9fd0bd41b5fcd862e78a71fd724ad1eda03f19e3bfded6831c352d63ce8840f7e",
+      "stake": 1000000
+    },
+    {
+      "name": "validator-1",
+      "address": "0x04464233f59d55155a3c661c3eb3700c0883a6a4",
+      "public_key": "04464233f59d55155a3c661c3eb3700c0883a6a447cf31be4d0e467456a1a372d73b4733ca248823948703fee1d7619fea5203b4d5b94b0679e3b701968f8b80ee",
+      "stake": 1000000
+    },
+    {
+      "name": "validator-2",
+      "address": "0x048942f9f7182ed0088a1cdfcc0091484d63eb4d",
+      "public_key": "048942f9f7182ed0088a1cdfcc0091484d63eb4d802ee65d4887a5c3db18b70eb378f2b9a3eaae503fbc50ede34a954547233c11c928bfe1f2b4b960310458f03f",
+      "stake": 1000000
+    },
+    {
+      "name": "validator-3",
+      "address": "0x046e732aea0fe39c24b4a201208df6787cdab747",
+      "public_key": "046e732aea0fe39c24b4a201208df6787cdab7472a0b308ab657e986e06dd59dd211fbac63aa8a017f120f2d2416c161f078e7a8785fd468d04fa96ad5417f350b",
+      "stake": 1000000
+    }
+  ],
+  "total_stake": 4000000,
+  "version": "0.1.0"
 }

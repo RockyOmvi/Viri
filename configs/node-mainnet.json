@@ -17,6 +17,7 @@
     "bootstrap_peers": [
       "/ip4/BOOTSTRAP_NODE_IP/tcp/30303/p2p/BOOTSTRAP_PEER_ID"
     ],
+    "bootstrap_peers_comment": "Replace BOOTSTRAP_NODE_IP with the bootstrap node's public IP and BOOTSTRAP_PEER_ID with the bootstrap node's peer ID. Get the peer ID: ssh to the bootstrap VM and run: virictl id. See deploy/one-command-provision.sh."
     "max_peers": 100,
     "enable_dht": true,
     "enable_nat": true

@@ -15,7 +15,7 @@ rate_limits:
   max_claims_per_day: 10  # Max claims per address per day
 
 captcha:
-  enabled: false           # Enable for production (requires hCaptcha/Cloudflare)
+  enabled: true           # Enable for production (requires hCaptcha/Cloudflare)
   site_key: ""
   secret_key: ""
 
