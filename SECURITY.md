@@ -7,9 +7,6 @@ The Viri blockchain project welcomes security research and responsible disclosur
 ## Reporting a Vulnerability
 
 **Please do not file a public GitHub issue for security vulnerabilities.**
-
-Instead, report via email to: **security@viri-chain.io**
-
 You can also create a [GitHub Security Advisory](https://github.com/viri-chain/viri/security/advisories/new) (preferred).
 
 ### What to include
