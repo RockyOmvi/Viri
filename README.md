@@ -138,6 +138,7 @@ You will see live HotStuff BFT consensus messages between validators.
 | RPC endpoint | `https://rpc.viri.me` |
 | Explorer | `https://testnet.viri.me` |
 | Faucet | `https://faucet.viri.me` |
+| Blog | `https://virichain.blogspot.com/2026/05/blog-post.html` |
 
 Connect MetaMask or any EVM-compatible wallet to the RPC endpoint and start building immediately.
 
