@@ -575,7 +575,14 @@ func main() {
 	}
 
 	if flags.bootnodes != "" {
-		netConfig.Bootstraps = []string{flags.bootnodes}
+		for _, addr := range strings.Split(flags.bootnodes, ",") {
+			addr = strings.TrimSpace(addr)
+			if addr != "" {
+				netConfig.Bootstraps = append(netConfig.Bootstraps, addr)
+			}
+		}
+	} else if len(cfg.Network.BootstrapPeers) > 0 {
+		netConfig.Bootstraps = cfg.Network.BootstrapPeers
 	}
 
 	var p2pPrivKey *crypto.PrivateKey

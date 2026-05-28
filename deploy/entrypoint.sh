@@ -58,6 +58,7 @@ if [ -f "${CONFIG_FILE}" ]; then
             (if env.VIRI_API_PORT != "" and env.VIRI_API_PORT != null then .node.api_port = (env.VIRI_API_PORT | tonumber) else . end) |
             (if env.VIRI_VALIDATOR_MODE == "true" then .node.validator_mode = true elif env.VIRI_VALIDATOR_MODE == "false" then .node.validator_mode = false else . end) |
             (if env.VIRI_VALIDATOR_KEY != "" and env.VIRI_VALIDATOR_KEY != null then .node.validator_key = env.VIRI_VALIDATOR_KEY else . end) |
+            (if env.VIRI_BOOTSTRAP_PEER != "" and env.VIRI_BOOTSTRAP_PEER != null then .p2p.bootstrap_peers = [env.VIRI_BOOTSTRAP_PEER] else . end) |
             (if env.VIRI_CHAIN_ID != "" and env.VIRI_CHAIN_ID != null then .chain.chain_id = (env.VIRI_CHAIN_ID | tonumber) else . end) |
             (if env.VIRI_LOG_LEVEL != "" and env.VIRI_LOG_LEVEL != null then .logging.level = env.VIRI_LOG_LEVEL else . end)
         ' "${WORK_CONFIG}" > "${TMP_CONFIG}"
