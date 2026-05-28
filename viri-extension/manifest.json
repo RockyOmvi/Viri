@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "Viri Wallet",
+  "version": "0.1.0",
+  "description": "Viri Chrome wallet for transactions, staking, contracts, zk verify, and governance.",
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Viri Wallet"
+  },
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "https://rpc.viri.me/*",
+    "https://faucet.viri.me/*"
+  ]
+}

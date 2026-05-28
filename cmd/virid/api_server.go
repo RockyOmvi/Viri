@@ -296,7 +296,7 @@ func (s *APIServer) getTransaction(w http.ResponseWriter, r *http.Request) {
 			s.sendJSON(w, http.StatusOK, map[string]interface{}{
 				"hash":   fmt.Sprintf("0x%x", tx.Hash),
 				"nonce":  tx.Nonce,
-				"from":   fmt.Sprintf("0x%x", tx.From),
+				"from":   fmt.Sprintf("0x%x", tx.SenderAddress()),
 				"to":     fmt.Sprintf("0x%x", tx.To),
 				"value":  tx.Value,
 				"status": "pending",
@@ -313,7 +313,7 @@ func (s *APIServer) getTransaction(w http.ResponseWriter, r *http.Request) {
 			s.sendJSON(w, http.StatusOK, map[string]interface{}{
 				"hash":         fmt.Sprintf("0x%x", tx.Hash),
 				"nonce":        tx.Nonce,
-				"from":         fmt.Sprintf("0x%x", tx.From),
+				"from":         fmt.Sprintf("0x%x", tx.SenderAddress()),
 				"to":           fmt.Sprintf("0x%x", tx.To),
 				"value":        tx.Value,
 				"gas_limit":    tx.GasLimit,
@@ -342,7 +342,7 @@ func (s *APIServer) getTransaction(w http.ResponseWriter, r *http.Request) {
 				s.sendJSON(w, http.StatusOK, map[string]interface{}{
 					"hash":         fmt.Sprintf("0x%x", tx.Hash),
 					"nonce":        tx.Nonce,
-					"from":         fmt.Sprintf("0x%x", tx.From),
+					"from":         fmt.Sprintf("0x%x", tx.SenderAddress()),
 					"to":           fmt.Sprintf("0x%x", tx.To),
 					"value":        tx.Value,
 					"gas_limit":    tx.GasLimit,

@@ -193,9 +193,9 @@ func recoverSigner(hash, sig []byte) ([]byte, error) {
 		return nil, fmt.Errorf("invalid recovery ID: %d", recID)
 	}
 	compactSig := make([]byte, 65)
-	copy(compactSig[:32], sig[:32])
-	copy(compactSig[32:64], sig[32:64])
-	compactSig[64] = recID
+	compactSig[0] = 27 + recID
+	copy(compactSig[1:33], sig[:32])
+	copy(compactSig[33:65], sig[32:64])
 	sigHash := crypto.Keccak256(hash)
 	pubKey, _, err := sececdsa.RecoverCompact(compactSig, sigHash)
 	if err != nil {

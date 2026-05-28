@@ -236,8 +236,11 @@ func (t *ERC20Token) handleDecimals() ([]byte, error) {
 
 func encodeString(s string) []byte {
 	data := []byte(s)
+	// ABI encoding: offset(32) + length(32) + data(padded to 32)
+	offset := big.NewInt(32).Bytes()
+	offsetPart := padTo32(offset)
 	lenPart := padTo32(big.NewInt(int64(len(data))).Bytes())
 	dataPart := make([]byte, 32*((len(data)+31)/32))
 	copy(dataPart, data)
-	return append(lenPart, dataPart...)
+	return append(append(offsetPart, lenPart...), dataPart...)
 }

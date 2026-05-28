@@ -41,11 +41,11 @@ func (fc *ForkChoice) SelectChain(current *PersistentBlockchain, candidate *Bloc
 }
 
 func computeChainWeight(block *Block) uint64 {
-	return block.Header.Height * 1000 + uint64(len(block.Transactions))
+	return (block.Header.Height << 32) + uint64(len(block.Transactions))
 }
 
 func computeChainWeightFromHeight(height uint64) uint64 {
-	return height * 1000
+	return height << 32
 }
 
 func findCommonAncestorHeight(current *PersistentBlockchain, candidate *Block) uint64 {

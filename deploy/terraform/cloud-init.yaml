@@ -1,6 +1,6 @@
 #cloud-config
 package_update: true
-package_upgrade: true
+package_upgrade: false
 
 packages:
   - docker.io
@@ -8,194 +8,263 @@ packages:
   - curl
   - jq
   - ufw
+  - nginx
+  - certbot
+  - python3-certbot-nginx
 
 runcmd:
   - systemctl enable docker
   - systemctl start docker
-  - usermod -aG docker ubuntu
+  - usermod -aG docker viriadmin
+
+  - systemctl enable nginx
+  - systemctl start nginx
 
   - ufw --force disable
   - iptables -P INPUT ACCEPT
   - iptables -P FORWARD ACCEPT
   - iptables -P OUTPUT ACCEPT
 
-  - docker pull ghcr.io/viri-chain/viri:latest
+  - docker pull rockysinghrajput/viri:latest
 
   - mkdir -p /opt/viri/{config,data,logs,genesis}
+
+  - |
+    echo "${validator_keys[instance_name]}" > /opt/viri/config/validator.key
 
 %{ if instance_name == "bootstrap-validator" ~}
 
   - |
-    if [ ! -f /opt/viri/config/bootstrap.key ]; then
-      docker run --rm -v /opt/viri/config:/config ghcr.io/viri-chain/viri:latest \
-        virid --generate-node-key --key-file /config/bootstrap.key
-    fi
-  - |
-    PEER_ID=$(grep -oP 'peer_id:\s*\K\S+' /opt/viri/config/bootstrap.key || echo "")
-    echo "{\"peer_id\":\"$PEER_ID\"}" > /opt/viri/config/bootstrap-id.json
+    echo "${bootstrap_key}" > /opt/viri/config/bootstrap.key
 
   - |
-    if [ ! -f /opt/viri/config/validator.key ]; then
-      docker run --rm -v /opt/viri/config:/config ghcr.io/viri-chain/viri:latest \
-        virid --generate-validator-key --key-file /config/validator.key
-    fi
-
-  - |
-    cat > /opt/viri/genesis/genesis.json << 'GENESIS'
-${genesis_json}
-GENESIS
+    echo "${genesis_json_b64}" | base64 -d > /opt/viri/genesis/genesis.json
 
   - |
     cat > /opt/viri/docker-compose.yml << 'COMPOSE'
 services:
   bootstrap:
-    image: ghcr.io/viri-chain/viri:latest
+    image: rockysinghrajput/viri:latest
     container_name: viri-bootstrap
     ports:
       - "30303:30303"
       - "8545:8545"
       - "8546:8546"
+      - "8548:8548"
     volumes:
       - /opt/viri/config:/home/viri/config:ro
-      - /opt/viri/genesis:/home/viri/genesis:ro
-      - /opt/viri/data:/home/viri/.viri
+      - /opt/viri/genesis/genesis.json:/home/viri/.viri/genesis.json:ro
+      - /opt/viri/data/bootstrap:/home/viri/.viri
       - /opt/viri/logs:/home/viri/logs
     environment:
       - VIRI_NODE_NAME=bootstrap-0
       - VIRI_LOG_LEVEL=info
       - VIRI_TESTNET=true
+      - VIRI_CHAIN_ID=2
+      - VIRI_GENESIS_FILE=/home/viri/.viri/genesis.json
+      - VIRI_P2P_KEY_FILE=/home/viri/config/bootstrap.key
       - VIRI_RPC_PORT=8545
       - VIRI_API_PORT=8546
+      - VIRI_KEY_PASSPHRASE=${viri_key_passphrase}
     restart: unless-stopped
-    command: ["virid", "--config", "/home/viri/config/config.json"]
+    command: ["virid"]
 
   validator-0:
-    image: ghcr.io/viri-chain/viri:latest
+    image: rockysinghrajput/viri:latest
     container_name: viri-validator-0
     ports:
       - "30304:30303"
       - "8555:8545"
       - "8556:8546"
+      - "8558:8548"
     volumes:
       - /opt/viri/config:/home/viri/config:ro
-      - /opt/viri/genesis:/home/viri/genesis:ro
+      - /opt/viri/genesis/genesis.json:/home/viri/.viri/genesis.json:ro
       - /opt/viri/data/validator-0:/home/viri/.viri
       - /opt/viri/logs:/home/viri/logs
     environment:
       - VIRI_NODE_NAME=validator-0
       - VIRI_LOG_LEVEL=info
       - VIRI_TESTNET=true
+      - VIRI_CHAIN_ID=2
+      - VIRI_GENESIS_FILE=/home/viri/.viri/genesis.json
       - VIRI_VALIDATOR_MODE=true
       - VIRI_VALIDATOR_KEY=/home/viri/config/validator.key
       - VIRI_RPC_PORT=8545
       - VIRI_API_PORT=8546
-      - VIRI_BOOTSTRAP_PEER=/ip4/127.0.0.1/tcp/30303/p2p/$(cat /opt/viri/config/bootstrap-id.json | jq -r '.peer_id')
+      - VIRI_KEY_PASSPHRASE=${viri_key_passphrase}
+      - VIRI_BOOTSTRAP_PEER=/ip4/127.0.0.1/tcp/30303/p2p/16Uiu2HAmAVmCgtmPjxpSnsqiG4cb4pSushpXKhfNv6KqyxzQzxwW
     restart: unless-stopped
-    command: ["virid", "--config", "/home/viri/config/config.json"]
+    command: ["virid"]
 COMPOSE
 
-%{ elif instance_name == "services" ~}
+  - |
+    cat > /etc/nginx/sites-available/viri << 'EOF'
+server {
+    listen 80;
+    ${domain != "" ? "server_name rpc.${domain};" : ""}
+    location / {
+        proxy_pass http://127.0.0.1:8545;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+}
+EOF
+    ln -sf /etc/nginx/sites-available/viri /etc/nginx/sites-enabled/default
+    systemctl reload nginx
+    %{ if domain != "" ~}
+    certbot --nginx -d rpc.${domain} --non-interactive --agree-tos -m admin@${domain} --redirect || true
+    %{ endif ~}
+
+%{ else ~}
+%{ if instance_name == "services" ~}
 
   - |
-    cat > /opt/viri/genesis/genesis.json << 'GENESIS'
-${genesis_json}
-GENESIS
+    echo "${genesis_json_b64}" | base64 -d > /opt/viri/genesis/genesis.json
 
   - |
     cat > /opt/viri/docker-compose.yml << 'COMPOSE'
 services:
-  faucet:
-    image: ghcr.io/viri-chain/viri:latest
-    container_name: viri-faucet
+  validator-2:
+    image: rockysinghrajput/viri:latest
+    container_name: viri-validator-2
     ports:
-      - "8081:8081"
       - "30303:30303"
       - "8545:8545"
       - "8546:8546"
+      - "8548:8548"
     volumes:
       - /opt/viri/config:/home/viri/config:ro
-      - /opt/viri/genesis:/home/viri/genesis:ro
+      - /opt/viri/genesis/genesis.json:/home/viri/.viri/genesis.json:ro
+      - /opt/viri/data/validator-2:/home/viri/.viri
+      - /opt/viri/logs:/home/viri/logs
+    environment:
+      - VIRI_NODE_NAME=validator-2
+      - VIRI_LOG_LEVEL=info
+      - VIRI_TESTNET=true
+      - VIRI_CHAIN_ID=2
+      - VIRI_GENESIS_FILE=/home/viri/.viri/genesis.json
+      - VIRI_VALIDATOR_MODE=true
+      - VIRI_VALIDATOR_KEY=/home/viri/config/validator.key
+      - VIRI_RPC_PORT=8545
+      - VIRI_API_PORT=8546
+      - VIRI_KEY_PASSPHRASE=${viri_key_passphrase}
+      - VIRI_BOOTSTRAP_PEER=/ip4/${bootstrap_private_ip}/tcp/30303/p2p/16Uiu2HAmAVmCgtmPjxpSnsqiG4cb4pSushpXKhfNv6KqyxzQzxwW
+    restart: unless-stopped
+    command: ["virid"]
+
+  faucet:
+    image: rockysinghrajput/viri:latest
+    container_name: viri-faucet
+    ports:
+      - "8081:8081"
+    volumes:
+      - /opt/viri/config:/home/viri/config:ro
+      - /opt/viri/genesis/genesis.json:/home/viri/.viri/genesis.json:ro
     environment:
       - VIRI_LOG_LEVEL=info
       - FAUCET_PORT=8081
       - FAUCET_WALLET_KEY=${faucet_wallet_key}
-      - FAUCET_DAILY_LIMIT=1000000000000000000000
-      - FAUCET_PER_CLAIM=10000000000000000000
+      - FAUCET_DAILY_LIMIT=100000000000000000
+      - FAUCET_PER_CLAIM=1000000000000000
       - FAUCET_COOLDOWN=86400
-      - VIRI_RPC_URL=http://BOOTSTRAP_PUBLIC_IP:8545
+      - VIRI_RPC_URL=http://${bootstrap_private_ip}:8545
+      - VIRI_KEY_PASSPHRASE=${viri_key_passphrase}
     restart: unless-stopped
     command: ["virid", "--faucet"]
 
   explorer:
-    image: ghcr.io/viri-chain/viri:latest
+    image: rockysinghrajput/viri:latest
     container_name: viri-explorer
     ports:
       - "8080:8080"
     volumes:
       - /opt/viri/config:/home/viri/config:ro
+      - /opt/viri/genesis/genesis.json:/home/viri/.viri/genesis.json:ro
     environment:
       - EXPLORER_PORT=8080
-      - VIRI_RPC_URL=http://BOOTSTRAP_PUBLIC_IP:8545
+      - VIRI_RPC_URL=http://${bootstrap_private_ip}:8545
+      - VIRI_KEY_PASSPHRASE=${viri_key_passphrase}
     restart: unless-stopped
     command: ["virid", "--explorer"]
-
-  prometheus:
-    image: prom/prometheus:latest
-    container_name: viri-prometheus
-    ports:
-      - "9090:9090"
-    restart: unless-stopped
-
-  grafana:
-    image: grafana/grafana:latest
-    container_name: viri-grafana
-    ports:
-      - "3000:3000"
-    restart: unless-stopped
 COMPOSE
+
+  - |
+    cat > /etc/nginx/sites-available/viri << 'EOF'
+server {
+    listen 80;
+    server_name faucet.${domain != "" ? domain : "*"};
+    location / {
+        proxy_pass http://127.0.0.1:8081;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+}
+server {
+    listen 80 default_server;
+    server_name ${domain != "" ? "testnet.${domain} explorer.${domain}" : "testnet.* explorer.*"} _;
+    location /api/v3/ {
+        proxy_pass http://${bootstrap_private_ip}:8548/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_read_timeout 30s;
+        add_header Access-Control-Allow-Origin '*';
+        add_header Access-Control-Allow-Methods 'GET, POST, OPTIONS';
+        add_header Access-Control-Allow-Headers 'Content-Type, X-API-Key';
+    }
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+}
+EOF
+    ln -sf /etc/nginx/sites-available/viri /etc/nginx/sites-enabled/default
+    systemctl reload nginx
+    %{ if domain != "" ~}
+    certbot --nginx -d faucet.${domain} -d testnet.${domain} -d explorer.${domain} --non-interactive --agree-tos -m admin@${domain} --redirect || true
+    %{ endif ~}
 
 %{ else ~}
 
   - |
-    if [ ! -f /opt/viri/config/validator.key ]; then
-      docker run --rm -v /opt/viri/config:/config ghcr.io/viri-chain/viri:latest \
-        virid --generate-validator-key --key-file /config/validator.key
-    fi
-
-  - |
-    cat > /opt/viri/genesis/genesis.json << 'GENESIS'
-${genesis_json}
-GENESIS
+    echo "${genesis_json_b64}" | base64 -d > /opt/viri/genesis/genesis.json
 
   - |
     cat > /opt/viri/docker-compose.yml << 'COMPOSE'
 services:
   validator:
-    image: ghcr.io/viri-chain/viri:latest
+    image: rockysinghrajput/viri:latest
     container_name: viri-${instance_name}
     ports:
       - "30303:30303"
       - "8545:8545"
       - "8546:8546"
-      - "9090:9090"
+      - "8548:8548"
     volumes:
       - /opt/viri/config:/home/viri/config:ro
-      - /opt/viri/genesis:/home/viri/genesis:ro
+      - /opt/viri/genesis/genesis.json:/home/viri/.viri/genesis.json:ro
       - /opt/viri/data:/home/viri/.viri
       - /opt/viri/logs:/home/viri/logs
     environment:
       - VIRI_NODE_NAME=${instance_name}
       - VIRI_LOG_LEVEL=info
       - VIRI_TESTNET=true
+      - VIRI_CHAIN_ID=2
+      - VIRI_GENESIS_FILE=/home/viri/.viri/genesis.json
       - VIRI_VALIDATOR_MODE=true
       - VIRI_VALIDATOR_KEY=/home/viri/config/validator.key
       - VIRI_RPC_PORT=8545
       - VIRI_API_PORT=8546
-      - VIRI_BOOTSTRAP_PEER=/ip4/BOOTSTRAP_PUBLIC_IP/tcp/30303/p2p/BOOTSTRAP_PEER_ID
+      - VIRI_KEY_PASSPHRASE=${viri_key_passphrase}
+      - VIRI_BOOTSTRAP_PEER=/ip4/${bootstrap_private_ip}/tcp/30303/p2p/16Uiu2HAmAVmCgtmPjxpSnsqiG4cb4pSushpXKhfNv6KqyxzQzxwW
     restart: unless-stopped
-    command: ["virid", "--config", "/home/viri/config/config.json"]
+    command: ["virid"]
 COMPOSE
 
+%{ endif ~}
 %{ endif ~}
 
   - docker compose -f /opt/viri/docker-compose.yml up -d

@@ -27,6 +27,7 @@ import (
 	"github.com/viri-chain/viri/internal/layer1/ledger"
 	"github.com/viri-chain/viri/internal/layer1/logging"
 	"github.com/viri-chain/viri/internal/layer1/p2p"
+	"github.com/viri-chain/viri/internal/layer1/sequencer"
 	"github.com/viri-chain/viri/internal/layer1/state"
 	nodesync "github.com/viri-chain/viri/internal/layer1/sync"
 	"github.com/viri-chain/viri/internal/layer2/accounts"
@@ -39,6 +40,7 @@ import (
 	"github.com/viri-chain/viri/internal/layer2/rollups"
 	"github.com/viri-chain/viri/internal/layer2/zk"
 	"github.com/viri-chain/viri/internal/layer3/api"
+	"github.com/viri-chain/viri/internal/layer3/appchain"
 	"github.com/viri-chain/viri/internal/layer3/bridge"
 	"github.com/viri-chain/viri/internal/layer3/governance"
 	"github.com/viri-chain/viri/internal/layer3/intent"
@@ -61,6 +63,7 @@ type nodeFlags struct {
 	logLevel       string
 	bootnodes      string
 	privKey        string
+	p2pKey         string
 	chainID        uint64
 	genesis        string
 	config         string
@@ -76,6 +79,8 @@ type nodeFlags struct {
 	tlsAuto        bool
 	parallelExec   bool
 	gnarkProver    bool
+	mevMode        string
+	scheme         string
 	testnet        bool
 }
 
@@ -94,7 +99,8 @@ func parseFlags() nodeFlags {
 	flag.StringVar(&f.logLevel, "log-level", "info", "Log level (debug, info, warn, error)")
 	flag.StringVar(&f.bootnodes, "bootnodes", "", "Comma-separated bootnode multiaddresses")
 	flag.StringVar(&f.privKey, "private-key", "", "Validator private key (hex)")
-	flag.Uint64Var(&f.chainID, "chain-id", 1, "Chain ID")
+	flag.StringVar(&f.p2pKey, "p2p-key", "", "P2P host private key (hex)")
+	flag.Uint64Var(&f.chainID, "chain-id", 0, "Chain ID")
 	flag.StringVar(&f.genesis, "genesis", "", "Genesis file path")
 	flag.StringVar(&f.config, "config", "", "Config file path")
 	flag.BoolVar(&f.rpc, "rpc", true, "Enable JSON-RPC server")
@@ -109,6 +115,8 @@ func parseFlags() nodeFlags {
 	flag.BoolVar(&f.tlsAuto, "tls-auto", false, "Auto-generate self-signed TLS certificates")
 	flag.BoolVar(&f.parallelExec, "parallel-exec", false, "Enable parallel transaction execution")
 	flag.BoolVar(&f.gnarkProver, "gnark-prover", false, "Use gnark-based ZK prover/verifier")
+	flag.StringVar(&f.mevMode, "mev-mode", "standard", "MEV resistance mode: standard, encrypted, commit-reveal")
+	flag.StringVar(&f.scheme, "scheme", "ecdsa", "Crypto scheme: ecdsa, mldsa44, mldsa65, mldsa87, sphincs")
 	flag.BoolVar(&f.testnet, "testnet", false, "Run in testnet mode (shorthand for --config configs/node-testnet.json)")
 
 	flag.Parse()
@@ -116,6 +124,17 @@ func parseFlags() nodeFlags {
 	// Check env var for TLS auto mode
 	if os.Getenv("VIRI_TLS_AUTO") == "true" || os.Getenv("VIRI_TLS_AUTO") == "1" {
 		f.tlsAuto = true
+	}
+
+	// Check env var for testnet mode
+	if os.Getenv("VIRI_TESTNET") == "true" || os.Getenv("VIRI_TESTNET") == "1" {
+		f.testnet = true
+	}
+
+	// Validate crypto scheme
+	if _, ok := crypto.ParseScheme(f.scheme); !ok {
+		fmt.Fprintf(os.Stderr, "ERROR: unknown crypto scheme %q; valid: ecdsa, mldsa44, mldsa65, mldsa87, sphincs\n", f.scheme)
+		os.Exit(2)
 	}
 
 	return f
@@ -129,7 +148,28 @@ func getDefaultDataDir() string {
 	return filepath.Join(home, ".viri")
 }
 
-func loadKey(flags nodeFlags, cfg *config.Config, log *logging.Logger) *crypto.PrivateKey {
+func resolveScheme(s string) crypto.Scheme {
+	switch strings.ToLower(s) {
+	case "mldsa44":
+		return crypto.SchemeMLDSA44
+	case "mldsa65":
+		return crypto.SchemeMLDSA65
+	case "mldsa87":
+		return crypto.SchemeMLDSA87
+	case "sphincs":
+		return crypto.SchemeSPHINCS
+	default:
+		return crypto.SchemeECDSA
+	}
+}
+
+func loadKey(flags nodeFlags, cfg *config.Config, log *logging.Logger, scheme crypto.Scheme) *crypto.PrivateKey {
+	log.WithField("scheme", scheme.String()).Info("Crypto scheme for key loading")
+	crypto.SetDefaultScheme(scheme)
+	if scheme != crypto.SchemeECDSA {
+		log.Warn(fmt.Sprintf("Scheme %q selected – PQC keys used for signing/verification; key loading uses secp256k1 for node identity", scheme))
+	}
+
 	if flags.privKey != "" {
 		keyBytes, err := hex.DecodeString(flags.privKey)
 		if err != nil {
@@ -364,20 +404,27 @@ func main() {
 		WithField("tip", fmt.Sprintf("%x...", blockchain.TipHash()[:8])).
 		Info("Blockchain initialized")
 
-	if err := stateMgr.Initialize(new(big.Int).SetUint64(genesis.InitialSupply)); err != nil {
-		log.Fatal(fmt.Sprintf("Failed to initialize state: %v", err))
-	}
+	if stateMgr.IsInitialized() {
+		log.WithField("height", stateMgr.BlockHeight()).
+			WithField("supply", stateMgr.TotalSupply()).
+			Info("State already initialized, loading from DB")
+	} else {
+		log.Info("Fresh state, initializing from genesis")
+		if err := stateMgr.Initialize(new(big.Int).SetUint64(genesis.InitialSupply)); err != nil {
+			log.Fatal(fmt.Sprintf("Failed to initialize state: %v", err))
+		}
 
-	// Create state accounts for all genesis validators with their stake as balance
-	for _, gv := range genesis.InitialValidators {
-		if _, err := stateMgr.CreateAccount(gv.Address, state.AccountTypeValidator, new(big.Int).SetUint64(gv.Stake)); err != nil {
-			log.WithField("address", fmt.Sprintf("%x", gv.Address)).
-				WithField("error", err.Error()).
-				Warn("Genesis validator account creation skipped")
-		} else {
-			log.WithField("address", fmt.Sprintf("%x", gv.Address)).
-				WithField("balance", gv.Stake).
-				Info("Genesis validator account created")
+		// Create state accounts for genesis validators only on fresh init
+		for _, gv := range genesis.InitialValidators {
+			if _, err := stateMgr.CreateAccount(gv.Address, state.AccountTypeValidator, new(big.Int).SetUint64(gv.Stake)); err != nil {
+				log.WithField("address", fmt.Sprintf("%x", gv.Address)).
+					WithField("error", err.Error()).
+					Warn("Genesis validator account creation skipped")
+			} else {
+				log.WithField("address", fmt.Sprintf("%x", gv.Address)).
+					WithField("balance", gv.Stake).
+					Info("Genesis validator account created")
+			}
 		}
 	}
 
@@ -396,20 +443,35 @@ func main() {
 	contractMgr := contracts.NewContractManager()
 	gasOracle := gas.NewGasOracle(gas.DefaultGasConfig())
 	shieldedPool := privacy.NewShieldedPool()
-	mevState := mev.NewMEVState(mev.StandardMode)
+	mevModeVal := mev.StandardMode
+	switch flags.mevMode {
+	case "encrypted":
+		mevModeVal = mev.EncryptedMode
+	case "commit-reveal":
+		mevModeVal = mev.CommitReveal
+	}
+	mevState := mev.NewMEVState(mevModeVal)
+	log.WithField("mode", flags.mevMode).Info("MEV resistance module initialized")
 	rollupChain := rollups.NewRollupChain("main", rollups.RollupTypeOptimistic, 100)
 	zkCircuit := zk.NewShieldedTransferCircuit()
-	gp := zk.NewGnarkProver()
 	gv := zk.NewGnarkVerifier()
-	_ = gp
 	execEngine.SetGnarkVerifier(gv, zkCircuit)
-	log.Info("Gnark-based ZK prover/verifier enabled")
+	log.Info("Gnark-based ZK verifier enabled")
 
 	// Wire modules into the execution engine
 	execEngine.SetShieldedPool(shieldedPool)
 	execEngine.SetContractManager(contractMgr)
 
-	log.WithField("modules", "accounts,agents,contracts,gas,mev,privacy,rollups,zk").
+	// Initialize FeeConversionOracle for gas-in-any-token
+	feeOracle := gas.NewFeeConversionOracle(5 * time.Minute)
+	for tokenKey, rate := range gas.DefaultConversionRates() {
+		feeOracle.SetRate([]byte(tokenKey), rate)
+	}
+	feeOracle.SetRate(contracts.AddrERC20, 1.0) // 1 VIRI token = 1 native VIRI
+	execEngine.SetFeeOracle(feeOracle)
+	log.WithField("tokens", len(feeOracle.KnownTokens())).Info("Fee Conversion Oracle initialized")
+
+	log.WithField("modules", "accounts,agents,contracts,gas,feeOracle,mev,privacy,rollups,zk").
 		Info("L2 modules initialized")
 
 	// Initialize L3 modules
@@ -417,7 +479,14 @@ func main() {
 	chainBridge := bridge.NewChainBridge(2)
 	interopProtocol := interop.NewInteropProtocol()
 	intentSolver := intent.NewIntentSolver()
-	log.WithField("modules", "governance,bridge,interop,intent").
+	appChainMgr := appchain.NewAppChainManager()
+
+	// Initialize PrivacyBridge with ZK circuit keys
+	privPk := zk.GenerateProvingKey(zkCircuit)
+	privVk := zk.GenerateVerifyingKey(privPk, zkCircuit)
+	privacyBridge := bridge.NewPrivacyBridge(2, zkCircuit, privVk, privPk)
+	privacyBridge.RegisterChain("viri-main", "Viri Main Chain", "http://localhost:8545")
+	log.WithField("modules", "governance,bridge,interop,intent,appchain,privacy_bridge").
 		Info("L3 modules initialized")
 
 	// Wire gas oracle into block event bus for automatic gas tracking
@@ -433,7 +502,7 @@ func main() {
 		}
 	})
 
-	key := loadKey(flags, cfg, log)
+	key := loadKey(flags, cfg, log, resolveScheme(flags.scheme))
 
 	_, err = stateMgr.CreateAccount(key.PubKey().Address(), state.AccountTypeValidator, big.NewInt(10_000_000))
 	if err != nil {
@@ -443,6 +512,47 @@ func main() {
 	log.WithField("address", fmt.Sprintf("%x", key.PubKey().Address())).
 		WithField("pubkey", key.PubKey().Hex()[:16]+"...").
 		Info("Validator key ready")
+
+	// Deploy standard ERC-20 with 1M supply to the validator address
+	validatorAddr := key.PubKey().Address()
+	viriToken := contracts.NewERC20Token("VIRI Token", "VIRI", 18, new(big.Int).Mul(big.NewInt(1_000_000), big.NewInt(1e18)), validatorAddr)
+	contractMgr.RegisterStandardContract(contracts.AddrERC20, viriToken)
+	log.WithField("address", fmt.Sprintf("%x", contracts.AddrERC20)).
+		WithField("supply", "1000000000000000000000000").
+		Info("Standard ERC-20 token deployed")
+
+	// Deploy standard ERC-721 NFT collection
+	nftToken := contracts.NewERC721Token("VIRI NFT", "VNFT", "https://viri-chain.io/nft/")
+	contractMgr.RegisterStandardContract(contracts.AddrERC721, nftToken)
+	nftToken.Mint(validatorAddr, 1, "genesis-viri-1")
+	nftToken.Mint(validatorAddr, 2, "genesis-viri-2")
+	nftToken.Mint(validatorAddr, 3, "genesis-viri-3")
+	log.WithField("address", fmt.Sprintf("%x", contracts.AddrERC721)).
+		WithField("minted", 3).
+		Info("Standard ERC-721 NFT collection deployed")
+
+	// Wire the sequencer for decentralized transaction ordering
+	seqConfig := sequencer.DefaultSequencerConfig()
+	seqConfig.ProposerKey = key
+	seq := sequencer.NewSequencer(seqConfig, blockchain)
+	if err := seq.Start(); err != nil {
+		log.Warn(fmt.Sprintf("Sequencer start skipped: %v", err))
+	} else {
+		log.WithField("batch_size", seqConfig.BatchSize).WithField("timeout", seqConfig.BatchTimeout).Info("Sequencer started")
+	}
+
+	// Register validator as an agent
+	if err := agentMgr.Register("validator-0", agents.AgentTypeValidator, key.PubKey().Address(), 10_000_000); err != nil {
+		log.WithField("error", err.Error()).Warn("Agent registration skipped")
+	}
+
+	// Wire interop handlers (default: echo handler for all ports)
+	interopProtocol.RegisterHandler("default", func(packet *interop.IBCPacket) ([]byte, error) {
+		log.WithField("channel", packet.SourceChain+"->"+packet.DestChain).
+			WithField("sequence", packet.Sequence).
+			Info("Interop packet received")
+		return packet.Data, nil
+	})
 
 	txPool := blockchain.TxPool()
 	log.WithField("pending", len(txPool.GetPending())).
@@ -468,7 +578,32 @@ func main() {
 		netConfig.Bootstraps = []string{flags.bootnodes}
 	}
 
-	viriNet, err := p2p.NewViriNetwork(netConfig, blockchain, log)
+	var p2pPrivKey *crypto.PrivateKey
+	if flags.p2pKey != "" {
+		keyBytes, err := hex.DecodeString(flags.p2pKey)
+		if err == nil {
+			p2pPrivKey, _ = crypto.PrivateKeyFromBytes(keyBytes)
+		}
+	} else if os.Getenv("VIRI_P2P_KEY") != "" {
+		keyBytes, err := hex.DecodeString(os.Getenv("VIRI_P2P_KEY"))
+		if err == nil {
+			p2pPrivKey, _ = crypto.PrivateKeyFromBytes(keyBytes)
+		}
+	} else if os.Getenv("VIRI_P2P_KEY_FILE") != "" {
+		keyBytes, err := os.ReadFile(os.Getenv("VIRI_P2P_KEY_FILE"))
+		if err == nil {
+			privHex := strings.TrimSpace(string(keyBytes))
+			if strings.HasPrefix(privHex, "0x") {
+				privHex = privHex[2:]
+			}
+			rawKey, err := hex.DecodeString(privHex)
+			if err == nil {
+				p2pPrivKey, _ = crypto.PrivateKeyFromBytes(rawKey)
+			}
+		}
+	}
+
+	viriNet, err := p2p.NewViriNetwork(netConfig, blockchain, log, p2pPrivKey)
 	if err != nil {
 		log.Fatal(fmt.Sprintf("Failed to create network: %v", err))
 	}
@@ -611,6 +746,33 @@ func main() {
 		})
 	}
 
+	// Load extra validators from config
+	for _, ev := range cfg.Consensus.ExtraValidators {
+		addr, err := hex.DecodeString(strings.TrimPrefix(ev.Address, "0x"))
+		if err != nil {
+			log.WithField("address", ev.Address).Warn("Invalid extra validator address, skipping")
+			continue
+		}
+		pubBytes, err := hex.DecodeString(strings.TrimPrefix(ev.PublicKey, "0x"))
+		if err != nil {
+			log.WithField("address", ev.Address).Warn("Invalid extra validator public key, skipping")
+			continue
+		}
+		stake := ev.Stake
+		if stake == 0 {
+			stake = 1000000
+		}
+		validators = append(validators, &consensus.Validator{
+			Address:   addr,
+			PublicKey: pubBytes,
+			Stake:     stake,
+			IsActive:  true,
+		})
+		log.WithField("address", fmt.Sprintf("%x", addr)).
+			WithField("stake", stake).
+			Info("Extra validator added from config")
+	}
+
 	log.WithField("validators", len(validators)).Info("Loaded validators from genesis")
 	for _, v := range validators {
 		log.WithField("address", fmt.Sprintf("%x", v.Address[:8])).
@@ -648,6 +810,26 @@ func main() {
 		log.Error(fmt.Sprintf("Failed to create audit logger: %v", err))
 	}
 	engine := consensus.NewHotStuffEngine(consensusConfig, validatorSet, blockProducer, staking, log, auditLogger)
+
+	// Wire block rewards to actual on-chain balances
+	var econConfig = ledger.DefaultEconomicsConfig()
+	rewardEcon := ledger.NewEconomics(econConfig)
+	engine.BlockRewardFn = func(height uint64, proposer []byte, _ *big.Int) {
+		reward := rewardEcon.CalculateBlockReward(height)
+		if reward.Sign() > 0 {
+			if err := stateMgr.MintTokens(proposer, reward); err != nil {
+				log.WithField("height", height).
+					WithField("proposer", fmt.Sprintf("%x", proposer)).
+					WithField("reward", reward.String()).
+					Error(fmt.Sprintf("Failed to mint block reward: %v", err))
+			} else {
+				log.WithField("height", height).
+					WithField("proposer", fmt.Sprintf("%x", proposer)).
+					WithField("reward", reward.String()).
+					Info("Block reward minted")
+			}
+		}
+	}
 
 	metricsCollector := metrics.NewMetricsCollector()
 	engine.SetMetrics(metricsCollector)
@@ -752,8 +934,7 @@ func main() {
 		}
 		h := csha256.Sum256([]byte(rawKey))
 		cfg.Node.APIKeyHash = hex.EncodeToString(h[:])
-		log.WithField("hint", fmt.Sprintf("%s...%s", rawKey[:8], rawKey[len(rawKey)-4:])).Warn("Generated API key hash")
-		fmt.Fprintf(os.Stderr, "\n=== API KEY ===\n%s\n===============\n", rawKey)
+		log.WithField("hint", fmt.Sprintf("%s...%s", rawKey[:8], rawKey[len(rawKey)-4:])).Warn("Generated API key hash — save this value as it will not be shown again")
 	}
 
 	// Auto-generate TLS certs if requested
@@ -773,7 +954,7 @@ func main() {
 
 	if flags.rpc {
 		entryPoint := accounts.NewEntryPoint(accountMgr, cfg.Chain.ChainID, nil)
-		rpcServer = NewRPCServer(flags.rpcPort, blockchain, stateMgr, viriNet, engine, log, cfg.Chain.ChainID, flags.validator, key.PubKey().Address(), tlsCert, tlsKey, cfg.Node.APIKeyHash, obsAuditLog, nodeSyncer, entryPoint)
+		rpcServer = NewRPCServer(flags.rpcPort, blockchain, stateMgr, viriNet, engine, log, cfg.Chain.ChainID, flags.validator, key.PubKey().Address(), tlsCert, tlsKey, cfg.Node.APIKeyHash, obsAuditLog, nodeSyncer, entryPoint, contractMgr, shieldedPool, mevState, rollupChain)
 		if err := rpcServer.Start(); err != nil {
 			log.Error(fmt.Sprintf("Failed to start RPC server: %v", err))
 		}
@@ -793,7 +974,7 @@ func main() {
 	}
 
 	// Start L3 API server
-	l3APIServer = api.NewL3APIServer(flags.l3Port, govDAO, chainBridge, interopProtocol, intentSolver)
+	l3APIServer = api.NewL3APIServer(flags.l3Port, govDAO, chainBridge, interopProtocol, intentSolver, appChainMgr, agentMgr)
 	if err := l3APIServer.Start(); err != nil {
 		log.Error(fmt.Sprintf("Failed to start L3 API server: %v", err))
 	}

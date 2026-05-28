@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -107,6 +108,8 @@ type HotStuffEngine struct {
 	wg        sync.WaitGroup
 
 	rateLimiter *messageRateLimiter
+
+	BlockRewardFn func(height uint64, proposer []byte, amount *big.Int)
 }
 
 type blockApplyRequest struct {
@@ -315,6 +318,7 @@ func (hs *HotStuffEngine) IsRunning() bool {
 
 func (hs *HotStuffEngine) loop() {
 	defer hs.wg.Done()
+	defer hs.recoverPanic("loop")
 	for {
 		select {
 		case msg := <-hs.messageCh:
@@ -327,6 +331,7 @@ func (hs *HotStuffEngine) loop() {
 
 func (hs *HotStuffEngine) applyLoop() {
 	defer hs.wg.Done()
+	defer hs.recoverPanic("applyLoop")
 	for {
 		select {
 		case req := <-hs.applyCh:
@@ -353,6 +358,7 @@ func (hs *HotStuffEngine) applyLoop() {
 
 func (hs *HotStuffEngine) futureLoop() {
 	defer hs.wg.Done()
+	defer hs.recoverPanic("futureLoop")
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -378,6 +384,7 @@ func (hs *HotStuffEngine) futureLoop() {
 
 func (hs *HotStuffEngine) livenessLoop() {
 	defer hs.wg.Done()
+	defer hs.recoverPanic("livenessLoop")
 	ticker := time.NewTicker(hs.config.BlockTime)
 	defer ticker.Stop()
 
@@ -408,6 +415,13 @@ func (hs *HotStuffEngine) livenessLoop() {
 		case <-hs.done:
 			return
 		}
+	}
+}
+
+func (hs *HotStuffEngine) recoverPanic(goroutine string) {
+	if r := recover(); r != nil {
+		hs.logInfo(fmt.Sprintf("CRITICAL: consensus %s panicked: %v", goroutine, r))
+		hs.logInfo("Consensus goroutine recovered — node may be in inconsistent state, restart recommended")
 	}
 }
 
@@ -512,7 +526,9 @@ func (hs *HotStuffEngine) proposeLocked() error {
 
 	hs.selfVote(blockHash, hs.state.Height, hs.state.View)
 
-	hs.state.Phase = PhasePrepare
+	if hs.state.Phase != PhaseDecide {
+		hs.state.Phase = PhasePrepare
+	}
 
 	if hs.validatorSet.Size() > 1 {
 		hs.startTimeout()
@@ -1305,6 +1321,10 @@ func (hs *HotStuffEngine) decide(blockHash []byte, height uint64) {
 
 	hs.distributeRewards(height)
 
+	if hs.BlockRewardFn != nil && proposer != nil {
+		hs.BlockRewardFn(height, proposer.Address, nil)
+	}
+
 	hs.stateStore.Save(hs.state, validatorAddrs)
 
 	if hs.state.Height != height {
@@ -1833,6 +1853,7 @@ func (hs *HotStuffEngine) ExportState() ([]byte, error) {
 
 func (hs *HotStuffEngine) syncLoop() {
 	defer hs.wg.Done()
+	defer hs.recoverPanic("syncLoop")
 	if hs.auditLog != nil {
 		hs.auditLog.LogSync("start", hs.curHeight.Load(), 0, 0)
 	}

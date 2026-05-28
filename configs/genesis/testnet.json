@@ -1,40 +1,37 @@
 {
-  "_comment": "Viri Testnet Genesis v0.1.0",
-  "_docs": [
-    "Run 'scripts/genesis-ceremony.sh --validators 4 --output configs/genesis/testnet.json'",
-    "to generate a proper genesis with validator keys and signing.",
-    "This file is a template — replace validators[] with real entries before launch."
-  ],
   "chain_id": 2,
   "network_name": "viri-testnet",
-  "genesis_time": "2026-05-12T00:00:00Z",
-  "genesis_hash": "",
+  "genesis_time": "2026-05-17T22:23:54+05:30",
   "validators": [
     {
       "name": "validator-0",
-      "public_key": "<run genesis-ceremony.sh to generate>",
+      "public_key": "04400ae83f1d4c2db18d3cb0be90e2862aca8f04c2087ad4c1ebb5bcb92f2c8b2c858792c15cdfb1588aaa828ba569ccd138837c2a5eb08e1e8c2bafe5a18237cb",
+      "address": "0x214dd5c14329eb71865afb72456530ff18433f4b",
       "stake": 1000000
     },
     {
       "name": "validator-1",
-      "public_key": "<run genesis-ceremony.sh to generate>",
+      "public_key": "0461a90cfc557c298089efe5c012db251234401a333c569dfe65fc436bdc717ec468bab8e30c107ed684c8b2eef4eb99835a6340c3fa80e22c0e80a60cda0a66a1",
+      "address": "0xa6e077bc09fd6b3f5fbeca890ed980551f41dc52",
       "stake": 1000000
     },
     {
       "name": "validator-2",
-      "public_key": "<run genesis-ceremony.sh to generate>",
+      "public_key": "044e6031c584ec4155e1d6005ae09b71be02e9e6cd86433462999dd38c7811dbc2ab90f614183485ca1f4bbb7a5061cfc6572bf36484b96b85f566ed94a79be5bb",
+      "address": "0x3bb1676433a48e338d0b7c632fde91e8d8345b07",
       "stake": 1000000
     },
     {
       "name": "validator-3",
-      "public_key": "<run genesis-ceremony.sh to generate>",
+      "public_key": "04e838547e9b9ec29547c6d05aedcfeb839854f77a907a789732d7aff5a709e543f5a6c9183292dc2d31661fd9f5990e9b87f4b1eb78c8f301b06124db8f92d906",
+      "address": "0x5020824d6281219745ab06b2741b9738467dd295",
       "stake": 1000000
     }
   ],
   "total_stake": 4000000,
-  "initial_supply": 1000000000000000000,
-  "faucet_allocation": 10000000000000000000,
-  "faucet_address": "<faucet wallet address — set before genesis finalize>",
+  "initial_supply": 100000000000000000,
+  "faucet_allocation": 100000000000000000,
+  "faucet_address": "0xab73db00298166a90c11f8f6fdcca3e9b22f3db8755a554db3e4e5abbf6f54da",
   "block_time": "1s",
   "max_block_size": 10485760,
   "max_gas_per_block": 30000000,

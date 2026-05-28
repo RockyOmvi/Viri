@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Viri Wallet</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="header">
+        <div class="brand">
+          <div class="logo">V</div>
+          <div>
+            <div class="title">Viri Wallet</div>
+            <div class="subtitle">Layer 1 + 2 + 3</div>
+          </div>
+        </div>
+        <button class="icon-button" id="settingsBtn" aria-label="Settings">
+          ⚙
+        </button>
+      </header>
+
+      <section class="account">
+        <div class="account-row">
+          <div class="label">Account</div>
+          <div class="value" id="accountName">Wallet 1</div>
+        </div>
+        <div class="address" id="accountAddress">0x0000...0000</div>
+        <div class="balance">
+          <div class="balance-amount" id="balance">0.00</div>
+          <div class="balance-symbol">VIRI</div>
+        </div>
+        <div class="pill-row">
+          <span class="pill" id="network">Viri Testnet</span>
+          <span class="pill" id="chainId">1986622057</span>
+        </div>
+        <div class="actions">
+          <button class="primary" data-tab="send">Send</button>
+          <button class="secondary" data-tab="stake">Stake</button>
+        </div>
+      </section>
+
+      <nav class="tabs">
+        <button class="tab active" data-tab="send">Send</button>
+        <button class="tab" data-tab="stake">Stake</button>
+        <button class="tab" data-tab="contract">Contract</button>
+        <button class="tab" data-tab="zk">ZK Verify</button>
+        <button class="tab" data-tab="gov">Governance</button>
+      </nav>
+
+      <main class="panel">
+        <section class="tab-panel active" id="tab-send">
+          <h2>Transfer</h2>
+          <label class="field">
+            <span>To</span>
+            <input type="text" id="sendTo" placeholder="0x..." />
+          </label>
+          <label class="field">
+            <span>Amount</span>
+            <input type="number" id="sendAmount" placeholder="0.0" />
+          </label>
+          <label class="field">
+            <span>Gas Price (gwei)</span>
+            <input type="number" id="sendGas" value="1" />
+          </label>
+          <button class="primary full" id="sendBtn">Send Transaction</button>
+          <div class="hint" id="sendStatus"></div>
+        </section>
+
+        <section class="tab-panel" id="tab-stake">
+          <h2>Stake</h2>
+          <label class="field">
+            <span>Validator Address</span>
+            <input type="text" id="stakeValidator" placeholder="0x..." />
+          </label>
+          <label class="field">
+            <span>Call Data (hex)</span>
+            <input type="text" id="stakeData" placeholder="0x" />
+          </label>
+          <label class="field">
+            <span>Amount</span>
+            <input type="number" id="stakeAmount" placeholder="0.0" />
+          </label>
+          <button class="primary full" id="stakeBtn">Delegate Stake</button>
+          <div class="hint" id="stakeStatus"></div>
+        </section>
+
+        <section class="tab-panel" id="tab-contract">
+          <h2>Contract</h2>
+          <label class="field">
+            <span>Contract Address</span>
+            <input type="text" id="contractAddress" placeholder="0x..." />
+          </label>
+          <label class="field">
+            <span>Call Data (hex)</span>
+            <textarea id="contractData" rows="4" placeholder="0x" ></textarea>
+          </label>
+          <button class="primary full" id="contractBtn">Send Contract Tx</button>
+          <div class="hint" id="contractStatus"></div>
+        </section>
+
+        <section class="tab-panel" id="tab-zk">
+          <h2>ZK Verify</h2>
+          <label class="field">
+            <span>Proof (JSON)</span>
+            <textarea id="zkProof" rows="4" placeholder="{...}"></textarea>
+          </label>
+          <label class="field">
+            <span>Public Signals (JSON)</span>
+            <textarea id="zkSignals" rows="3" placeholder="[...]" ></textarea>
+          </label>
+          <button class="primary full" id="zkBtn">Verify Proof</button>
+          <div class="hint" id="zkStatus"></div>
+        </section>
+
+        <section class="tab-panel" id="tab-gov">
+          <h2>Governance</h2>
+          <label class="field">
+            <span>Proposal ID</span>
+            <input type="text" id="govProposal" placeholder="42" />
+          </label>
+          <label class="field">
+            <span>Vote</span>
+            <select id="govVote">
+              <option value="yes">Yes</option>
+              <option value="no">No</option>
+              <option value="abstain">Abstain</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Call Data (hex)</span>
+            <input type="text" id="govData" placeholder="0x" />
+          </label>
+          <button class="primary full" id="govBtn">Cast Vote</button>
+          <div class="hint" id="govStatus"></div>
+        </section>
+      </main>
+    </div>
+
+    <div class="modal" id="settingsModal" aria-hidden="true">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3>Settings</h3>
+          <button class="icon-button" id="closeSettings" aria-label="Close">✕</button>
+        </div>
+        <label class="field">
+          <span>RPC URL</span>
+          <input type="text" id="settingRpc" />
+        </label>
+        <label class="field">
+          <span>Chain ID</span>
+          <input type="text" id="settingChainId" />
+        </label>
+        <label class="field">
+          <span>Account Address</span>
+          <input type="text" id="settingAccount" />
+        </label>
+
+        <label class="field">
+          <span>Staking Contract</span>
+          <input type="text" id="settingStaking" />
+        </label>
+        <label class="field">
+          <span>Governance Contract</span>
+          <input type="text" id="settingGovernance" />
+        </label>
+        <label class="field">
+          <span>ZK Verify Endpoint</span>
+          <input type="text" id="settingZk" placeholder="https://..." />
+        </label>
+        <button class="primary full" id="saveSettings">Save Settings</button>
+      </div>
+    </div>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

@@ -3,16 +3,10 @@
 import { useParams } from 'next/navigation'
 import Link from 'next/link'
 import { useState } from 'react'
-import { useAccount, useAddressTxs } from '@/lib/api'
+import { useAccount, useAddressTxs, formatWei } from '@/lib/api'
 import StatusBadge from '@/components/StatusBadge'
 import HashLink from '@/components/HashLink'
 import type { IndexedTx } from '@/types'
-
-function formatWei(hex: string): string {
-  const num = parseInt(hex, 16)
-  if (isNaN(num)) return '0'
-  return (num / 1e18).toFixed(6)
-}
 
 function shortenHash(h: string): string {
   if (!h || h.length < 10) return h || ''

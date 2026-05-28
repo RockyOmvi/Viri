@@ -5,35 +5,73 @@ Viri supports WebSocket connections for real-time event streaming.
 ## Connection
 
 ```
-ws://localhost:8545/ws
-wss://rpc.testnet.viri.me/ws
+ws://localhost:8547
+wss://localhost:8547
 ```
 
-## Events
+The WebSocket port is `rpc_port + 2` (default 8547).
 
-### NewHeads
-Subscribe to new block headers.
+## Authentication (Optional)
 
-```json
-{"jsonrpc":"2.0","method":"eth_subscribe","params":["newHeads"],"id":1}
+If the server requires API key authentication, pass it as a query parameter:
+
+```
+ws://localhost:8547?api_key=your-api-key-here
 ```
 
-### NewPendingTransactions
-Subscribe to new pending transactions.
+Or send an auth message on connect:
 
 ```json
-{"jsonrpc":"2.0","method":"eth_subscribe","params":["newPendingTransactions"],"id":1}
+{"type": "auth", "apiKey": "your-api-key-here"}
 ```
 
-### Logs
-Subscribe to event logs matching a filter.
+## Subscribe
+
+Subscribe to a channel by sending:
 
 ```json
-{"jsonrpc":"2.0","method":"eth_subscribe","params":["logs",{"address":"0x..."}],"id":1}
+{"type": "subscribe", "channel": "new_blocks"}
+```
+
+Available channels:
+
+| Channel | Description |
+|---------|-------------|
+| `new_blocks` | New blocks as they are produced |
+| `new_transactions` | New pending transactions |
+| `peers` | Peer connect/disconnect events |
+
+### Response
+
+```json
+{"type": "subscribed", "channel": "new_blocks"}
+```
+
+### Event Notification
+
+```json
+{
+  "type": "event",
+  "channel": "new_blocks",
+  "data": {
+    "number": "0x1b5",
+    "hash": "0x...",
+    "parentHash": "0x...",
+    "timestamp": "0x65f0180b",
+    "transactionCount": 3,
+    "miner": "0x..."
+  }
+}
 ```
 
 ## Unsubscribe
 
 ```json
-{"jsonrpc":"2.0","method":"eth_unsubscribe","params":["0x1"],"id":1}
+{"type": "unsubscribe", "channel": "new_blocks"}
+```
+
+Response:
+
+```json
+{"type": "unsubscribed", "channel": "new_blocks"}
 ```

@@ -157,7 +157,7 @@ func (as *AccountState) Transfer(from, to []byte, amount *big.Int) error {
 
 	receiver, err := as.GetAccount(to)
 	if err != nil {
-		return fmt.Errorf("receiver account not found: %w", err)
+		receiver = NewAccount(to, AccountTypeNormal)
 	}
 
 	if err := sender.Transfer(amount); err != nil {

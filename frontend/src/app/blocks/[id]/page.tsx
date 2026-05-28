@@ -4,13 +4,11 @@ import { useParams } from 'next/navigation'
 import Link from 'next/link'
 import HashLink from '@/components/HashLink'
 import StatusBadge from '@/components/StatusBadge'
-import { useBlockByNumber } from '@/lib/api'
+import { useBlockByNumber, formatWei } from '@/lib/api'
 import type { Tx } from '@/types'
 
 function formatValue(val: string): string {
-  const num = parseInt(val, 16)
-  if (isNaN(num)) return '0'
-  return (num / 1e18).toFixed(4)
+  return formatWei(val, 4)
 }
 
 export default function BlockDetailPage() {

@@ -177,10 +177,13 @@ func (e *ExplorerServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 							}
 							if miner, ok := blockMap["miner"]; ok {
 								bs.Miner = fmt.Sprintf("%v", miner)
+							} else if proposer, ok := blockMap["proposer"]; ok {
+								bs.Miner = fmt.Sprintf("%v", proposer)
 							}
 							data.Blocks = append(data.Blocks, bs)
 						}
 					}
+					time.Sleep(100 * time.Millisecond)
 				}
 			}
 		}

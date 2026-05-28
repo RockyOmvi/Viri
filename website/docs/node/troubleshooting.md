@@ -16,7 +16,7 @@ If nodes can't find peers:
 1. **Check API key**: Ensure `api_key.txt` exists and is valid
 2. **Increase retries**: The peer-discovery script retries up to 60 times
 3. **Verify bootstrap address**: Confirm the bootstrap multiaddress is correct
-4. **Open firewall ports**: Ensure port 4000/TCP is accessible
+4. **Open firewall ports**: Ensure port 30303/TCP is accessible
 
 ## Consensus Errors
 

@@ -3,6 +3,7 @@ module github.com/viri-chain/viri
 go 1.25.7
 
 require (
+	github.com/btcsuite/btcd/btcec/v2 v2.5.0
 	github.com/consensys/gnark v0.12.0
 	github.com/consensys/gnark-crypto v0.15.0
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1
@@ -10,6 +11,7 @@ require (
 	github.com/libp2p/go-libp2p-kad-dht v0.39.1
 	github.com/libp2p/go-libp2p-pubsub v0.16.0
 	github.com/multiformats/go-multiaddr v0.16.1
+	github.com/tetratelabs/wazero v1.11.0
 	go.mongodb.org/mongo-driver v1.17.9
 	golang.org/x/crypto v0.50.0
 )
@@ -19,7 +21,7 @@ require (
 	github.com/blang/semver/v4 v4.0.0 // indirect
 	github.com/consensys/bavard v0.1.27 // indirect
 	github.com/fxamacker/cbor/v2 v2.7.0 // indirect
-	github.com/golang/snappy v0.0.5-0.20231225225746-43d5d4cd4e0e // indirect
+	github.com/golang/snappy v1.0.0 // indirect
 	github.com/google/pprof v0.0.0-20250202011525-fc3143867406 // indirect
 	github.com/ingonyama-zk/icicle/v3 v3.1.1-0.20241118092657-fccdb2f0921b // indirect
 	github.com/mattn/go-colorable v0.1.13 // indirect
@@ -27,7 +29,6 @@ require (
 	github.com/montanaflynn/stats v0.7.1 // indirect
 	github.com/ronanh/intcomp v1.1.0 // indirect
 	github.com/rs/zerolog v1.33.0 // indirect
-	github.com/tetratelabs/wazero v1.11.0 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	github.com/xdg-go/pbkdf2 v1.0.0 // indirect
 	github.com/xdg-go/scram v1.1.2 // indirect

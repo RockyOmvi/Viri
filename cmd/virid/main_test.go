@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/viri-chain/viri/internal/layer1/config"
+	"github.com/viri-chain/viri/internal/layer1/crypto"
 	"github.com/viri-chain/viri/internal/layer1/logging"
 )
 
@@ -57,12 +58,12 @@ func TestLoadKeyGeneratesAndLoads(t *testing.T) {
 	log := logging.NewLogger("test", logging.INFO, "text")
 	cfg := config.DevConfig()
 
-	key1 := loadKey(flags, cfg, log)
+	key1 := loadKey(flags, cfg, log, crypto.SchemeECDSA)
 	if key1 == nil {
 		t.Fatalf("expected key")
 	}
 
-	key2 := loadKey(flags, cfg, log)
+	key2 := loadKey(flags, cfg, log, crypto.SchemeECDSA)
 	if key2 == nil {
 		t.Fatalf("expected key")
 	}

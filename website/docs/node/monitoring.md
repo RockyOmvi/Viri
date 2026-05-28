@@ -8,13 +8,14 @@ Viri exposes Prometheus metrics at `/metrics` on port 9090 (localhost only by de
 
 | Metric | Type | Description |
 |--------|------|-------------|
-| `viri_blocks_total` | Counter | Total blocks produced |
-| `viri_block_height` | Gauge | Current block height |
-| `viri_peers` | Gauge | Connected peers |
-| `viri_txs_total` | Counter | Total transactions |
-| `viri_gas_price` | Gauge | Current base fee |
-| `viri_consensus_view` | Gauge | Current consensus view |
-| `viri_consensus_round` | Gauge | Current consensus round |
+| `consensus_block_finalized_total` | Counter | Total blocks finalized |
+| `consensus_height` | Gauge | Current block height |
+| `consensus_view` | Gauge | Current consensus view |
+| `consensus_phase` | Gauge | Current phase (0=idle, 1=prepare, 2=precommit, 3=commit, 4=decide) |
+| `consensus_validators` | Gauge | Number of active validators |
+| `p2p_peers_connected` | Gauge | Connected peers |
+| `mempool_pending_txs` | Gauge | Pending transactions in mempool |
+| `node_is_syncing` | Gauge | Whether node is syncing (1=true, 0=false) |
 
 ## Health Endpoints
 

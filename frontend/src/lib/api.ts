@@ -339,3 +339,16 @@ function normalizeTx(tx: Record<string, unknown>, receipt: Record<string, unknow
     })),
   }
 }
+
+export function formatWei(hex: string, decimals = 6): string {
+  try {
+    const num = BigInt(hex)
+    const divisor = BigInt(10) ** BigInt(18)
+    const whole = num / divisor
+    const frac = num % divisor
+    const fracStr = frac.toString().padStart(18, '0').slice(0, decimals)
+    return `${whole}.${fracStr}`
+  } catch {
+    return '0'
+  }
+}

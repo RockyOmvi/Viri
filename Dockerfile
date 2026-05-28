@@ -31,7 +31,7 @@ RUN mkdir -p /home/viri/.viri /home/viri/config /home/viri/data /keys && \
 
 USER viri
 
-EXPOSE 30303 8545 8546 8547 8080 8081 9090
+EXPOSE 30303 8545 8546 8547 8548 8080 8081 9090
 
 VOLUME ["/home/viri/.viri", "/home/viri/config", "/home/viri/data"]
 

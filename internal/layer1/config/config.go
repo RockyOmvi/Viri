@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -90,6 +91,14 @@ type ConsensusConfig struct {
 	EpochLength       uint64   `json:"epoch_length"`
 	SlashingEnabled   bool     `json:"slashing_enabled"`
 	FinalityThreshold Duration `json:"finality_threshold"`
+	ExtraValidators   []ExtraValidator `json:"extra_validators,omitempty"`
+}
+
+type ExtraValidator struct {
+	Address   string `json:"address"`
+	PublicKey string `json:"public_key"`
+	Stake     uint64 `json:"stake"`
+	Name      string `json:"name"`
 }
 
 type StorageConfig struct {
@@ -278,11 +287,26 @@ func (c *Config) ApplyEnvOverrides() {
 	if v := os.Getenv("VIRI_NETWORK_NAME"); v != "" {
 		c.Chain.NetworkName = v
 	}
+	if v := os.Getenv("VIRI_GENESIS_FILE"); v != "" {
+		c.Chain.GenesisFile = v
+	}
+	if v := os.Getenv("VIRI_BLOCK_TIME"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err == nil {
+			c.Chain.BlockTime = Duration(d)
+		}
+	}
 	if v := os.Getenv("VIRI_NODE_NAME"); v != "" {
 		c.Node.Name = v
 	}
 	if v := os.Getenv("VIRI_DATA_DIR"); v != "" {
 		c.Node.DataDir = v
+	}
+	if v := os.Getenv("VIRI_VALIDATOR_MODE"); v != "" {
+		c.Node.ValidatorMode = (v == "true" || v == "1")
+	}
+	if v := os.Getenv("VIRI_VALIDATOR_KEY"); v != "" {
+		c.Node.ValidatorKey = v
 	}
 	if v := os.Getenv("VIRI_RPC_PORT"); v != "" {
 		n, err := strconv.Atoi(v)
@@ -299,6 +323,22 @@ func (c *Config) ApplyEnvOverrides() {
 		} else {
 			fmt.Fprintf(os.Stderr, "config: invalid VIRI_API_PORT %q: %v\n", v, err)
 		}
+	}
+	if v := os.Getenv("VIRI_BOOTSTRAP_PEERS"); v != "" {
+		peers := strings.Split(v, ",")
+		for i, p := range peers {
+			peers[i] = strings.TrimSpace(p)
+		}
+		c.Network.BootstrapPeers = peers
+	}
+	if v := os.Getenv("VIRI_BOOTSTRAP_PEER"); v != "" && os.Getenv("VIRI_BOOTSTRAP_PEERS") == "" {
+		c.Network.BootstrapPeers = []string{strings.TrimSpace(v)}
+	}
+	if v := os.Getenv("VIRI_LISTEN_ADDR"); v != "" {
+		c.Network.ListenAddr = v
+	}
+	if v := os.Getenv("VIRI_EXTERNAL_ADDR"); v != "" {
+		c.Network.ExternalAddr = v
 	}
 	if v := os.Getenv("VIRI_LOG_LEVEL"); v != "" {
 		c.Logging.Level = v

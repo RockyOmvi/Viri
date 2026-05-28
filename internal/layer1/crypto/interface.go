@@ -42,7 +42,7 @@ func (s Scheme) PrivateBytes() int {
 	case SchemeMLDSA87:
 		return 4896
 	case SchemeSPHINCS:
-		return 128
+		return 64
 	default:
 		return 0
 	}
@@ -60,7 +60,7 @@ func (s Scheme) PublicBytes() int {
 	case SchemeMLDSA87:
 		return 2592
 	case SchemeSPHINCS:
-		return 64
+		return 32
 	default:
 		return 0
 	}
@@ -78,7 +78,7 @@ func (s Scheme) SigBytes() int {
 	case SchemeMLDSA87:
 		return 4627
 	case SchemeSPHINCS:
-		return 8080
+		return 7856
 	default:
 		return 0
 	}

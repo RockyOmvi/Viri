@@ -296,7 +296,7 @@ func (s *WSServer) BroadcastTransaction(tx *ledger.Transaction) {
 	msg, _ := json.Marshal(map[string]interface{}{
 		"type": "new_transaction",
 		"hash": fmt.Sprintf("0x%x", tx.Hash),
-		"from": fmt.Sprintf("0x%x", tx.From),
+		"from": fmt.Sprintf("0x%x", tx.SenderAddress()),
 		"to":   fmt.Sprintf("0x%x", tx.To),
 		"value": tx.Value,
 	})

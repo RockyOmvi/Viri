@@ -8,6 +8,8 @@
 
 **A production-grade 3-layer modular blockchain built in Go.**
 
+> **Testnet Live**: [https://faucet.viri.me](https://faucet.viri.me) — [User Guide](docs/USER_GUIDE.md)
+
 Viri is a complete L1 blockchain with native account abstraction, dual WASM + EVM execution, ZK-shielded transactions, MEV-resistant sequencing, cross-chain interop, and on-chain governance — all in a single codebase, zero external layer dependencies.
 
 ---

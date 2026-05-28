@@ -3,7 +3,7 @@
 import { useParams } from 'next/navigation'
 import Link from 'next/link'
 import StatusBadge from '@/components/StatusBadge'
-import { useTxByHash } from '@/lib/api'
+import { useTxByHash, formatWei } from '@/lib/api'
 import type { Log } from '@/types'
 
 export default function TxDetailPage() {
@@ -23,12 +23,6 @@ export default function TxDetailPage() {
       </span>
     </div>
   )
-
-  const formatWei = (hex: string) => {
-    const num = parseInt(hex, 16)
-    if (isNaN(num)) return '0'
-    return (num / 1e18).toFixed(6)
-  }
 
   return (
     <>

@@ -186,7 +186,7 @@ State corruption occurs when the node's database becomes inconsistent, typically
 
 ```bash
 # Node crashes with DB errors
-journalctl -u virid -n 100 | grep -i "corruption\|invalid\|checksum\|badger\|leveldb"
+journalctl -u virid -n 100 | grep -i "corruption\|invalid\|checksum\|badger"
 
 # Consensus invariant violations metric spikes
 # Prometheus: consensus_invariant_violations_total

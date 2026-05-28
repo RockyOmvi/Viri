@@ -80,7 +80,7 @@ Returns detailed node information.
 Returns the list of connected peers with their status.
 
 ### viri_getConsensusState
-Returns the current consensus state (view, round, phase, proposer, validators).
+Returns the current consensus state (height, view, phase, reward_pool, epoch_start, last_finalized, validator_count, total_stake).
 
 ### viri_addPeer
 Add a peer to the network by multiaddress.

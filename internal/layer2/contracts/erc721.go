@@ -10,18 +10,19 @@ import (
 type ERC721Selector [4]byte
 
 var (
-	sel721BalanceOf     = ERC721Selector{0x70, 0xa0, 0x82, 0x31}
-	sel721OwnerOf       = ERC721Selector{0x63, 0x52, 0x21, 0x1e}
-	sel721TransferFrom  = ERC721Selector{0x23, 0xb8, 0x72, 0xdd}
+	sel721BalanceOf        = ERC721Selector{0x70, 0xa0, 0x82, 0x31}
+	sel721OwnerOf          = ERC721Selector{0x63, 0x52, 0x21, 0x1e}
+	sel721TransferFrom     = ERC721Selector{0x23, 0xb8, 0x72, 0xdd}
 	sel721SafeTransferFrom = ERC721Selector{0x42, 0x84, 0x2e, 0x0e}
-	sel721Approve      = ERC721Selector{0x09, 0x5e, 0xa7, 0xb3}
+	sel721Approve          = ERC721Selector{0x09, 0x5e, 0xa7, 0xb3}
 	sel721SetApprovalForAll = ERC721Selector{0xa2, 0x2c, 0xb4, 0x65}
-	sel721GetApproved  = ERC721Selector{0x08, 0x18, 0x12, 0xfc}
+	sel721GetApproved      = ERC721Selector{0x08, 0x18, 0x12, 0xfc}
 	sel721IsApprovedForAll = ERC721Selector{0xe9, 0x85, 0xe7, 0xc5}
-	sel721Name         = ERC721Selector{0x06, 0xfd, 0xde, 0x03}
-	sel721Symbol       = ERC721Selector{0x95, 0xd8, 0x9b, 0x41}
-	sel721TokenURI     = ERC721Selector{0xc8, 0x7f, 0x56, 0xbd}
-	sel721TotalSupply  = ERC721Selector{0x18, 0x16, 0x0d, 0xdd}
+	sel721Name             = ERC721Selector{0x06, 0xfd, 0xde, 0x03}
+	sel721Symbol           = ERC721Selector{0x95, 0xd8, 0x9b, 0x41}
+	sel721TokenURI         = ERC721Selector{0xc8, 0x7f, 0x56, 0xbd}
+	sel721TotalSupply      = ERC721Selector{0x18, 0x16, 0x0d, 0xdd}
+	sel721Mint             = ERC721Selector{0xa0, 0x71, 0x0e, 0x8d} // custom mint(to, tokenId)
 )
 
 // ERC721Token is a native Go ERC721 NFT token contract.
@@ -86,6 +87,8 @@ func (n *ERC721Token) ExecuteCall(caller, input []byte) ([]byte, error) {
 		return n.handleTokenURI(args)
 	case sel721TotalSupply:
 		return n.handleTotalSupply()
+	case sel721Mint:
+		return n.handleMint(caller, args)
 	default:
 		return nil, fmt.Errorf("unknown ERC721 selector: %x", sel)
 	}
@@ -203,6 +206,18 @@ func (n *ERC721Token) handleApprove(caller, args []byte) ([]byte, error) {
 		delete(n.tokenApprovals, tokenID)
 	} else {
 		n.tokenApprovals[tokenID] = append([]byte(nil), approved...)
+	}
+	return padTo32(big.NewInt(int64(n.totalCount)).Bytes()), nil
+}
+
+func (n *ERC721Token) handleMint(caller, args []byte) ([]byte, error) {
+	if len(args) < 64 {
+		return nil, fmt.Errorf("invalid mint args")
+	}
+	to := readAddress(args)
+	tokenID := readUint256(args[32:]).Uint64()
+	if err := n.Mint(to, tokenID, ""); err != nil {
+		return padTo32(big.NewInt(0).Bytes()), nil
 	}
 	return padTo32(big.NewInt(1).Bytes()), nil
 }

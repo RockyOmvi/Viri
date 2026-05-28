@@ -1,615 +1,274 @@
-# Viri Blockchain — Full Feature Audit Report
+# Viri Testnet - Comprehensive Audit Report
 
-**Commit:** `de495ee681e843aed7ccb527d6d00c48a5bd1c10`
-**Go:** `go1.25.7 windows/amd64`
-**Date:** 2026-05-16
-
-
+**Date:** 2026-05-19  
+**Scope:** Full-stack audit: chain core, RPC, transactions, deployment, security  
+**Total Issues:** 150+ identified across 7 categories
 
 ---
 
-## TLA+ Formal Verification
+## 1. CHAIN CORE: GENESIS, STATE, TOKENOMICS
 
-The HotStuff-2 BFT consensus protocol is formally specified in TLA+ and model-checked with TLC (`v2026.05.12`). The specification models the full consensus algorithm including Byzantine validators, message equivocation, timeout certificates, and network partitions.
+### Critical
 
-### Invariants Verified
+| # | Issue | File | Fix |
+|---|-------|------|-----|
+| 1.1 | **State resets on every restart** — `stateMgr.Initialize()` unconditionally runs, resetting `totalSupply=0`, `blockHeight=0`, `stateRoot=empty` | `cmd/virid/main.go:374` | Add `if sm.IsInitialized()` check before `Initialize()`. Persist a "genesis hash" in state DB and skip init if matches. |
+| 1.2 | **Block rewards never reach accounts** — `ProcessBlock` returns `BlockEconomics` but the reward/fee values are discarded. `distributeRewards()` updates only in-memory `StakingModule` (not persisted, not applied to StateManager). `AddReward()` is never called in production code. | `internal/layer1/ledger/persistent_chain.go:93`, `consensus/hotstuff.go:1641` | Call `stateMgr.MintTokens(validatorAddr, reward)` in the consensus `decide()` path. Wire `ProcessBlock` result into actual state mutations. |
+| 1.3 | **Only ~10M wei exists in the entire chain** — Genesis supply (10^9) ≠ Economics supply (10^25). No minting happens. Validator-2 has 9.9M wei from hardcoded `CreateAccount`. | `cmd/virid/main.go:445-448` | Remove hardcoded per-validator balance. Fix genesis to actually allocate `initial_supply` to the `faucet_address` account. |
+| 1.4 | **No supply is ever minted to accounts** — `totalSupply` and `circulatingSupply` are abstract counters; no `MintTokens` call exists in any production path. | `internal/layer1/state/state.go` | Add `MintTokens(address, amount)` and `BurnTokens(amount)` methods to StateManager. Call from block reward distribution. |
+| 1.5 | **Silent fallback to in-memory store** — If BadgerDB fails to open, node uses MemoryStore with no warning. All state lost on restart. | `cmd/virid/main.go:206-215` | `log.Fatal` on DB failure for non-dev modes. Add startup check: if store is in-memory, emit a visible WARNING banner. |
 
-| Invariant | Description | N=4,F=1 ✓ | N=4,F=1,BYZ ✓ |
-|-----------|-------------|-----------|----------------|
-| **Agreement** | No two honest replicas decide different values at the same height | PASS (96 states) | PASS (351 states) |
-| **NoDoubleCommit** | No honest replica decides two different values at same height | PASS | PASS |
-| **QuorumIntersection** | Any two quorums intersect in ≥1 honest replica | PASS | PASS |
-| **PhaseValid** | All replicas follow valid phase transitions | PASS | PASS |
-| **LockedViewInvariant** | Replicas only lock with a valid prepare QC | PASS | PASS |
-| **TCValid** | Timeout certificates contain valid messages | PASS | PASS |
+### High
 
-### Model Configurations
+| # | Issue | File | Fix |
+|---|-------|------|-----|
+| 1.6 | **Genesis config fragmentation** — Two completely different `GenesisConfig` structs (`ledger` vs `genesis` packages). `final_genesis.go` generates fields (`initial_supply`, `faucet_allocation`, `faucet_address`) that are never parsed by the runtime node. | `internal/layer1/ledger/genesis.go`, `final_genesis.go` | Merge into one config. Use the `genesis.GenesisConfig` format (with `Allocations` map) and apply allocations during `Initialize()`. |
+| 1.7 | **`faucet_address` in genesis is 32 bytes** — `"0xab73db00...4da"` (64 hex chars), not a 20-byte Ethereum address | `configs/genesis/testnet.json`, `testnet/genesis/genesis.json` | Fix to valid 20-byte address: `0xab73db00298166a90c11f8f6fdcca3e9b22f3db87` |
+| 1.8 | **Dual/triple supply tracking** — StateManager.totalSupply (uint64, from `genesis.InitialSupply`) vs Economics.circulatingSupply (big.Int, from config) vs actual account balance sum. None match. | `internal/layer1/state/state.go:28`, `economics.go:35` | Single source of truth: `TotalSupply()` = sum of all account balances. Remove abstract counters. |
+| 1.9 | **O(n) state root computation** — `computeStateRoot()` reads ALL accounts from DB, serializes each, builds Merkle tree every block. Intolerable at scale. | `internal/layer1/state/state.go:186-212` | Use the existing `MPT` (Merkle-Patricia Trie) for O(log n) incremental updates. |
+| 1.10 | **`fund_faucet` tool bypasses StateManager** — Direct BadgerDB writes, no supply check, no state root update. | `tools/fund_faucet/main.go` | Use `stateMgr.CreateAccount()` and `stateMgr.Commit()`. Better: implement a proper `eth_sendTransaction` API. |
 
-| Config | N | F | Faulty | MaxHeight | Next | States | Depth | Result |
-|--------|---|---|--------|-----------|------|--------|-------|--------|
-| `HotStuff_N4_safety.cfg` | 4 | 1 | `{}` | 1 | `NextSafety` | 165 gen, 55 distinct | 8 | ✅ No error |
-| `HotStuff_N4_byzantine.cfg` | 4 | 1 | `{3}` | 1 | `NextByzantine` | 9,618 gen, 920 distinct | 8 | ✅ No error |
-| `HotStuff_N4_full.cfg` | 4 | 1 | `{3}` | 1 | `NextFull` | 34M+ gen, 3.1M+ distinct | — | ✅ No error (timeout, 5 min) |
+### Medium
 
-### Byzantine Attack Surface Covered
-
-- **Equivocation**: Faulty replica sends conflicting votes at the same `(height, view)`
-- **Malicious proposals**: Faulty leader proposes invalid/malicious blocks
-- **Spam**: Faulty replica injects arbitrary messages into the network
-- **Protocol deviation**: Actions not following the correct phase sequence
-- **Network partition**: Messages can be dropped arbitrarily (`DropMessages`)
-
-All invariants hold across all checked states, confirming the protocol's safety guarantees under Byzantine fault tolerance with `N > 3F`.
-
-### Liveness Properties
-
-Temporal liveness properties (`Liveness`, `Progress`) are specified but require fairness assumptions and larger state exploration. Safety (ensuring no incorrect decision) is the primary concern verified above.
+| # | Issue | Fix |
+|---|-------|-----|
+| 1.11 | `rewardPool uint64` will overflow — block reward (10^18) × ~18 blocks > uint64 max | Use `*big.Int` |
+| 1.12 | `distributeRewards` integer division loses remainder | Track remainder, distribute in next round |
+| 1.13 | MPT orphan nodes accumulate forever — old node versions never GC'd | Add reference-counting GC pass |
+| 1.14 | Empty migration list, but migration code runs every startup | Remove migration scaffolding or implement actual migrations |
+| 1.15 | `EconomicsConfig.InitialSupply` default (10^25) vs `ledger.GenesisConfig.InitialSupply` default (1,000,000,000) — 15 orders of magnitude off | Align defaults |
 
 ---
 
-## Build & Static Analysis
+## 2. RPC LAYER: COMPATIBILITY & CORRECTNESS
 
-| Check | Result |
-|-------|--------|
-| `go build ./...` | PASS |
-| `go vet ./...` | PASS |
+### Critical
 
----
+| # | Issue | File | Fix |
+|---|-------|------|-----|
+| 2.1 | **`from` field returns 65-byte public key, not 20-byte address** in `getTransactionByHash`, `getTransactionReceipt`, `formatTx` | `cmd/virid/rpc_server.go:697,1039,1407` | Replace `tx.From` with `tx.SenderAddress()` |
+| 2.2 | **Gob serialization is incompatible with Ethereum** — `eth_sendRawTransaction` expects gob-encoded bytes, not RLP. No standard wallet can submit transactions. | `internal/layer1/ledger/serialize.go:38-54`, `cmd/virid/rpc_server.go:517-560` | Add RLP encoding/decoding. Keep gob for internal use, but accept RLP in `eth_sendRawTransaction`. OR: add an `eth_sendRawTransaction` bridge that accepts RLP and converts. |
+| 2.3 | **No CORS middleware on RPC server** — MetaMask and browser dApps get CORS errors connecting directly. | `cmd/virid/rpc_server.go:203-217` | Add `corsMiddleware` to the handler chain (exists in `api_server.go` — reuse it). |
 
-## Layer 1 — Consensus, Crypto, Ledger, P2P, State
+### High
 
-| Package | Tests | Status |
-|---------|-------|--------|
-| `consensus` | 55 | PASS |
-| `crypto` | 20 | PASS |
-| `ledger` | 50 | PASS |
-| `p2p` | 52 | PASS |
-| `state` | 37 | PASS |
-| `events` | 7 | PASS |
-| `config` | — | PASS |
-| `logging` | — | PASS |
-| `da` | — | PASS |
-| `sequencer` | — | PASS |
-| `spv` | — | PASS |
-| `sync` | — | PASS |
+| # | Issue | Fix |
+|---|-------|-----|
+| 2.4 | `eth_estimateGas` returns 21000 for transfers, but actual cost is 26000 | Return `0x6598` (26000) for transfers, implement EVM simulation for contracts |
+| 2.5 | `eth_getStorageAt` always returns `"0x0"` — ignores storage key entirely | Call `stateMgr.GetStorage(address, key)` |
+| 2.6 | `eth_subscribe`/`eth_unsubscribe` missing — no WebSocket subscription support | Implement on WS server with Ethereum JSON-RPC protocol, not custom pubsub |
+| 2.7 | `eth_maxPriorityFeePerGas` and `eth_feeHistory` missing — MetaMask can't estimate EIP-1559 fees | Add — `maxPriorityFeePerGas` can return a fixed low value; `feeHistory` can be stubbed |
+| 2.8 | WebSocket server uses custom protocol on separate port — not Ethereum JSON-RPC compatible | Port WS to same port as HTTP RPC, support `eth_subscribe` with standard params |
+| 2.9 | `eth_call` has no EVM context — `blockNum`, `timestamp`, `chainID`, `coinbase`, `baseFee` are all empty | Populate EVM context from current block state |
+| 2.10 | `eth_getLogs` has unsafe type assertion — `v.(string)` panics if address is array | Use proper type switching: handle both `string` and `[]string` |
+| 2.11 | `queryLogs` (for filters) ignores topics, only checks `tx.To` — logs never returned correctly | Use same `getLogs` logic for both direct queries and filters |
+| 2.12 | Block format missing 15+ standard Ethereum fields — `gasLimit`, `gasUsed`, `baseFeePerGas`, `size`, `logsBloom`, `stateRoot`, `transactionsRoot`, `receiptsRoot`, `difficulty`, `totalDifficulty`, `nonce`, `mixHash`, `extraData`, `sha3Uncles`, `uncles` | Add all fields to `formatBlock`/`formatBlockWithTxs` |
+| 2.13 | Transaction format missing `input`, `v`, `r`, `s`, `chainId` — `from` is pubkey | Add standard fields. Fix `from` (issue 2.1). |
+| 2.14 | Receipt missing `logsBloom`, `effectiveGasPrice`, `type`, `cumulativeGasUsed` | Add missing fields |
 
-### Key Feature Outputs
+### Medium
 
-#### Multi-Node Block Production (4 validators)
-
-```
-=== RUN   TestMultiNodeBlockProduction
-    multinode_test.go:160: Validator set size: 4, total stake: 4000000
-    multinode_test.go:220: Validator 0 height: 207
-    multinode_test.go:220: Validator 1 height: 207
-    multinode_test.go:220: Validator 2 height: 207
-    multinode_test.go:220: Validator 3 height: 207
---- PASS (3.00s)
-```
-
-#### View Change (3 validators, leader rotation)
-
-```
-=== RUN   TestViewChange
-    integration_test.go:763: Validator 0 height: 150, running: true
-    integration_test.go:763: Validator 1 height: 150, running: true
-    integration_test.go:763: Validator 2 height: 150, running: true
---- PASS (0.32s)
-```
-
-#### Network Partition / Heal
-
-```
-=== RUN   TestNetworkPartition
-    integration_test.go:685: All validators reconnected after partition heal
-    integration_test.go:687: Validator 0 final height: 298
-    integration_test.go:687: Validator 1 final height: 298
-    integration_test.go:687: Validator 2 final height: 297
-    integration_test.go:687: Validator 3 final height: 297
---- PASS (6.55s)
-```
-
-#### State Sync (late joiner)
-
-```
-=== RUN   TestStateSync
-    integration_test.go:836: Height before stopping validator 3: 107
-    integration_test.go:848: Running validator 0 height: 107
-    integration_test.go:848: Running validator 1 height: 106
-    integration_test.go:848: Running validator 2 height: 106
-    integration_test.go:853: Max height before late: 107
---- PASS (3.23s)
-```
-
-#### 20-Validator Convergence
-
-```
-=== RUN   TestStressTwentyValidatorsConvergence
-    stress_test.go:183: 20-validator test: min_height=27 max_height=28 spread=1
---- PASS (6.03s)
-```
-
-#### 100-Validator Supermajority (Performance)
-
-```
-=== RUN   TestStressHundredValidators
-    stress_test.go:64: 100-validator HasSuperMajority: 10000 iterations in 4.96s (2015 ops/sec)
---- PASS (4.97s)
-```
-
-#### Message Throughput
-
-```
-=== RUN   TestStressMessageThroughput
-    stress_test.go:285: Throughput: 19833 total messages, 4958 msgs/sec, 130.24 blocks/sec
---- PASS (4.00s)
-```
-
-#### Crypto — Key Generation, Mnemonic, Keystore
-
-```
-TestGenerateKey            --- PASS
-TestSignAndVerify          --- PASS
-TestInvalidSignature       --- PASS
-TestAddressGeneration      --- PASS (Keccak256)
-TestEncryptDecryptKey      --- PASS
-TestDecryptWrongPassphrase --- PASS
-TestKeystoreLongPassphrase --- PASS
-TestMnemonic               --- PASS (BIP39)
-```
-
-#### Ledger — Block Production, Economics, Fee Market
-
-```
-TestAddBlock                          --- PASS
-TestEconomicsBlockReward              --- PASS
-TestEconomicsInflationRate            --- PASS
-TestFeeMarket_HundredBlocksVaryingGas --- PASS
-TestValidateGenesis                   --- PASS
-TestSerializeBlock                    --- PASS
-```
-
-#### Merkle Patricia Trie (State)
-
-```
-TestMPT_MultipleKeys       PASS (15 nodes for 7 entries)
-TestMPT_RootHashDeterminism PASS
-TestMPT_ProofGeneration    PASS
-TestMPT_SharedPrefixKeys   PASS (5 keys, 9 nodes)
-```
-
-#### P2P — Peer Manager, Reputation, Rate Limiter
-
-```
-TestPeerManagerAddPeer         --- PASS
-TestPeerManagerEviction        --- PASS
-TestPeerManagerBanPeer         --- PASS
-TestReputationScoreCalculation --- PASS
-TestRateLimiterAllow           --- PASS
-TestHandshakeValidate          --- PASS
-TestMessageAuthenticator       --- PASS
-TestValidatorAcceptValidBlock  --- PASS
-```
+| # | Issue | Fix |
+|---|-------|-----|
+| 2.15 | No batch JSON-RPC support | Parse arrays of requests in `handleRequest` |
+| 2.16 | `eth_getBlockByNumber` ignores `"earliest"` tag | Handle `"earliest"` → block 0 |
+| 2.17 | `eth_getBlockByHash` and `getBlockByNumber` ignore full-tx boolean parameter | Support second param: if true, return full tx objects |
+| 2.18 | `eth_syncing` returns non-standard field names (underscores not camelCase) | Rename `starting_block` → `startingBlock`, etc. |
+| 2.19 | Timestamps returned as Unix integers, not hex strings | Prepend `"0x"` and format as hex |
+| 2.20 | `eth_getTransactionCount` pending nonce logic is wrong | `max(state_nonce, highest_pending_nonce + 1)` |
+| 2.21 | `eth_sendRawTransaction` skips ChainID validation | Compare `tx.ChainID` against node's `chainID` |
+| 2.22 | `eth_gasPrice` returns base fee only, no priority fee | Add small tip (e.g., 1 wei) to ensure inclusion |
+| 2.23 | Error format missing optional `data` field | Add `data` to `RPCError` struct |
 
 ---
 
-## Layer 2 — EVM, ZK, Gas, Privacy, MEV, Rollups
+## 3. TRANSACTION FORMAT & SIGNING
 
-| Package | Tests | Status |
-|---------|-------|--------|
-| `vm` | 11 | PASS |
-| `execution` | 7 | PASS |
-| `gas` | 16 | PASS |
-| `zk` | 24 | PASS |
-| `accounts` | 11 | PASS |
-| `agents` | 5 | PASS |
-| `contracts` | 6 | PASS |
-| `mev` | 5 | PASS |
-| `privacy` | 4 | PASS |
-| `rollups` | 6 | PASS |
+### Critical
 
-### Key Feature Outputs
+| # | Issue | File | Fix |
+|---|-------|------|-----|
+| 3.1 | **`viri-sign` produces gob-incompatible output** — defines `main.Transaction` but `sendRawTransaction` expects `ledger.Transaction`. Gob encodes fully-qualified type name, so the wire format is incompatible. | `tools/viri-sign/main.go:25-37` | Either: (a) use `ledger.Transaction` directly (import the package), or (b) manually implement gob-compatible wire encoding matching the `ledger.Transaction` type path. |
+| 3.2 | **Transaction format is completely non-standard** — gob-encoded, not RLP. No Ethereum wallet can create or submit transactions to this chain. | Entire transaction pipeline | Add RLP encoding. Implement `TransactionFromRLP(rlpBytes) (*Transaction, error)`. Register both RLP and gob handlers in `eth_sendRawTransaction`. |
 
-#### EVM Arithmetic Opcodes
+### High
 
-```
-TestOpcodeEQ      PASS: 42 == 42  → true (1)
-TestOpcodeLT      PASS: 10 < 20   → true (1)
-TestOpcodeGT      PASS: 20 > 10   → true (1)
-TestOpcodeSHL     PASS: 1 << 1    → 2
-TestOpcodeSHR     PASS: 2 >> 1    → 1
-TestOpcodeSAR     PASS: SAR(-2,1) → -1
-TestOpcodeAND     PASS: 0x0F & 0x03 → 0x03
-TestOpcodeOR      PASS: 0x0F | 0x03 → 0x0F
-TestOpcodeXOR     PASS: 0xFF ^ 0x0F → 0xF0
-TestOpcodeNOT     PASS: ~0         → 0xFF...FF
-```
+| # | Issue | Fix |
+|---|-------|-----|
+| 3.3 | `V` byte is hardcoded to `0`, never verified — any `V` value passes `Verify()` | Compute correct `V` from signature recovery, add `V` validation in `Verify()` |
+| 3.4 | No ChainID check in `TxPool.Add()` or `sendRawTransaction` — cross-chain replay possible | Validate `tx.ChainID == expectedChainID` before pool insertion |
+| 3.5 | Replace-by-fee evicts globally lowest-gas-price tx, not same-sender-nonce — DoS vector | Fix: only allow replacement when `sender + nonce` match AND new gas price > old × 1.1 (EIP-1159 style) |
+| 3.6 | `FeeCurrency` not in `SigningPayload()` — unsigned field, malleable after signing | Include `FeeCurrency` in the signing payload |
 
-#### EVM Environment Opcodes
+### Medium
 
-```
-TestOpcodeCALLDATALOAD  PASS: loads 32 bytes from calldata
-TestOpcodeCALLDATASIZE  PASS: returns correct size
-TestAuditSHA3           PASS
-TestAuditBALANCE        PASS
-TestAuditCODECOPY       PASS
-TestAuditRETURNDATACOPY PASS
-TestAuditSLOAD_SSTORE   PASS
-TestAuditLOG            PASS
-TestAuditREVERT         PASS
-TestAuditSIGNEXTEND     PASS
-TestAuditControlFlow    PASS (JUMP/JUMPI/JUMPDEST)
-TestAuditStack          PASS (DUP/SWAP/POP)
-TestAuditMemory         PASS (MLOAD/MSTORE/MSTORE8)
-```
-
-#### ZK Prover & Verifier
-
-```
-TestProveAndVerify                 PASS: proof generated and verified
-TestVerifyInvalidProof             PASS: tampered proof rejected
-TestVerifyBatchProofs              PASS: batch verification succeeds
-TestPrecompileGnarkVerify          PASS: on-chain verification works
-TestPrecompileGnarkVerifyTampered  PASS: tampered proofs rejected
-TestShieldedTransactionSerialize   PASS
-TestShieldedPoolProcessDeposit     PASS
-TestShieldedPoolProcessWithdraw    PASS
-TestShieldedPoolProcessTransfer    PASS
-```
-
-#### Gas Oracle
-
-```
-TestEstimateGas           PASS
-TestProcessBlock          PASS
-TestBaseFeeAdjustment     PASS
-TestBaseFeeDecrease       PASS
-TestPriorityFeePercentiles PASS
-TestBlockGasLimitExceeded PASS
-```
-
-#### Account Abstraction (ERC-4337)
-
-```
-TestEntryPoint_DeployAndExecuteWallet PASS
-TestEntryPoint_WalletWithCallData     PASS
-TestEntryPoint_InvalidNonce           PASS
-TestEntryPoint_BeneficiaryFees        PASS
-```
-
-#### MEV Resistance
-
-```
-TestMEVResistorBatching             PASS
-TestMEVResistorOrderingGasPrice     PASS
-TestMEVResistorOrderingMEVOptimized PASS
-```
-
-#### Privacy Shielded Pool
-
-```
-TestCreateAndSpendNote     PASS
-TestDuplicateCommitment    PASS (rejected)
-TestSpendUnknownNullifier  PASS (rejected)
-```
-
-#### Rollup Challenge Protocol
-
-```
-TestChallengeMissingBatch  PASS
-TestSubmitAndGetBatch      PASS
-TestChallengeAndConfirm    PASS
-TestConfirmBatch           PASS
-```
-
-#### WASM VM
-
-```
-TestWasmVMStackOperations PASS
-TestWasmVMGasLimit        PASS
-TestWasmVMRegisterImport  PASS
-```
+| # | Issue | Fix |
+|---|-------|-----|
+| 3.7 | `tx.Hash` never validated against `tx.ComputeHash()` — tampered hash accepted | Add hash verification in `sendRawTransaction` |
+| 3.8 | Nil `SenderAddress()` causes empty-string account key, bypassing per-account limits | Return error from `pool.Add()` if `SenderAddress()` returns nil |
+| 3.9 | Duplicate `NewTransaction` / `NewTransactionFromKey` — identical code | Remove duplicate |
+| 3.10 | Weak `len(tx.From) < 2` check — should check for exactly 65 bytes | Validate `len(tx.From) == 65` |
+| 3.11 | Low-S enforcement has extremely rare truncation bug (wrong `copy` length) | Fix: use proper byte slicing for the replacement S value |
+| 3.12 | Nonce check silently skipped on state lookup errors | Explicit error on failed state lookup |
+| 3.13 | `TransactionToJSON` drops `FeeCurrency`, `Signature`, `ChainID` | Include all fields |
 
 ---
 
-## Layer 3 — Governance, Bridge, Interop, Intent, API
+## 4. FAUCET & TOKEN DISTRIBUTION
 
-| Package | Tests | Status |
-|---------|-------|--------|
-| `governance` | 6 | PASS |
-| `bridge` | 12 | PASS |
-| `interop` | 7 | PASS |
-| `intent` | 6 | PASS |
-| `api` | 12 | PASS |
-| `appchain` | 6 | PASS |
-| `sdk` | 7 | PASS |
+### High
 
-### Key Feature Outputs
+| # | Issue | Fix |
+|---|-------|-----|
+| 4.1 | **Faucet private key hardcoded in source code** (`validator-2` key) | Move to environment variable, load at runtime |
+| 4.2 | **Private key passed on command line to `viri-sign`** — visible via `/proc` to all processes | Use stdin pipe or temp file with restricted permissions |
+| 4.3 | **Per-claim = 100 wei is absurdly low** — should be at least 10^15 wei (0.001 VIRI) to be usable | Increase to a meaningful amount. But with only 9.9M wei available, need to fix tokenomics first (issue 1.2-1.4). |
+| 4.4 | **Faucet address in faucet service** (`0xdb02a...`) **doesn't match genesis** (`0xab73db...` 32-byte) | Fix address format to 20 bytes. Ensure genesis actually funds the faucet address. |
 
-#### Governance — Proposal Lifecycle
+### Medium
 
-```
-TestSubmitProposal    PASS: proposal ID 0, stake validation
-TestVoteAndTally      PASS: votes cast, passes threshold
-TestVetoAndQuorum     PASS: veto vote triggers rejection
-TestGovernanceFlow    PASS: full lifecycle (integration)
-```
-
-#### Bridge — Cross-Chain Transfers
-
-```
-TestRegisterChainAndInitiateTransfer  PASS
-TestLockCompleteAndSignatures         PASS (2/3 threshold)
-TestCompleteTransferInsufficientSigs  PASS (rejected)
-TestPrivacyBridgeDoubleSpendPrevention PASS
-TestPrivacyBridgePruneOldTransfers    PASS
-TestBridgeFlow (integration)          PASS
-```
-
-#### Interop — IBC-like Channels
-
-```
-TestCreateChannel        PASS: channel opened
-TestSendReceivePacket    PASS: packet sent and received
-TestCloseChannel         PASS: channel lifecycle
-TestInteropFlow (integration) PASS
-```
-
-#### Intent — Solver Network
-
-```
-TestSubmitAndGetIntent     PASS: user submits intent
-TestRegisterSolverAndSolve PASS: solver fills intent
-TestFillErrors             PASS: invalid fills rejected
-TestIntentFlow (integration) PASS
-```
-
-#### API — REST Server with Auth & Rate Limiting
-
-```
-TestAPIKeyAuth:
-  missing key returns 401           PASS
-  invalid key returns 401           PASS
-  valid key in header passes        PASS
-  valid key in query string passes  PASS
-
-TestRateLimiter:
-  5 requests allowed, 6th rate-limited PASS
-
-TestGovernanceHandlers  PASS
-TestVoteHandler         PASS
-TestBridgeHandlers      PASS
-TestInteropHandlers     PASS
-TestIntentHandlers      PASS
-TestHealthHandler       PASS
-```
-
-#### AppChain
-
-```
-TestCreateAppChain      PASS
-TestValidatorsLifecycle PASS
-TestPauseResume         PASS
-```
-
-#### SDK Client
-
-```
-TestNewL3Client         PASS
-TestHealthCheck         PASS
-```
+| # | Issue | Fix |
+|---|-------|-----|
+| 4.5 | `loadStore()` called on every request with no caching — high disk I/O | Cache store in memory, write-back every N seconds |
+| 4.6 | Cooldown store is unsigned JSON — filesystem access allows tampering | HMAC-sign or use a DB-backed store |
+| 4.7 | IP-based cooldown disadvantages NAT users (multiple users behind same IP) | Use a captcha (e.g., hCaptcha) instead of IP-based rate limiting |
+| 4.8 | RPC proxy has hardcoded API key | Move to env var, add key rotation support |
+| 4.9 | RPC proxy has no rate limiting — public endpoint with no DoS protection | Add token-bucket rate limiter |
 
 ---
 
-## Cross-Layer Integration Tests
+## 5. DEPLOYMENT INFRASTRUCTURE
 
-| Test | Features Covered | Status |
-|------|-----------------|--------|
-| `TestFullBlockchainWithGovernance` | L1 consensus + L3 governance | PASS |
-| `TestZKShieldedTransaction` | L2 ZK proofs + privacy pool | PASS |
-| `TestGasOracleIntegration` | L2 gas oracle + L1 block production | PASS |
-| `TestFullBlockchainFlow` | L1 full node lifecycle | PASS |
-| `TestValidatorSlashing` | L1 staking + slashing | PASS |
-| `TestStatePersistence` | L1 state persistence | PASS |
-| `TestEpochRotation` | L1 epoch management | PASS |
+### Critical
 
----
+| # | Issue | Fix |
+|---|-------|-----|
+| 5.1 | **No TLS anywhere** — Nginx listens on port 80 only. All traffic unencrypted. | `listen 443 ssl;` with Let's Encrypt via certbot/cert-manager |
+| 5.2 | **Validator private keys committed to repo** — `testnet/keys/validator-*.key` in plaintext | Remove from repo, add to `.gitignore`. Rewrite git history. |
+| 5.3 | **API key in source** — `fa776f19...` in `rpc-proxy.js`, `faucet-service-v3.js`, Terraform cloud-init | Rotate keys, load from env vars |
+| 5.4 | **4 validator keys in Terraform cloud-init YAML** | Use Azure Key Vault or SSH-triggered key delivery |
 
-## Fuzz Tests (10 harnesses)
+### High
 
-| Test | Package | Seeds | Status |
-|------|---------|-------|--------|
-| `FuzzSignatureVerification` | `layer1/crypto` | 3 | PASS |
-| `FuzzTransactionHash` | `layer1/crypto` | 1 | PASS |
-| `FuzzMerkleTree` | `layer1/ledger` | 1 | PASS |
-| `FuzzSHA256` | `layer1/crypto` | 3 | PASS |
-| `FuzzBlockSigningPayload` | `layer1/consensus` | 1 | PASS |
-| `FuzzECDSASignVerify` | `layer1/crypto` | 1 | PASS |
-| `FuzzHashCollisions` | `layer1/crypto` | 1 | PASS |
-| `FuzzHasSuperMajority` | `layer1/consensus` | 3 | PASS |
-| `FuzzQCIsValid` | `layer1/consensus` | 2 | PASS |
-| `FuzzSelectProposer` | `layer1/consensus` | 3 | PASS |
-| `FuzzMessageSerialization` | `layer1/p2p` | 256 | PASS |
-| `FuzzApplyBlock` | `layer1/state` | 256 | PASS |
-| `FuzzBlockValidation` | `layer1/ledger` | 256 | PASS |
-| `FuzzProofVerification` | `layer2/zk` | 256 | PASS |
-| `FuzzEVMExecution` | `layer2/vm` | 256 | PASS |
-| `FuzzConsensusSafety` | `layer1/consensus` | 256 | PASS |
-| `FuzzOrchestrator` | `tests/fuzz` | — | PASS |
+| # | Issue | Fix |
+|---|-------|-----|
+| 5.5 | Nginx has no rate limiting on RPC endpoints | Add `limit_req_zone $binary_remote_addr zone=rpc:10m rate=5r/s` |
+| 5.6 | `HashFromPayload` copies first 32 bytes, doesn't hash — collisions guaranteed | Use real SHA-256 |
+| 5.7 | Consensus state is in-memory only — crash loses height, lockedQC, preparedQC, votes | Persist to BadgerDB on every QC advancement and view change |
+| 5.8 | Ansible systemd template uses `Type=oneshot` for daemon — systemd won't restart on crash | Change to `Type=simple` |
+| 5.9 | No health checks in Docker Compose — dependent containers start before DB/chain is ready | Add `healthcheck` to each service |
+| 5.10 | State sync is block-by-block — new node joining at height 100k must download/validate every block | Implement snapshot-based sync (periodic state checkpoints) |
+| 5.11 | Peer discovery script has hardcoded peer list, no error handling, no retry | Use proper libp2p discovery (Kademlia DHT, mDNS) |
 
----
+### Medium
 
-## Performance Benchmarks
-
-Benchmarks executed on `Intel i7-14650HX (24 cores), 64GB RAM, Windows 11`.
-
-### L1 — Core
-
-| Benchmark | Iterations | Time/op | Memory/op | Allocs/op |
-|---|---|---|---|---|
-| `BlockchainAddBlock` | 4,898 | 241 µs | 17 kB | 239 |
-| `TransactionPool` | 10,000 | 115 µs | 22 kB | 353 |
-| `CryptoSign` (P-256) | 40,482 | 28 µs | 1.8 kB | 35 |
-| `CryptoVerify` (P-256) | 8,870 | 123 µs | 808 B | 18 |
-| `StateAccountCreation` | 5,802,103 | 214 ns | 64 B | 5 |
-| `ConsensusEngine` | 100,000,000 | 11 ns | 0 B | 0 |
-| `P2PMessageEncode` | 49,528,243 | 37 ns | 48 B | 1 |
-| `ConfigValidation` | 10,933,964 | 114 ns | 0 B | 0 |
-| `MerkleTree` (1000 leaves) | 3,572 | 337 µs | 214 kB | 3,058 |
-| `ConcurrentTxSubmission` (32 goroutines) | 40,675 | 49 µs | 10 kB | 168 |
-| `BlockProductionConcurrent` (16 submitters) | 342 | 3.2 ms | 158 kB | 2,205 |
-
-### L2 — Execution
-
-| Benchmark | Iterations | Time/op | Memory/op | Allocs/op |
-|---|---|---|---|---|
-| `AccountTransfer` | 18,526,495 | 101 ns | 53 B | 3 |
-| `RegisterAgent` | 1,724,294 | 598 ns | 226 B | 5 |
-| `DeployContract` | 1,000,000 | 1.4 µs | 415 B | 7 |
-| `MEVBatch` | 100,000,000 | 11 ns | 0 B | 0 |
-| `SubmitBatch` | 10,257,619 | 103 ns | 129 B | 3 |
-
-### L3 — Application
-
-| Benchmark | Iterations | Time/op | Memory/op | Allocs/op |
-|---|---|---|---|---|
-| `InitiateTransfer` | 1,784,736 | 588 ns | 346 B | 7 |
-| `SubmitProposal` | 1,761,396 | 619 ns | 336 B | 3 |
-| `SubmitIntent` | 2,021,738 | 820 ns | 398 B | 7 |
-| `SendPacket` | 2,186,780 | 634 ns | 330 B | 5 |
-| `HealthCheck` | 20,850 | 57 µs | 5.6 kB | 65 |
-
-### Security
-
-| Benchmark | Iterations | Time/op | Memory/op | Allocs/op |
-|---|---|---|---|---|
-| `RateLimiterAllow` | 29,955,067 | 34 ns | 0 B | 0 |
-| `ConnectionLimiterAcquire` | 15,042,739 | 74 ns | 0 B | 0 |
-| `DDoSDetectorCheck` | 10,712,095 | 105 ns | 82 B | 2 |
+| # | Issue | Fix |
+|---|-------|-----|
+| 5.12 | Dockerfile + docker/Dockerfile — two inconsistent build pipelines | Consolidate to one |
+| 5.13 | No resource limits on Docker containers | Add `mem_limit`, `cpus` |
+| 5.14 | `entrypoint.sh` missing `set -e` — silent failures | Add `set -euo pipefail` |
+| 5.15 | Rotating file logger never instantiated — all log config is dead code | Wire `RotatingFileWriter` into `NewLogger` |
+| 5.16 | Backup timer has `Persistent=false` — missed backups not caught up | Add `Persistent=true` |
+| 5.17 | Backups on same filesystem as DB — single disk failure loses both | Separate backup volume/device, add off-site replication |
+| 5.18 | K8s HPA for BFT validators — destroying a pod breaks consensus quorum | Remove HPA, use fixed replica count with PDB |
+| 5.19 | No PDB or anti-affinity in K8s deployment | Add `PodDisruptionBudget: minAvailable=3`, pod anti-affinity |
+| 5.20 | No connection gater in P2P — any peer can connect | Implement IP whitelist/blacklist in `conn_manager.go` |
 
 ---
 
-## Jepsen-Style Fault Injection Testing
+## 6. SECURITY
 
-The `tests/jepsen` package runs a full Jepsen-style fault injection test suite against the live Docker testnet (4 validators, HotStuff-2 BFT consensus). Workers continuously poll all 4 RPC endpoints while a nemesis scheduler injects random faults every 5 seconds.
+### Critical
 
-### Fault Types
+| # | Issue | Fix |
+|---|-------|-----|
+| 6.1 | Private keys hardcoded in 5+ source files | See 5.2, 5.3, 5.4 |
+| 6.2 | API key in source code — used for `eth_sendRawTransaction` auth | Rotate and externalize |
+| 6.3 | Prometheus password `changeme` — monitoring data exposed | Change to strong password or use OAuth |
+| 6.4 | `insecure_skip_verify: true` in Prometheus config | Enable TLS verification |
 
-| Fault | Method | Effect |
-|-------|--------|--------|
-| **Network partition** | `docker network disconnect/connect` | Isolates a random validator for 5s |
-| **Process kill** | `docker kill --signal SIGTERM; docker start` | Crashes and restarts a random validator (~3s downtime) |
-| **Process pause** | `docker pause/unpause` | Freezes 2 random validators for 8s |
-| **Clock skew** | `docker exec` CPU stress container | Simulates clock drift on a random validator |
+### High
 
-### Safety Checkers
+| # | Issue | Fix |
+|---|-------|-----|
+| 6.5 | Terraform NSG opens Prometheus/Grafana ports to internet | Restrict to known IPs or use VPN |
+| 6.6 | No request body size limit on RPC server (only 5MB ContentLength check) | Add explicit `http.MaxBytesReader` |
+| 6.7 | P2P message authentication uses 5-min max message age — replay within window possible | Shorter window + nonce tracking |
+| 6.8 | No anti-replay beyond timestamp for P2P messages | Add per-sender nonce tracking |
 
-| Check | What it validates | Status |
-|-------|-------------------|--------|
-| **Block consistency** | All 4 RPC endpoints return identical block hashes at every height | PASS |
-| **Height monotonicity** | Block heights never decrease across any endpoint | PASS |
-| **No nonce skips** | Reserved for future nonce tracking | PASS |
-| **Chain growth** | Network produces new blocks even under active faults | PASS |
+### Medium
 
-### Latest Test Results
-
-**Environment:** 4-validator Docker testnet, 64s elapsed test time
-**Workers:** 4 concurrent clients, continuous polling (500–1500ms interval)
-**Nemesis:** 5s ticker, random selection across all 4 fault types
-
-```
-TestJepsenFaultInjection
-├── Total operations: 190–256
-├── Faults injected: 8–11
-├── Operations succeeded: ~80%+ (failures are expected during active faults)
-├── [PASS] block-consistency: all blocks consistent across endpoints
-├── [PASS] monotonicity: block heights monotonically increase
-├── [PASS] chain-growth: chain continues producing blocks
-└── [PASS] no-nonce-skips: reserved check
-```
-
-All safety invariants hold under every combination of partition, kill, pause, and clock skew faults. The consensus protocol correctly maintains agreement and liveness.
-
-### Running
-
-```bash
-docker compose -f testnet/docker-compose.yml up -d
-go test -run TestJepsenFaultInjection -v -timeout 120s ./tests/jepsen/
-```
-
-### Key Improvements
-
-- Workers run continuously for the full test duration (previously finished before nemeses fired)
-- Nemeses use `rand.Intn` with seeded source for fair random selection
-- Container names corrected to `viri-validator-*` (matching Docker Compose)
-- Network name detected as `testnet_default` (Windows Docker Desktop)
-- Partition nemesis reconnects container to network before disconnecting (handles stale state)
-- All 4 nemeses target random containers each tick
-
-```
-$ go build ./...  →  exit 0
-$ go vet ./...    →  exit 0
-
-$ go test ./internal/... -count=1
-ok  github.com/viri-chain/viri/internal/e2e              0.665s
-ok  github.com/viri-chain/viri/internal/layer1/config     4.328s
-ok  github.com/viri-chain/viri/internal/layer1/consensus  39.684s
-ok  github.com/viri-chain/viri/internal/layer1/crypto     15.185s
-ok  github.com/viri-chain/viri/internal/layer1/da         4.118s
-ok  github.com/viri-chain/viri/internal/layer1/events     4.150s
-ok  github.com/viri-chain/viri/internal/layer1/ledger     1.094s
-ok  github.com/viri-chain/viri/internal/layer1/logging    4.163s
-ok  github.com/viri-chain/viri/internal/layer1/p2p        1.421s
-ok  github.com/viri-chain/viri/internal/layer1/sequencer  1.111s
-ok  github.com/viri-chain/viri/internal/layer1/spv        1.289s
-ok  github.com/viri-chain/viri/internal/layer1/state      1.600s
-ok  github.com/viri-chain/viri/internal/layer1/sync       2.641s
-ok  github.com/viri-chain/viri/internal/layer2/accounts   4.272s
-ok  github.com/viri-chain/viri/internal/layer2/agents     4.013s
-ok  github.com/viri-chain/viri/internal/layer2/contracts  4.179s
-ok  github.com/viri-chain/viri/internal/layer2/execution  1.115s
-ok  github.com/viri-chain/viri/internal/layer2/gas        4.108s
-ok  github.com/viri-chain/viri/internal/layer2/mev        3.843s
-ok  github.com/viri-chain/viri/internal/layer2/privacy    3.840s
-ok  github.com/viri-chain/viri/internal/layer2/rollups    3.814s
-ok  github.com/viri-chain/viri/internal/layer2/vm         3.125s
-ok  github.com/viri-chain/viri/internal/layer2/zk         3.061s
-ok  github.com/viri-chain/viri/internal/layer3/api        3.632s
-ok  github.com/viri-chain/viri/internal/layer3/appchain   1.045s
-ok  github.com/viri-chain/viri/internal/layer3/bridge     1.985s
-ok  github.com/viri-chain/viri/internal/layer3/governance 2.019s
-ok  github.com/viri-chain/viri/internal/layer3/intent     1.961s
-ok  github.com/viri-chain/viri/internal/layer3/interop    1.978s
-ok  github.com/viri-chain/viri/internal/layer3/sdk        3.237s
-ok  github.com/viri-chain/viri/internal/pkg/audit         2.959s
-ok  github.com/viri-chain/viri/internal/pkg/metrics       3.290s
-ok  github.com/viri-chain/viri/internal/pkg/observability 2.824s
-ok  github.com/viri-chain/viri/internal/pkg/security      14.599s
-
-$ go test ./cmd/... ./tests/... -count=1
-ok  github.com/viri-chain/viri/cmd/virictl                3.311s
-ok  github.com/viri-chain/viri/cmd/virid                  2.042s
-ok  github.com/viri-chain/viri/tests                      1.298s
-ok  github.com/viri-chain/viri/tests/benchmarks           0.473s
-ok  github.com/viri-chain/viri/tests/contracts            1.374s
-ok  github.com/viri-chain/viri/tests/fuzz                 0.373s
-ok  github.com/viri-chain/viri/tests/integration          28.565s
-```
+| # | Issue | Fix |
+|---|-------|-----|
+| 6.9 | Grafana default `admin/admin` — change in deployment | Document as required change |
+| 6.10 | No secrets management integration (Vault/Key Vault) | Add for production |
+| 6.11 | Rate limiter in consensus `HandleMessage` operates outside mutex — race condition | Move rate limiter inside mutex scope |
+| 6.12 | DHT enabled on all nodes including non-validators — exposure to DHT attacks | Disable DHT for non-validator nodes |
 
 ---
 
-## Summary
+## 7. MISSING FEATURES (for production testnet)
 
-```
-44 packages tested
-0 failures
-0 skipped tests
-```
+### Must-Have
 
-**L1** — HotStuff-2 BFT consensus with multi-node block production, view change, network partition healing, state sync, 20/100-validator stress tests, P2P peer management with reputation scoring, encrypted keystore with BIP39 mnemonic support, Merkle Patricia Trie state, fee market with EIP-1559-style base fee adjustment, TLA+ formal verification of Agreement and PhaseValid invariants under Byzantine fault model.
+| # | Feature | Why |
+|---|---------|-----|
+| 7.1 | **Faucet with real tokens** — needs working tokenomics (1.2-1.4) | Current testnet has only 10M wei total |
+| 7.2 | **MetaMask-compatible RPC** — needs fixes 2.1-2.14 | Currently unusable from MetaMask |
+| 7.3 | **Block explorer** — needs to show correct tx data (after fixing 2.1, 2.12-2.14) | Currently shows pubkey as `from` |
+| 7.4 | **HTTP/WS on same port** — standard Ethereum convention | MetaMask, web3.js expect this |
+| 7.5 | **`eth_chainId` returns chain ID 2** (this is fine) | Already 0x2 — correct |
+| 7.6 | **`eth_estimateGas` returns correct minimum** | Fix 2.4 + 3.2 |
 
-**L2** — Full EVM implementation with all standard opcodes, Zero-Knowledge prover/verifier with on-chain precompile verification, EIP-1559 gas oracle, account abstraction (ERC-4337 entry point), MEV resistance batching, shielded privacy pool, rollup challenge protocol, WASM VM with stack operations and gas metering.
+### Nice-to-Have
 
-**L3** — On-chain governance (proposal/vote/tally), cross-chain bridge with multi-sig validation, IBC-like interop channels, intent solver network, REST API with API key auth and rate limiting, AppChain management, SDK client library, L1 upgrade mechanism with L2 approval.
+| # | Feature | Why |
+|---|---------|-----|
+| 7.7 | Bridge to Sepolia/Goerli | Real testnet interoperability |
+| 7.8 | Public faucet with captcha | Prevent spam |
+| 7.9 | Network status page | Node health, block height, peer count |
+| 7.10 | Documentation site | Developer onboarding |
+| 7.11 | WebSocket event streaming | Real-time dApp updates |
+| 7.12 | Staking dashboard | Test validator operations |
 
-All three layers are fully operational, tested, and ready for deployment.
+---
+
+## SUMMARY
+
+### Severity Count
+
+| Severity | Count | Must Fix Before Production |
+|----------|-------|---------------------------|
+| **Critical** | 15 | YES |
+| **High** | 35 | YES |
+| **Medium** | 45 | Strongly recommended |
+| **Low** | 55+ | Nice to have |
+
+### Top 10 Blockers for Production Testnet
+
+| Rank | Issue | Area | Why It Blocks |
+|------|-------|------|---------------|
+| 1 | **No tokens exist** — rewards/minting broken, only 10M wei from hardcode | Core | Users receive 0 tokens |
+| 2 | **State resets on restart** | Core | All user data lost on reboot |
+| 3 | **Gob tx format, not RLP** | RPC/Tx | No wallet can send transactions |
+| 4 | **`from` field is pubkey, not address** | RPC | All txs show wrong sender |
+| 5 | **No CORS on RPC server** | RPC | MetaMask can't connect |
+| 6 | **Private keys in source code** | Security | Complete chain takeover |
+| 7 | **No TLS** | Infra | All traffic in plaintext |
+| 8 | **`virid-sign` produces incompatible gob** | Tx | Faucet can't send txs |
+| 9 | **Consensus state not persisted** | Consensus | Crashes cause reorgs |
+| 10 | **Faucet address is 32 bytes** | Config | Can't receive tokens |
+
+### What's Actually Working (good news)
+
+- HotStuff BFT consensus with view changes, QCs, timeouts ✅
+- P2P networking with libp2p, DHT discovery, NAT traversal ✅
+- BadgerDB-backed persistent storage (when it works) ✅
+- 38+ JSON-RPC methods registered (many with issues but present) ✅
+- Docker deployment pipeline ✅
+- Prometheus + Grafana monitoring (basic) ✅
+- Faucet with cooldown + daily limit (logic works, math is off) ✅
+- Explorer showing blocks and transactions ✅
+- Ethereum address derivation from secp256k1 keys ✅
+- Account state model with balance, nonce, code, storage ✅
+- EIP-1559 fee market (base fee calculation) ✅

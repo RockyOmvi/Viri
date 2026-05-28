@@ -1,0 +1,257 @@
+:root {
+  --bg: #0f1b1d;
+  --bg-soft: #142326;
+  --card: #1a2f33;
+  --accent: #f6b756;
+  --accent-2: #54d1c9;
+  --text: #e9f5f4;
+  --muted: #9bb7b3;
+  --line: rgba(255, 255, 255, 0.08);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "Sora", "Space Grotesk", system-ui, sans-serif;
+  background: radial-gradient(circle at top, #1b3834 0%, #0f1b1d 60%);
+  color: var(--text);
+  width: 360px;
+}
+
+.app {
+  padding: 16px;
+}
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.brand {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.logo {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, var(--accent) 0%, #ffe3a1 100%);
+  color: #2d1f00;
+  font-weight: 700;
+  display: grid;
+  place-items: center;
+  box-shadow: 0 6px 20px rgba(246, 183, 86, 0.35);
+}
+
+.title {
+  font-weight: 700;
+  font-size: 16px;
+}
+
+.subtitle {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.icon-button {
+  background: var(--card);
+  border: 1px solid var(--line);
+  color: var(--text);
+  border-radius: 10px;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.account {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 14px;
+  margin-bottom: 16px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+}
+
+.account-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.address {
+  margin-top: 6px;
+  font-size: 13px;
+  letter-spacing: 0.5px;
+}
+
+.balance {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: 12px 0 8px;
+}
+
+.balance-amount {
+  font-size: 28px;
+  font-weight: 700;
+}
+
+.balance-symbol {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.pill-row {
+  display: flex;
+  gap: 8px;
+}
+
+.pill {
+  padding: 4px 8px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.primary,
+.secondary {
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-weight: 600;
+  cursor: pointer;
+  border: none;
+}
+
+.primary {
+  background: linear-gradient(135deg, var(--accent) 0%, #ffd27a 100%);
+  color: #2d1f00;
+  flex: 1;
+}
+
+.secondary {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+  flex: 1;
+}
+
+.tabs {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.tab {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  border-radius: 10px;
+  padding: 6px 4px;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.tab.active {
+  background: rgba(246, 183, 86, 0.18);
+  color: var(--text);
+  border-color: rgba(246, 183, 86, 0.5);
+}
+
+.panel {
+  background: var(--bg-soft);
+  border-radius: 16px;
+  padding: 12px;
+  border: 1px solid var(--line);
+}
+
+.modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(5, 10, 12, 0.7);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  z-index: 20;
+}
+
+.modal.active {
+  display: flex;
+}
+
+.modal-content {
+  width: 100%;
+  background: var(--card);
+  border-radius: 16px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.tab-panel {
+  display: none;
+}
+
+.tab-panel.active {
+  display: block;
+}
+
+h2 {
+  margin: 0 0 12px;
+  font-size: 16px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  margin-bottom: 10px;
+  color: var(--muted);
+}
+
+input,
+textarea,
+select {
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: rgba(15, 27, 29, 0.7);
+  color: var(--text);
+  padding: 8px;
+  font-size: 12px;
+}
+
+textarea {
+  resize: vertical;
+}
+
+.full {
+  width: 100%;
+}
+
+.hint {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--muted);
+}

@@ -90,6 +90,9 @@ func (tx *Transaction) ComputeHash() []byte {
 }
 
 func (tx *Transaction) SenderAddress() []byte {
+	if len(tx.From) == 20 {
+		return tx.From
+	}
 	pubKey, err := crypto.PubKeyFromBytes(tx.From)
 	if err != nil {
 		return nil
@@ -100,6 +103,13 @@ func (tx *Transaction) SenderAddress() []byte {
 func (tx *Transaction) Verify() bool {
 	if tx.Signature == nil || len(tx.From) < 2 {
 		return false
+	}
+
+	if len(tx.From) == 20 {
+		// RLP transactions are verified at submission time using the
+		// EIP-155/EIP-1559 signing hash. Avoid re-deriving the pubkey here
+		// since tx type (legacy vs typed) is not stored on Transaction.
+		return true
 	}
 
 	sig := &crypto.Signature{

@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/viri-chain/viri/internal/layer2/agents"
+	"github.com/viri-chain/viri/internal/layer3/appchain"
 	"github.com/viri-chain/viri/internal/layer3/bridge"
 	"github.com/viri-chain/viri/internal/layer3/governance"
 	"github.com/viri-chain/viri/internal/layer3/intent"
@@ -22,7 +24,7 @@ func newTestServer() *L3APIServer {
 	br.RegisterValidator("v1")
 	ip := interop.NewInteropProtocol()
 	is := intent.NewIntentSolver()
-	return NewL3APIServer(0, gov, br, ip, is)
+	return NewL3APIServer(0, gov, br, ip, is, appchain.NewAppChainManager(), agents.NewAgentManager())
 }
 
 func TestStartStop(t *testing.T) {

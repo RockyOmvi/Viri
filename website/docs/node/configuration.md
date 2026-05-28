@@ -10,10 +10,10 @@ Node configuration is stored in JSON files.
     "id": "validator-0",
     "role": "validator",
     "data_dir": "/home/viri/.viri/data",
-    "listen_addr": "/ip4/0.0.0.0/tcp/4000",
+    "listen_addr": "0.0.0.0:30303",
     "rpc_addr": ":8545",
     "api_addr": ":8546",
-    "bootstrap_addrs": ["/ip4/.../tcp/4000/p2p/..."],
+    "bootstrap_addrs": ["/ip4/.../tcp/30303/p2p/..."],
     "peers": 3,
     "min_peers": 3
   },
@@ -23,7 +23,7 @@ Node configuration is stored in JSON files.
     "min_validators": 4
   },
   "storage": {
-    "backend": "leveldb",
+    "backend": "badger",
     "data_dir": "/home/viri/.viri/data"
   },
   "logging": {

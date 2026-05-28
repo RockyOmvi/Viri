@@ -6,7 +6,7 @@ import { useState } from 'react'
 import StatCard from '@/components/StatCard'
 import StatusBadge from '@/components/StatusBadge'
 import HashLink from '@/components/HashLink'
-import { useStatus, useRecentBlocks, useRecentTxs, search } from '@/lib/api'
+import { useStatus, useRecentBlocks, useRecentTxs, search, formatWei } from '@/lib/api'
 import type { Block, Tx } from '@/types'
 
 function timeAgo(ts: number): string {
@@ -19,9 +19,7 @@ function timeAgo(ts: number): string {
 }
 
 function formatValue(val: string): string {
-  const num = parseInt(val, 16)
-  if (isNaN(num)) return '0'
-  return (num / 1e18).toFixed(4)
+  return formatWei(val, 4)
 }
 
 export default function Dashboard() {

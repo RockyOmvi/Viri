@@ -1,6 +1,8 @@
 package appchain
 
 import (
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -31,6 +33,18 @@ type ValidatorConfig struct {
 	PubKey  []byte
 }
 
+func (v *ValidatorConfig) MarshalJSON() ([]byte, error) {
+	return json.Marshal(&struct {
+		Address string `json:"address"`
+		Stake   uint64 `json:"stake"`
+		PubKey  string `json:"pub_key"`
+	}{
+		Address: hex.EncodeToString(v.Address),
+		Stake:   v.Stake,
+		PubKey:  hex.EncodeToString(v.PubKey),
+	})
+}
+
 type AppChainConfig struct {
 	ChainID        string
 	Name           string
@@ -42,6 +56,32 @@ type AppChainConfig struct {
 	BlockTime      time.Duration
 	MaxValidators  int
 	CreatedAt      time.Time
+}
+
+func (c *AppChainConfig) MarshalJSON() ([]byte, error) {
+	return json.Marshal(&struct {
+		ChainID       string           `json:"chain_id"`
+		Name          string           `json:"name"`
+		Type          AppChainType     `json:"chain_type"`
+		Status        AppChainStatus   `json:"status"`
+		Owner         string           `json:"owner"`
+		Validators    []ValidatorConfig `json:"validators"`
+		GasLimit      uint64           `json:"gas_limit"`
+		BlockTimeNano int64            `json:"block_time_ns"`
+		MaxValidators int              `json:"max_validators"`
+		CreatedAt     time.Time        `json:"created_at"`
+	}{
+		ChainID:       c.ChainID,
+		Name:          c.Name,
+		Type:          c.Type,
+		Status:        c.Status,
+		Owner:         hex.EncodeToString(c.Owner),
+		Validators:    c.Validators,
+		GasLimit:      c.GasLimit,
+		BlockTimeNano: c.BlockTime.Nanoseconds(),
+		MaxValidators: c.MaxValidators,
+		CreatedAt:     c.CreatedAt,
+	})
 }
 
 type AppChainManager struct {

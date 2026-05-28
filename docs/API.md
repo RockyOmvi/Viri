@@ -590,17 +590,14 @@ Returns the current consensus state of the node.
 {
   "jsonrpc": "2.0",
   "result": {
-    "currentRound": "0x1a",
-    "currentStep": "prevote",
-    "height": "0x1b4",
-    "validators": [
-      {
-        "address": "0x...",
-        "votingPower": "0x1"
-      }
-    ],
-    "lockedValue": null,
-    "validValue": null
+    "height": 1234,
+    "view": 42,
+    "phase": 2,
+    "reward_pool": 1000000,
+    "epoch_start": 1000,
+    "last_finalized": 1230,
+    "validator_count": 4,
+    "total_stake": 4000000
   },
   "id": 1
 }

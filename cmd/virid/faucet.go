@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	"math/big"
 	"net/http"
 	"os"
 	"strconv"
@@ -32,6 +33,8 @@ type FaucetServer struct {
 	ipClaims    map[string]time.Time // ip -> last claim time
 	dailyTotal  uint64
 	dailyReset  time.Time
+	nextNonce   uint64
+	nonceInit   bool
 	server      *http.Server
 	tlsCert     string
 	tlsKey      string
@@ -114,11 +117,34 @@ func (f *FaucetServer) rpcCall(method string, params []interface{}) (interface{}
 }
 
 type ClaimResponse struct {
-	Success bool   `json:"success"`
-	TxHash  string `json:"tx_hash,omitempty"`
-	Amount  string `json:"amount,omitempty"`
-	Error   string `json:"error,omitempty"`
-	Wait    string `json:"wait,omitempty"`
+	Success    bool   `json:"success"`
+	TxHash     string `json:"tx_hash,omitempty"`
+	TokenTxHash string `json:"token_tx_hash,omitempty"`
+	Amount     string `json:"amount,omitempty"`
+	Error      string `json:"error,omitempty"`
+	Wait       string `json:"wait,omitempty"`
+}
+
+var erc20TokenAddr []byte
+
+func init() {
+	var err error
+	erc20TokenAddr, err = hex.DecodeString("00000000000000000000000000000000000000E0")
+	if err != nil {
+		panic("failed to decode ERC-20 token address: " + err.Error())
+	}
+}
+
+func pad32(data []byte) []byte {
+	b := make([]byte, 32)
+	copy(b[32-len(data):], data)
+	return b
+}
+
+func erc20TransferData(to []byte, amount *big.Int) []byte {
+	selector := []byte{0xa9, 0x05, 0x9c, 0xbb}
+	data := append(selector, pad32(to)...)
+	return append(data, pad32(amount.Bytes())...)
 }
 
 func (f *FaucetServer) handleClaim(w http.ResponseWriter, r *http.Request) {
@@ -221,25 +247,34 @@ func (f *FaucetServer) handleClaim(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Get nonce for the faucet wallet
-	faucetAddr := hex.EncodeToString(f.walletKey.PubKey().Address())
-	var nonce uint64
-	if result, err := f.rpcCall("eth_getTransactionCount", []interface{}{"0x" + faucetAddr, "latest"}); err != nil {
-		json.NewEncoder(w).Encode(ClaimResponse{Error: "Failed to get nonce: " + err.Error()})
-		return
-	} else {
-		nonceHex, ok := result.(string)
-		if !ok {
-			json.NewEncoder(w).Encode(ClaimResponse{Error: "Invalid nonce response"})
+	// Get nonce for the faucet wallet — use local counter with initial RPC fetch
+	f.mu.Lock()
+	if !f.nonceInit {
+		faucetAddr := hex.EncodeToString(f.walletKey.PubKey().Address())
+		if result, err := f.rpcCall("eth_getTransactionCount", []interface{}{"0x" + faucetAddr, "latest"}); err != nil {
+			f.mu.Unlock()
+			json.NewEncoder(w).Encode(ClaimResponse{Error: "Failed to get nonce: " + err.Error()})
 			return
+		} else {
+			nonceHex, ok := result.(string)
+			if !ok {
+				f.mu.Unlock()
+				json.NewEncoder(w).Encode(ClaimResponse{Error: "Invalid nonce response"})
+				return
+			}
+			if _, err := fmt.Sscanf(nonceHex, "0x%x", &f.nextNonce); err != nil {
+				f.mu.Unlock()
+				json.NewEncoder(w).Encode(ClaimResponse{Error: "Failed to parse nonce: " + err.Error()})
+				return
+			}
 		}
-		if _, err := fmt.Sscanf(nonceHex, "0x%x", &nonce); err != nil {
-			json.NewEncoder(w).Encode(ClaimResponse{Error: "Failed to parse nonce: " + err.Error()})
-			return
-		}
+		f.nonceInit = true
 	}
+	nonce := f.nextNonce
+	f.nextNonce++
+	f.mu.Unlock()
 
-	// Create and sign the faucet transaction
+	// Create and sign the native VIRI transfer
 	tx, err := ledger.NewTransactionFromKey(nonce, addrBytes, f.perClaim, 21000, 1, nil, uint64(1), f.walletKey)
 	if err != nil {
 		json.NewEncoder(w).Encode(ClaimResponse{Error: "Failed to create transaction: " + err.Error()})
@@ -252,7 +287,7 @@ func (f *FaucetServer) handleClaim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Submit via RPC
+	// Submit native transfer via RPC
 	result, err := f.rpcCall("eth_sendRawTransaction", []interface{}{"0x" + hex.EncodeToString(txBytes)})
 	if err != nil {
 		json.NewEncoder(w).Encode(ClaimResponse{Error: "Failed to send transaction: " + err.Error()})
@@ -261,15 +296,31 @@ func (f *FaucetServer) handleClaim(w http.ResponseWriter, r *http.Request) {
 
 	txHash := fmt.Sprintf("%v", result)
 
+	// Also send ERC-20 VIRI token transfer
+	tokenAmount := new(big.Int).SetUint64(f.perClaim)
+	transferData := erc20TransferData(addrBytes, tokenAmount)
+	tokenTx, err := ledger.NewTransactionFromKey(nonce+1, erc20TokenAddr, 0, 100000, 1, transferData, uint64(1), f.walletKey)
+	var tokenTxHash string
+	if err == nil {
+		tokenTxBytes, err := ledger.SerializeTransaction(tokenTx)
+		if err == nil {
+			result2, err := f.rpcCall("eth_sendRawTransaction", []interface{}{"0x" + hex.EncodeToString(tokenTxBytes)})
+			if err == nil {
+				tokenTxHash = fmt.Sprintf("%v", result2)
+			}
+		}
+	}
+
 	// Record the claim
 	f.claims[normalizedAddr] = time.Now()
 	f.ipClaims[clientIP] = time.Now()
 	f.dailyTotal += f.perClaim
 
 	json.NewEncoder(w).Encode(ClaimResponse{
-		Success: true,
-		TxHash:  txHash,
-		Amount:  fmt.Sprintf("%d", f.perClaim),
+		Success:     true,
+		TxHash:      txHash,
+		TokenTxHash: tokenTxHash,
+		Amount:      fmt.Sprintf("%d", f.perClaim),
 	})
 }
 
@@ -532,7 +583,11 @@ const faucetHTML = `<!DOCTYPE html>
       });
       var data = await resp.json();
       if (data.success) {
-        showResult('success', 'Tokens sent! TX: <a href="/tx/' + data.tx_hash + '">' + data.tx_hash + '</a>');
+        var msg = 'Tokens sent!<br>Native TX: <a href="/tx/' + data.tx_hash + '">' + data.tx_hash + '</a>';
+        if (data.token_tx_hash) {
+          msg += '<br>Token TX: <a href="/tx/' + data.token_tx_hash + '">' + data.token_tx_hash + '</a>';
+        }
+        showResult('success', msg);
       } else {
         var msg = data.error;
         if (data.wait) msg += ' (wait ' + data.wait + ')';

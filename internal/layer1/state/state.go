@@ -274,6 +274,32 @@ func (sm *StateManager) Close() error {
 	return sm.db.Close()
 }
 
+func (sm *StateManager) IsInitialized() bool {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	return sm.blockHeight > 0 || sm.totalSupply.Sign() > 0
+}
+
+func (sm *StateManager) MintTokens(address []byte, amount *big.Int) error {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	acct, err := sm.accountState.GetAccount(address)
+	if err != nil {
+		acct = NewAccount(address, AccountTypeNormal)
+	}
+	acct.Balance = new(big.Int).Add(acct.Balance, amount)
+	sm.totalSupply = new(big.Int).Add(sm.totalSupply, amount)
+	return sm.accountState.SetAccount(acct)
+}
+
+func (sm *StateManager) BurnTokens(amount *big.Int) error {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.totalSupply = new(big.Int).Sub(sm.totalSupply, amount)
+	return nil
+}
+
 func (sm *StateManager) loadState() error {
 	data, err := sm.db.Get([]byte("__state__"))
 	if err != nil {

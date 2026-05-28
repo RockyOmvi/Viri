@@ -10,6 +10,7 @@ import (
 	"math/big"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,33 +23,42 @@ import (
 	"github.com/viri-chain/viri/internal/layer1/state"
 	nodesync "github.com/viri-chain/viri/internal/layer1/sync"
 	"github.com/viri-chain/viri/internal/layer2/accounts"
+	"github.com/viri-chain/viri/internal/layer2/contracts"
 	"github.com/viri-chain/viri/internal/layer2/execution"
+	"github.com/viri-chain/viri/internal/layer2/mev"
+	"github.com/viri-chain/viri/internal/layer2/privacy"
+	"github.com/viri-chain/viri/internal/layer2/rollups"
 	"github.com/viri-chain/viri/internal/layer2/vm"
 	"github.com/viri-chain/viri/internal/pkg/observability"
 	"github.com/viri-chain/viri/internal/pkg/security"
 )
 
 type RPCServer struct {
-	mu         sync.Mutex
-	port       int
-	chainID    uint64
-	validator  bool
-	coinbase   []byte
-	blockchain *ledger.PersistentBlockchain
-	stateMgr   *state.StateManager
-	network    *p2p.ViriNetwork
-	engine     *consensus.HotStuffEngine
-	logger     *logging.Logger
-	server     *http.Server
-	methods    map[string]RPCHandler
-	tlsCert    string
-	tlsKey     string
-	apiKeyHash string
-	auditLog   *observability.AuditLogger
-	syncer     *nodesync.Syncer
-	filters    sync.Map
-	drainer    *security.ConnectionDrainer
-	entryPoint *accounts.EntryPoint
+	mu          sync.Mutex
+	port        int
+	chainID     uint64
+	validator   bool
+	coinbase    []byte
+	blockchain  *ledger.PersistentBlockchain
+	stateMgr    *state.StateManager
+	network     *p2p.ViriNetwork
+	engine      *consensus.HotStuffEngine
+	logger      *logging.Logger
+	server      *http.Server
+	methods     map[string]RPCHandler
+	tlsCert     string
+	tlsKey      string
+	apiKeyHash  string
+	auditLog    *observability.AuditLogger
+	syncer      *nodesync.Syncer
+	filters     sync.Map
+	drainer     *security.ConnectionDrainer
+	entryPoint  *accounts.EntryPoint
+	contractMgr *contracts.ContractManager
+	shieldedPool *privacy.ShieldedPool
+	mevState     *mev.MEVState
+	rollupChain  *rollups.RollupChain
+	userOpReceipts sync.Map
 }
 
 type RPCHandler func(ctx context.Context, params json.RawMessage) (interface{}, error)
@@ -92,25 +102,29 @@ type FilterLog struct {
 	TxIndex     string   `json:"transactionIndex"`
 }
 
-func NewRPCServer(port int, bc *ledger.PersistentBlockchain, sm *state.StateManager, net *p2p.ViriNetwork, engine *consensus.HotStuffEngine, log *logging.Logger, chainID uint64, validator bool, coinbase []byte, tlsCert, tlsKey, apiKeyHash string, auditLog *observability.AuditLogger, syncer *nodesync.Syncer, ep *accounts.EntryPoint) *RPCServer {
+func NewRPCServer(port int, bc *ledger.PersistentBlockchain, sm *state.StateManager, net *p2p.ViriNetwork, engine *consensus.HotStuffEngine, log *logging.Logger, chainID uint64, validator bool, coinbase []byte, tlsCert, tlsKey, apiKeyHash string, auditLog *observability.AuditLogger, syncer *nodesync.Syncer, ep *accounts.EntryPoint, cm *contracts.ContractManager, sp *privacy.ShieldedPool, ms *mev.MEVState, rc *rollups.RollupChain) *RPCServer {
 	s := &RPCServer{
-		port:       port,
-		chainID:    chainID,
-		validator:  validator,
-		coinbase:   coinbase,
-		blockchain: bc,
-		stateMgr:   sm,
-		network:    net,
-		engine:     engine,
-		logger:     log,
-		methods:    make(map[string]RPCHandler),
-		tlsCert:    tlsCert,
-		tlsKey:     tlsKey,
-		apiKeyHash: apiKeyHash,
-		auditLog:   auditLog,
-		syncer:     syncer,
-		drainer:    security.NewConnectionDrainer(30 * time.Second),
-		entryPoint: ep,
+		port:        port,
+		chainID:     chainID,
+		validator:   validator,
+		coinbase:    coinbase,
+		blockchain:  bc,
+		stateMgr:    sm,
+		network:     net,
+		engine:      engine,
+		logger:      log,
+		methods:     make(map[string]RPCHandler),
+		tlsCert:     tlsCert,
+		tlsKey:      tlsKey,
+		apiKeyHash:  apiKeyHash,
+		auditLog:    auditLog,
+		syncer:      syncer,
+		drainer:     security.NewConnectionDrainer(30 * time.Second),
+		entryPoint:  ep,
+		contractMgr: cm,
+		shieldedPool: sp,
+		mevState:     ms,
+		rollupChain:  rc,
 	}
 
 	s.registerMethods()
@@ -146,6 +160,8 @@ func (s *RPCServer) registerMethods() {
 	s.methods["eth_estimateGas"] = s.estimateGas
 	s.methods["eth_sendUserOperation"] = s.sendUserOperation
 	s.methods["eth_estimateUserOperationGas"] = s.estimateUserOperationGas
+	s.methods["eth_supportedEntryPoints"] = s.supportedEntryPoints
+	s.methods["eth_getUserOperationReceipt"] = s.getUserOperationReceipt
 	s.methods["eth_getCode"] = s.getCode
 	s.methods["eth_getStorageAt"] = s.getStorageAt
 	s.methods["debug_traceTransaction"] = s.traceTransaction
@@ -158,6 +174,29 @@ func (s *RPCServer) registerMethods() {
 	s.methods["eth_getTransactionByBlockNumberAndIndex"] = s.getTxByBlockNumberAndIndex
 	s.methods["eth_getUncleCountByBlockHash"] = s.getUncleCountByHash
 	s.methods["eth_getUncleCountByBlockNumber"] = s.getUncleCountByNumber
+
+	// L2 feature RPCs
+	s.methods["pvt_createNote"] = s.pvtCreateNote
+	s.methods["pvt_spendNote"] = s.pvtSpendNote
+	s.methods["pvt_getTotalShielded"] = s.pvtGetTotalShielded
+	s.methods["pvt_noteCount"] = s.pvtNoteCount
+	s.methods["pvt_hasCommitment"] = s.pvtHasCommitment
+	s.methods["pvt_hasNullifier"] = s.pvtHasNullifier
+
+	s.methods["mev_submitEncryptedTx"] = s.mevSubmitEncryptedTx
+	s.methods["mev_submitCommitment"] = s.mevSubmitCommitment
+	s.methods["mev_revealTransaction"] = s.mevRevealTransaction
+	s.methods["mev_submitPBSBid"] = s.mevSubmitPBSBid
+	s.methods["mev_getWinningBid"] = s.mevGetWinningBid
+	s.methods["mev_getMode"] = s.mevGetMode
+	s.methods["mev_getEncryptedTxCount"] = s.mevGetEncryptedTxCount
+
+	s.methods["rollup_submitBatch"] = s.rollupSubmitBatch
+	s.methods["rollup_getBatch"] = s.rollupGetBatch
+	s.methods["rollup_getPendingBatches"] = s.rollupGetPendingBatches
+	s.methods["rollup_confirmBatch"] = s.rollupConfirmBatch
+	s.methods["rollup_challengeBatch"] = s.rollupChallengeBatch
+	s.methods["rollup_batchCount"] = s.rollupBatchCount
 }
 
 func (s *RPCServer) Start() error {
@@ -184,14 +223,14 @@ func (s *RPCServer) Start() error {
 	connLimiter := security.NewConnectionLimiter(100, 25)
 
 	methodLimits := map[string]security.MethodLimit{
-		"eth_getBlockByNumber":  {RPS: 5.0, Burst: 10},
-		"eth_getBlockByHash":    {RPS: 5.0, Burst: 10},
-		"eth_getLogs":           {RPS: 2.0, Burst: 5},
-		"viri_getConsensusState": {RPS: 3.0, Burst: 6},
+		"eth_getBlockByNumber":           {RPS: 20.0, Burst: 50},
+		"eth_getBlockByHash":             {RPS: 10.0, Burst: 20},
+		"eth_getLogs":                    {RPS: 2.0, Burst: 5},
+		"viri_getConsensusState":         {RPS: 3.0, Burst: 6},
 	}
 	methodRateLimiter := security.NewMethodRateLimiter(20.0, 40, methodLimits)
 
-	slowQueryDetector := security.NewSlowQueryDetector(1*time.Minute, 30, 5*time.Minute)
+	slowQueryDetector := security.NewSlowQueryDetector(1*time.Minute, 600, 1*time.Minute)
 
 	baseHandler := observability.InstrumentHandler("rpc", mux, func() {
 		observability.SetChainStats("rpc", s.blockchain.Height(), s.network.PeerCount())
@@ -217,6 +256,9 @@ func (s *RPCServer) Start() error {
 	)
 
 	handler = security.DrainMiddleware(handler, s.drainer)
+
+	// CORS middleware
+	handler = s.corsMiddleware(handler)
 
 	s.server = &http.Server{
 		Addr:              fmt.Sprintf(":%d", s.port),
@@ -421,6 +463,11 @@ func (s *RPCServer) getBlockByNumber(ctx context.Context, params json.RawMessage
 		return nil, fmt.Errorf("block not found")
 	}
 
+	if len(args) > 1 {
+		if full, ok := args[1].(bool); ok && full {
+			return formatBlockWithTxs(block), nil
+		}
+	}
 	return formatBlock(block), nil
 }
 
@@ -532,13 +579,46 @@ func (s *RPCServer) sendRawTransaction(ctx context.Context, params json.RawMessa
 		return nil, fmt.Errorf("invalid transaction hex encoding")
 	}
 
+	// Try gob-deserialized transaction (native Viri format)
 	tx, err := ledger.DeserializeTransaction(txData)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode transaction: %w", err)
-	}
-
-	if !tx.Verify() {
-		return nil, fmt.Errorf("invalid transaction signature")
+		// Fallback: try RLP-encoded transaction (standard Ethereum format for MetaMask)
+		rlpTx, rlpErr := ledger.DecodeRLPTransaction(txData)
+		if rlpErr != nil {
+			return nil, fmt.Errorf("failed to decode transaction (gob: %v, rlp: %v)", err, rlpErr)
+		}
+		tx, rlpErr = rlpTx.ToTransaction()
+		if rlpErr != nil {
+			return nil, fmt.Errorf("failed to process RLP transaction: %w", rlpErr)
+		}
+		// Verify the RLP transaction by checking the recovered pubkey against the signature
+		// using the EIP-155 signing hash (the payload MetaMask actually signed)
+		sig := &crypto.Signature{
+			R: new(big.Int).SetBytes(rlpTx.R),
+			S: new(big.Int).SetBytes(rlpTx.S),
+		}
+		signingHash := rlpTx.SigningHash()
+		pubKeyBytes, pubErr := rlpTx.RecoverPubKey()
+		if pubErr != nil {
+			return nil, fmt.Errorf("invalid recovered pubkey: %w", pubErr)
+		}
+		if s.logger != nil {
+			pubKeyObj, err := crypto.PubKeyFromBytes(pubKeyBytes)
+			if err == nil {
+				s.logger.Info(fmt.Sprintf("RLP tx sender recovered: %x", pubKeyObj.Address()))
+			}
+		}
+		pubKey, pubErr := crypto.PubKeyFromBytes(pubKeyBytes)
+		if pubErr != nil {
+			return nil, fmt.Errorf("invalid recovered pubkey: %w", pubErr)
+		}
+		if !pubKey.VerifyHash(signingHash, sig) {
+			return nil, fmt.Errorf("invalid transaction signature")
+		}
+	} else {
+		if !tx.Verify() {
+			return nil, fmt.Errorf("invalid transaction signature")
+		}
 	}
 
 	txPool := s.blockchain.TxPool()
@@ -697,7 +777,7 @@ func (s *RPCServer) getTransactionByHash(ctx context.Context, params json.RawMes
 			return map[string]interface{}{
 				"hash":      fmt.Sprintf("0x%x", tx.Hash),
 				"nonce":     fmt.Sprintf("0x%x", tx.Nonce),
-				"from":      fmt.Sprintf("0x%x", tx.From),
+				"from":      fmt.Sprintf("0x%x", tx.SenderAddress()),
 				"to":        fmt.Sprintf("0x%x", tx.To),
 				"value":     fmt.Sprintf("0x%x", tx.Value),
 				"gas":       fmt.Sprintf("0x%x", tx.GasLimit),
@@ -716,7 +796,7 @@ func (s *RPCServer) getTransactionByHash(ctx context.Context, params json.RawMes
 			return map[string]interface{}{
 				"hash":             fmt.Sprintf("0x%x", tx.Hash),
 				"nonce":            fmt.Sprintf("0x%x", tx.Nonce),
-				"from":             fmt.Sprintf("0x%x", tx.From),
+				"from":             fmt.Sprintf("0x%x", tx.SenderAddress()),
 				"to":               fmt.Sprintf("0x%x", tx.To),
 				"value":            fmt.Sprintf("0x%x", tx.Value),
 				"gas":              fmt.Sprintf("0x%x", tx.GasLimit),
@@ -1178,6 +1258,17 @@ func (s *RPCServer) call(ctx context.Context, params json.RawMessage) (interface
 		}
 	}
 
+	// Check standard contracts (ERC20, ERC721, etc.)
+	if s.contractMgr != nil {
+		if sc := s.contractMgr.GetStandardContract(to); sc != nil {
+			output, err := sc.ExecuteCall(from, data)
+			if err != nil {
+				return "0x", nil
+			}
+			return fmt.Sprintf("0x%x", output), nil
+		}
+	}
+
 	acct, err := s.stateMgr.GetAccount(to)
 	if err != nil || len(acct.Code) == 0 {
 		return "0x", nil
@@ -1239,7 +1330,7 @@ func (s *RPCServer) estimateGas(ctx context.Context, params json.RawMessage) (in
 	}
 	callData := args[0]
 
-	gas := uint64(21000)
+	gas := uint64(26000)
 	if v, ok := callData["data"]; ok {
 		dataStr := v.(string)
 		if len(dataStr) >= 2 && dataStr[:2] == "0x" {
@@ -1404,7 +1495,7 @@ func formatTx(tx *ledger.Transaction, blockHash []byte, height uint64, txIdx int
 		"blockHash":        fmt.Sprintf("0x%x", blockHash),
 		"blockNumber":      fmt.Sprintf("0x%x", height),
 		"transactionIndex": fmt.Sprintf("0x%x", txIdx),
-		"from":             fmt.Sprintf("0x%x", tx.From),
+		"from":             fmt.Sprintf("0x%x", tx.SenderAddress()),
 		"to":               fmt.Sprintf("0x%x", tx.To),
 		"value":            fmt.Sprintf("0x%x", tx.Value),
 		"gas":              fmt.Sprintf("0x%x", tx.GasLimit),
@@ -1424,138 +1515,12 @@ func formatBlockWithTxs(block *ledger.Block) map[string]interface{} {
 		"number":       fmt.Sprintf("0x%x", block.Header.Height),
 		"hash":         fmt.Sprintf("0x%x", blockHash),
 		"parentHash":   fmt.Sprintf("0x%x", block.Header.PrevHash),
-		"timestamp":    block.Header.Timestamp.Unix(),
+		"timestamp":    fmt.Sprintf("0x%x", block.Header.Timestamp.Unix()),
 		"proposer":     fmt.Sprintf("0x%x", block.Header.Proposer),
+		"miner":        fmt.Sprintf("0x%x", block.Header.Proposer),
+		"gasUsed":      "0x0",
 		"transactions": txs,
 	}
-}
-
-func (s *RPCServer) getProtocolVersion(ctx context.Context, params json.RawMessage) (interface{}, error) {
-	return "0x41", nil
-}
-
-func (s *RPCServer) getHashrate(ctx context.Context, params json.RawMessage) (interface{}, error) {
-	return "0x0", nil
-}
-
-func (s *RPCServer) getMining(ctx context.Context, params json.RawMessage) (interface{}, error) {
-	return false, nil
-}
-
-func (s *RPCServer) getBlockTxCountByHash(ctx context.Context, params json.RawMessage) (interface{}, error) {
-	var args []string
-	if err := json.Unmarshal(params, &args); err != nil || len(args) == 0 {
-		return nil, fmt.Errorf("invalid params")
-	}
-	block, err := s.blockchain.GetBlockByHash(args[0])
-	if err != nil {
-		return nil, fmt.Errorf("block not found")
-	}
-	return fmt.Sprintf("0x%x", len(block.Transactions)), nil
-}
-
-func (s *RPCServer) getBlockTxCountByNumber(ctx context.Context, params json.RawMessage) (interface{}, error) {
-	var args []interface{}
-	if err := json.Unmarshal(params, &args); err != nil || len(args) == 0 {
-		return nil, fmt.Errorf("invalid params")
-	}
-
-	var height uint64
-	switch v := args[0].(type) {
-	case string:
-		if v == "latest" || v == "pending" {
-			height = s.blockchain.Height()
-		} else {
-			fmt.Sscanf(v, "0x%x", &height)
-		}
-	case float64:
-		height = uint64(v)
-	}
-
-	block, err := s.blockchain.GetBlock(height)
-	if err != nil {
-		return nil, fmt.Errorf("block not found")
-	}
-	return fmt.Sprintf("0x%x", len(block.Transactions)), nil
-}
-
-func (s *RPCServer) getTxByBlockHashAndIndex(ctx context.Context, params json.RawMessage) (interface{}, error) {
-	var args []interface{}
-	if err := json.Unmarshal(params, &args); err != nil || len(args) < 2 {
-		return nil, fmt.Errorf("invalid params")
-	}
-	blockHashStr, ok := args[0].(string)
-	if !ok {
-		return nil, fmt.Errorf("invalid block hash")
-	}
-	block, err := s.blockchain.GetBlockByHash(blockHashStr)
-	if err != nil {
-		return nil, fmt.Errorf("block not found")
-	}
-
-	var idx uint64
-	switch v := args[1].(type) {
-	case string:
-		fmt.Sscanf(v, "0x%x", &idx)
-	case float64:
-		idx = uint64(v)
-	}
-
-	if idx >= uint64(len(block.Transactions)) {
-		return nil, fmt.Errorf("tx index out of range")
-	}
-
-	tx := block.Transactions[idx]
-	blockHash := block.Hash()
-	return formatTx(tx, blockHash, block.Header.Height, int(idx)), nil
-}
-
-func (s *RPCServer) getTxByBlockNumberAndIndex(ctx context.Context, params json.RawMessage) (interface{}, error) {
-	var args []interface{}
-	if err := json.Unmarshal(params, &args); err != nil || len(args) < 2 {
-		return nil, fmt.Errorf("invalid params")
-	}
-
-	var height uint64
-	switch v := args[0].(type) {
-	case string:
-		if v == "latest" || v == "pending" {
-			height = s.blockchain.Height()
-		} else {
-			fmt.Sscanf(v, "0x%x", &height)
-		}
-	case float64:
-		height = uint64(v)
-	}
-
-	block, err := s.blockchain.GetBlock(height)
-	if err != nil {
-		return nil, fmt.Errorf("block not found")
-	}
-
-	var idx uint64
-	switch v := args[1].(type) {
-	case string:
-		fmt.Sscanf(v, "0x%x", &idx)
-	case float64:
-		idx = uint64(v)
-	}
-
-	if idx >= uint64(len(block.Transactions)) {
-		return nil, fmt.Errorf("tx index out of range")
-	}
-
-	tx := block.Transactions[idx]
-	blockHash := block.Hash()
-	return formatTx(tx, blockHash, block.Header.Height, int(idx)), nil
-}
-
-func (s *RPCServer) getUncleCountByHash(ctx context.Context, params json.RawMessage) (interface{}, error) {
-	return "0x0", nil
-}
-
-func (s *RPCServer) getUncleCountByNumber(ctx context.Context, params json.RawMessage) (interface{}, error) {
-	return "0x0", nil
 }
 
 func formatBlock(block *ledger.Block) map[string]interface{} {
@@ -1568,7 +1533,7 @@ func formatBlock(block *ledger.Block) map[string]interface{} {
 		"number":       fmt.Sprintf("0x%x", block.Header.Height),
 		"hash":         fmt.Sprintf("0x%x", block.Hash()),
 		"parentHash":   fmt.Sprintf("0x%x", block.Header.PrevHash),
-		"timestamp":    block.Header.Timestamp.Unix(),
+		"timestamp":    fmt.Sprintf("0x%x", block.Header.Timestamp.Unix()),
 		"proposer":     fmt.Sprintf("0x%x", block.Header.Proposer),
 		"transactions": txs,
 	}
@@ -1602,12 +1567,17 @@ func (s *RPCServer) sendUserOperation(ctx context.Context, params json.RawMessag
 
 	userOpHash := fmt.Sprintf("0x%x", accounts.UserOpHash(op, s.entryPoint.Address(), s.chainID))
 
-	return map[string]interface{}{
+	receipt := map[string]interface{}{
 		"userOpHash": userOpHash,
 		"success":    result[0].Success,
 		"gasUsed":    fmt.Sprintf("0x%x", result[0].GasUsed),
 		"returnData": fmt.Sprintf("0x%x", result[0].ReturnData),
-	}, nil
+		"blockNumber": nil,
+		"txHash":      nil,
+	}
+	s.userOpReceipts.Store(userOpHash, receipt)
+
+	return receipt, nil
 }
 
 func (s *RPCServer) estimateUserOperationGas(ctx context.Context, params json.RawMessage) (interface{}, error) {
@@ -1643,6 +1613,25 @@ func (s *RPCServer) estimateUserOperationGas(ctx context.Context, params json.Ra
 		"maxPriorityFeePerGas": fmt.Sprintf("0x%x", op.MaxPriorityFee),
 		"preVerificationGas":   "0x5208",
 	}, nil
+}
+
+func (s *RPCServer) supportedEntryPoints(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	if s.entryPoint == nil {
+		return []string{}, nil
+	}
+	return []string{"0x" + hex.EncodeToString(s.entryPoint.Address())}, nil
+}
+
+func (s *RPCServer) getUserOperationReceipt(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	var rawArgs []string
+	if err := json.Unmarshal(params, &rawArgs); err != nil || len(rawArgs) == 0 {
+		return nil, fmt.Errorf("invalid params")
+	}
+
+	if receipt, ok := s.userOpReceipts.Load(rawArgs[0]); ok {
+		return receipt, nil
+	}
+	return nil, nil
 }
 
 // parseUserOpFromMap parses a UserOperation from a JSON-RPC parameter map.
@@ -1767,4 +1756,405 @@ func (s *evmCallStateAdapter) CreateAccount(addr []byte) {
 		Storage: make(map[string][]byte),
 	}
 	s.setAccount(addr, acct)
+}
+
+// Stub: eth_protocolVersion
+func (s *RPCServer) getProtocolVersion(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	return "0x41", nil
+}
+
+// Stub: eth_hashrate
+func (s *RPCServer) getHashrate(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	return "0x0", nil
+}
+
+// Stub: eth_mining
+func (s *RPCServer) getMining(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	return false, nil
+}
+
+// Stub: eth_getBlockTransactionCountByHash
+func (s *RPCServer) getBlockTxCountByHash(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	var args []string
+	if err := json.Unmarshal(params, &args); err != nil || len(args) == 0 {
+		return nil, fmt.Errorf("invalid params")
+	}
+	block, err := s.blockchain.GetBlockByHash(args[0])
+	if err != nil {
+		return nil, err
+	}
+	return fmt.Sprintf("0x%x", len(block.Transactions)), nil
+}
+
+// Stub: eth_getBlockTransactionCountByNumber
+func (s *RPCServer) getBlockTxCountByNumber(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	var args []string
+	if err := json.Unmarshal(params, &args); err != nil || len(args) == 0 {
+		return nil, fmt.Errorf("invalid params")
+	}
+	var height uint64
+	if args[0] == "latest" || args[0] == "pending" {
+		height = s.blockchain.Height()
+	} else {
+		height, _ = strconv.ParseUint(strings.TrimPrefix(args[0], "0x"), 16, 64)
+	}
+	block, err := s.blockchain.GetBlock(height)
+	if err != nil {
+		return nil, err
+	}
+	return fmt.Sprintf("0x%x", len(block.Transactions)), nil
+}
+
+// Stub: eth_getTransactionByBlockHashAndIndex
+func (s *RPCServer) getTxByBlockHashAndIndex(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	var args []string
+	if err := json.Unmarshal(params, &args); err != nil || len(args) < 2 {
+		return nil, fmt.Errorf("invalid params")
+	}
+	block, err := s.blockchain.GetBlockByHash(args[0])
+	if err != nil {
+		return nil, err
+	}
+	idx, _ := strconv.ParseUint(strings.TrimPrefix(args[1], "0x"), 16, 64)
+	if idx >= uint64(len(block.Transactions)) {
+		return nil, fmt.Errorf("tx index out of range")
+	}
+	return formatTx(block.Transactions[idx], block.Hash(), block.Header.Height, int(idx)), nil
+}
+
+// Stub: eth_getTransactionByBlockNumberAndIndex
+func (s *RPCServer) getTxByBlockNumberAndIndex(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	var args []string
+	if err := json.Unmarshal(params, &args); err != nil || len(args) < 2 {
+		return nil, fmt.Errorf("invalid params")
+	}
+	var height uint64
+	if args[0] == "latest" || args[0] == "pending" {
+		height = s.blockchain.Height()
+	} else {
+		height, _ = strconv.ParseUint(strings.TrimPrefix(args[0], "0x"), 16, 64)
+	}
+	block, err := s.blockchain.GetBlock(height)
+	if err != nil {
+		return nil, err
+	}
+	idx, _ := strconv.ParseUint(strings.TrimPrefix(args[1], "0x"), 16, 64)
+	if idx >= uint64(len(block.Transactions)) {
+		return nil, fmt.Errorf("tx index out of range")
+	}
+	return formatTx(block.Transactions[idx], block.Hash(), block.Header.Height, int(idx)), nil
+}
+
+// Stub: eth_getUncleCountByBlockHash
+func (s *RPCServer) getUncleCountByHash(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	return "0x0", nil
+}
+
+// Stub: eth_getUncleCountByBlockNumber
+func (s *RPCServer) getUncleCountByNumber(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	return "0x0", nil
+}
+
+// ── ZK Privacy Pool RPC ──────────────────────────────────────────────────────
+
+func (s *RPCServer) pvtCreateNote(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	var req struct {
+		Value      uint64 `json:"value"`
+		Owner      string `json:"owner"`
+		Randomness string `json:"randomness"`
+	}
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	owner, err := hex.DecodeString(strings.TrimPrefix(req.Owner, "0x"))
+	if err != nil {
+		return nil, fmt.Errorf("invalid owner hex")
+	}
+	randomness, err := hex.DecodeString(strings.TrimPrefix(req.Randomness, "0x"))
+	if err != nil {
+		return nil, fmt.Errorf("invalid randomness hex")
+	}
+	note, err := s.shieldedPool.CreateNote(req.Value, owner, randomness)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]interface{}{
+		"nullifier":  "0x" + hex.EncodeToString(note.Nullifier),
+		"commitment": "0x" + hex.EncodeToString(note.Commitment),
+		"value":      note.Value,
+		"owner_hash": "0x" + hex.EncodeToString(note.OwnerHash),
+	}, nil
+}
+
+func (s *RPCServer) pvtSpendNote(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	var req struct {
+		Nullifier string `json:"nullifier"`
+	}
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	nullifier, err := hex.DecodeString(strings.TrimPrefix(req.Nullifier, "0x"))
+	if err != nil {
+		return nil, fmt.Errorf("invalid nullifier hex")
+	}
+	value, err := s.shieldedPool.SpendNote(nullifier)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]interface{}{"value": value}, nil
+}
+
+func (s *RPCServer) pvtGetTotalShielded(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	return map[string]interface{}{"total_shielded": s.shieldedPool.TotalShielded()}, nil
+}
+
+func (s *RPCServer) pvtNoteCount(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	return map[string]interface{}{"count": s.shieldedPool.NoteCount()}, nil
+}
+
+func (s *RPCServer) pvtHasCommitment(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	var req struct {
+		Commitment string `json:"commitment"`
+	}
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	commitment, err := hex.DecodeString(strings.TrimPrefix(req.Commitment, "0x"))
+	if err != nil {
+		return nil, fmt.Errorf("invalid commitment hex")
+	}
+	return map[string]interface{}{"exists": s.shieldedPool.HasCommitment(commitment)}, nil
+}
+
+func (s *RPCServer) pvtHasNullifier(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	var req struct {
+		Nullifier string `json:"nullifier"`
+	}
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	nullifier, err := hex.DecodeString(strings.TrimPrefix(req.Nullifier, "0x"))
+	if err != nil {
+		return nil, fmt.Errorf("invalid nullifier hex")
+	}
+	return map[string]interface{}{"exists": s.shieldedPool.HasNullifier(nullifier)}, nil
+}
+
+// ── MEV Resistance RPC ─────────────────────────────────────────────────────────
+
+func (s *RPCServer) mevSubmitEncryptedTx(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	var req struct {
+		ID        string `json:"id"`
+		Encrypted string `json:"encrypted"`
+		Sender    string `json:"sender"`
+		Nonce     uint64 `json:"nonce"`
+	}
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	id, _ := hex.DecodeString(strings.TrimPrefix(req.ID, "0x"))
+	encrypted, _ := hex.DecodeString(strings.TrimPrefix(req.Encrypted, "0x"))
+	sender, _ := hex.DecodeString(strings.TrimPrefix(req.Sender, "0x"))
+	tx := &mev.EncryptedTx{
+		ID:        id,
+		Encrypted: encrypted,
+		Sender:    sender,
+		Nonce:     req.Nonce,
+	}
+	if err := s.mevState.SubmitEncryptedTx(tx); err != nil {
+		return nil, err
+	}
+	return map[string]interface{}{"success": true}, nil
+}
+
+func (s *RPCServer) mevSubmitCommitment(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	var req struct {
+		Sender     string `json:"sender"`
+		Commitment string `json:"commitment"`
+		Nonce      uint64 `json:"nonce"`
+	}
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	sender, _ := hex.DecodeString(strings.TrimPrefix(req.Sender, "0x"))
+	commitment, _ := hex.DecodeString(strings.TrimPrefix(req.Commitment, "0x"))
+	if err := s.mevState.SubmitCommitment(sender, commitment, req.Nonce); err != nil {
+		return nil, err
+	}
+	return map[string]interface{}{"success": true}, nil
+}
+
+func (s *RPCServer) mevRevealTransaction(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	var req struct {
+		Sender string `json:"sender"`
+		Nonce  uint64 `json:"nonce"`
+		Data   string `json:"data"`
+	}
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	sender, _ := hex.DecodeString(strings.TrimPrefix(req.Sender, "0x"))
+	data, _ := hex.DecodeString(strings.TrimPrefix(req.Data, "0x"))
+	if err := s.mevState.RevealTransaction(sender, req.Nonce, data); err != nil {
+		return nil, err
+	}
+	return map[string]interface{}{"success": true}, nil
+}
+
+func (s *RPCServer) mevSubmitPBSBid(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	var req struct {
+		BlockBuilder string `json:"block_builder"`
+		BidAmount    string `json:"bid_amount"`
+	}
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	bidAmount := new(big.Int)
+	bidAmount.SetString(strings.TrimPrefix(req.BidAmount, "0x"), 16)
+	blockBuilder, _ := hex.DecodeString(strings.TrimPrefix(req.BlockBuilder, "0x"))
+	bid := &mev.PBSBid{
+		BlockBuilder: blockBuilder,
+		BidAmount:    bidAmount,
+	}
+	if err := s.mevState.SubmitPBSBid(bid); err != nil {
+		return nil, err
+	}
+	return map[string]interface{}{"success": true}, nil
+}
+
+func (s *RPCServer) mevGetWinningBid(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	bid := s.mevState.GetWinningBid()
+	if bid == nil {
+		return nil, nil
+	}
+	return map[string]interface{}{
+		"block_builder": "0x" + hex.EncodeToString(bid.BlockBuilder),
+		"bid_amount":    bid.BidAmount.String(),
+	}, nil
+}
+
+func (s *RPCServer) mevGetMode(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	return map[string]interface{}{"mode": string(s.mevState.GetMode())}, nil
+}
+
+func (s *RPCServer) mevGetEncryptedTxCount(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	return map[string]interface{}{"count": s.mevState.GetEncryptedTxCount()}, nil
+}
+
+// ── Rollups RPC ─────────────────────────────────────────────────────────────────
+
+func (s *RPCServer) rollupSubmitBatch(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	var req struct {
+		Data      string `json:"data"`
+		Submitter string `json:"submitter"`
+	}
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	data, _ := hex.DecodeString(strings.TrimPrefix(req.Data, "0x"))
+	submitter, _ := hex.DecodeString(strings.TrimPrefix(req.Submitter, "0x"))
+	batch, err := s.rollupChain.SubmitBatch(data, submitter, uint64(time.Now().Unix()))
+	if err != nil {
+		return nil, err
+	}
+	return map[string]interface{}{
+		"sequence_number": batch.SequenceNumber,
+		"status":          batchStatusString(batch.Status),
+	}, nil
+}
+
+func (s *RPCServer) rollupGetBatch(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	var req struct {
+		SequenceNumber uint64 `json:"sequence_number"`
+	}
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	batch, err := s.rollupChain.GetBatch(req.SequenceNumber)
+	if err != nil {
+		return nil, err
+	}
+	return formatBatch(batch), nil
+}
+
+func (s *RPCServer) rollupGetPendingBatches(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	batches := s.rollupChain.GetPendingBatches()
+	result := make([]map[string]interface{}, len(batches))
+	for i, b := range batches {
+		result[i] = formatBatch(b)
+	}
+	return result, nil
+}
+
+func (s *RPCServer) rollupConfirmBatch(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	var req struct {
+		SequenceNumber uint64 `json:"sequence_number"`
+	}
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	if err := s.rollupChain.ConfirmBatch(req.SequenceNumber); err != nil {
+		return nil, err
+	}
+	return map[string]interface{}{"success": true}, nil
+}
+
+func (s *RPCServer) rollupChallengeBatch(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	var req struct {
+		SequenceNumber uint64 `json:"sequence_number"`
+	}
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	if err := s.rollupChain.ChallengeBatch(req.SequenceNumber); err != nil {
+		return nil, err
+	}
+	return map[string]interface{}{"success": true}, nil
+}
+
+func (s *RPCServer) rollupBatchCount(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	return map[string]interface{}{"count": s.rollupChain.BatchCount()}, nil
+}
+
+func batchStatusString(s rollups.BatchStatus) string {
+	switch s {
+	case rollups.BatchStatusPending:
+		return "pending"
+	case rollups.BatchStatusSubmitted:
+		return "submitted"
+	case rollups.BatchStatusConfirmed:
+		return "confirmed"
+	case rollups.BatchStatusChallenged:
+		return "challenged"
+	default:
+		return "unknown"
+	}
+}
+
+func formatBatch(b *rollups.Batch) map[string]interface{} {
+	return map[string]interface{}{
+		"sequence_number": b.SequenceNumber,
+		"data":            "0x" + hex.EncodeToString(b.Data),
+		"submitter":       "0x" + hex.EncodeToString(b.Submitter),
+		"timestamp":       b.Timestamp,
+		"status":          batchStatusString(b.Status),
+	}
+}
+
+func (s *RPCServer) corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin == "" {
+			origin = "*"
+		}
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-API-Key, Authorization")
+
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }

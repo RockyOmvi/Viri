@@ -1,12 +1,15 @@
 package api
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"sync"
 	"time"
 
+	"github.com/viri-chain/viri/internal/layer2/agents"
+	"github.com/viri-chain/viri/internal/layer3/appchain"
 	"github.com/viri-chain/viri/internal/layer3/bridge"
 	"github.com/viri-chain/viri/internal/layer3/governance"
 	"github.com/viri-chain/viri/internal/layer3/intent"
@@ -65,18 +68,22 @@ type L3APIServer struct {
 	bridge     *bridge.ChainBridge
 	interop    *interop.InteropProtocol
 	intent     *intent.IntentSolver
+	appchain   *appchain.AppChainManager
+	agents     *agents.AgentManager
 	server     *http.Server
 	apiKeys    map[string]bool
 	rateLimiter   *rateLimiter
 }
 
-func NewL3APIServer(port int, gov *governance.GovernanceDAO, br *bridge.ChainBridge, ip *interop.InteropProtocol, is *intent.IntentSolver) *L3APIServer {
+func NewL3APIServer(port int, gov *governance.GovernanceDAO, br *bridge.ChainBridge, ip *interop.InteropProtocol, is *intent.IntentSolver, ac *appchain.AppChainManager, am *agents.AgentManager) *L3APIServer {
 	return &L3APIServer{
 		port:        port,
 		governance:  gov,
 		bridge:      br,
 		interop:     ip,
 		intent:      is,
+		appchain:    ac,
+		agents:      am,
 		apiKeys:     make(map[string]bool),
 		rateLimiter: newRateLimiter(10, 20),
 	}
@@ -89,10 +96,12 @@ func (s *L3APIServer) Start() error {
 	mux.HandleFunc("/api/v3/governance/vote", s.handleVote)
 	mux.HandleFunc("/api/v3/bridge/transfers", s.handleTransfers)
 	mux.HandleFunc("/api/v3/bridge/validate", s.handleValidateTransfer)
-	mux.HandleFunc("/api/v3/interop/channels", s.handleChannels)
-	mux.HandleFunc("/api/v3/interop/packets", s.handlePackets)
+	mux.HandleFunc("/api/v3/interop/channels", s.handleInteropChannels)
+	mux.HandleFunc("/api/v3/interop/packets", s.handleInteropPackets)
 	mux.HandleFunc("/api/v3/intents", s.handleIntents)
 	mux.HandleFunc("/api/v3/intents/solve", s.handleSolveIntent)
+	mux.HandleFunc("/api/v3/appchains", s.handleAppChains)
+	mux.HandleFunc("/api/v3/agents", s.handleAgents)
 	mux.HandleFunc("/api/v3/health", s.handleHealth)
 
 	s.server = &http.Server{
@@ -449,6 +458,166 @@ func (s *L3APIServer) handleSolveIntent(w http.ResponseWriter, r *http.Request) 
 	}
 
 	s.sendJSON(w, http.StatusOK, result)
+}
+
+func (s *L3APIServer) handleAppChains(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		owner := r.URL.Query().Get("owner")
+		if owner != "" {
+			chains := s.appchain.GetOwnerChains([]byte(owner))
+			s.sendJSON(w, http.StatusOK, map[string]interface{}{
+				"chains": chains,
+				"total":  len(chains),
+			})
+		} else {
+			chains := s.appchain.GetActiveChains()
+			s.sendJSON(w, http.StatusOK, map[string]interface{}{
+				"chains": chains,
+				"total":  len(chains),
+			})
+		}
+	case http.MethodPost:
+		s.createAppChain(w, r)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *L3APIServer) createAppChain(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ChainID      string `json:"chain_id"`
+		Name         string `json:"name"`
+		ChainType    uint8  `json:"chain_type"`
+		Owner        string `json:"owner"`
+		GasLimit     uint64 `json:"gas_limit"`
+		BlockTime    string `json:"block_time"`
+		MaxValidators int   `json:"max_validators"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.sendError(w, http.StatusBadRequest, "invalid request")
+		return
+	}
+
+	bt := time.Second
+	if req.BlockTime != "" {
+		if d, err := time.ParseDuration(req.BlockTime); err == nil {
+			bt = d
+		}
+	}
+
+	if req.MaxValidators == 0 {
+		req.MaxValidators = 4
+	}
+
+	config := appchain.AppChainConfig{
+		ChainID:       req.ChainID,
+		Name:          req.Name,
+		Type:          appchain.AppChainType(req.ChainType),
+		Owner:         []byte(req.Owner),
+		GasLimit:      req.GasLimit,
+		BlockTime:     bt,
+		MaxValidators: req.MaxValidators,
+	}
+
+	chain, err := s.appchain.CreateAppChain(config)
+	if err != nil {
+		s.sendError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	s.sendJSON(w, http.StatusCreated, chain)
+}
+
+func (s *L3APIServer) handleInteropChannels(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		channels := s.interop.GetActiveChannels()
+		s.sendJSON(w, http.StatusOK, map[string]interface{}{
+			"channels": channels,
+			"total":    len(channels),
+		})
+	case http.MethodPost:
+		var req struct {
+			PortA   string `json:"port_a"`
+			PortB   string `json:"port_b"`
+			ChainA  string `json:"chain_a"`
+			ChainB  string `json:"chain_b"`
+			Version string `json:"version"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			s.sendError(w, http.StatusBadRequest, "invalid request")
+			return
+		}
+		channel, err := s.interop.CreateChannel(req.PortA, req.PortB, req.ChainA, req.ChainB, req.Version)
+		if err != nil {
+			s.sendError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		s.sendJSON(w, http.StatusCreated, channel)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *L3APIServer) handleInteropPackets(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		ChannelID string `json:"channel_id"`
+		DataType  uint8  `json:"data_type"`
+		Data      string `json:"data"`
+		Timeout   uint64 `json:"timeout"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.sendError(w, http.StatusBadRequest, "invalid request")
+		return
+	}
+	packet, err := s.interop.SendPacket(req.ChannelID, interop.PacketType(req.DataType), []byte(req.Data), req.Timeout)
+	if err != nil {
+		s.sendError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	s.sendJSON(w, http.StatusCreated, packet)
+}
+
+func (s *L3APIServer) handleAgents(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		agents := s.agents.GetAgentsByType(agents.AgentTypeValidator)
+		all := s.agents.ActiveCount()
+		s.sendJSON(w, http.StatusOK, map[string]interface{}{
+			"agents": agents,
+			"active": all,
+		})
+	case http.MethodPost:
+		var req struct {
+			ID      string `json:"id"`
+			Type    uint8  `json:"type"`
+			Address string `json:"address"`
+			Stake   uint64 `json:"stake"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			s.sendError(w, http.StatusBadRequest, "invalid request")
+			return
+		}
+		addr, err := hex.DecodeString(req.Address)
+		if err != nil {
+			s.sendError(w, http.StatusBadRequest, "invalid address")
+			return
+		}
+		if err := s.agents.Register(req.ID, agents.AgentType(req.Type), addr, req.Stake); err != nil {
+			s.sendError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		agent, _ := s.agents.GetAgent(req.ID)
+		s.sendJSON(w, http.StatusCreated, agent)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
 }
 
 func (s *L3APIServer) handleHealth(w http.ResponseWriter, r *http.Request) {

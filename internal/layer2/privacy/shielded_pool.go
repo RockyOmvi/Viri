@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"math/big"
 	"sync"
@@ -254,13 +255,22 @@ func (sp *ShieldedPool) CreateNote(value uint64, owner, randomness []byte) (*Not
 		OwnerHash:  ownerHash[:],
 	}
 
+	if err := sp.backend.SaveNote(note); err != nil {
+		log.Printf("[ERROR] shielded pool: failed to persist note: %v", err)
+		return nil, fmt.Errorf("persist note: %w", err)
+	}
+	if err := sp.backend.SaveCommitment(commitment[:]); err != nil {
+		log.Printf("[ERROR] shielded pool: failed to persist commitment: %v", err)
+		return nil, fmt.Errorf("persist commitment: %w", err)
+	}
+	if err := sp.backend.SaveTotalShielded(sp.totalShield); err != nil {
+		log.Printf("[ERROR] shielded pool: failed to persist total shielded: %v", err)
+		return nil, fmt.Errorf("persist total shielded: %w", err)
+	}
+
 	sp.notes = append(sp.notes, note)
 	sp.commitments[commitmentKey] = true
 	sp.totalShield += value
-
-	_ = sp.backend.SaveNote(note)
-	_ = sp.backend.SaveCommitment(commitment[:])
-	_ = sp.backend.SaveTotalShielded(sp.totalShield)
 
 	return note, nil
 }
@@ -292,11 +302,20 @@ func (sp *ShieldedPool) SpendNote(nullifier []byte) (uint64, error) {
 			value := note.Value
 			sp.notes = append(sp.notes[:i], sp.notes[i+1:]...)
 
-			_ = sp.backend.SaveNullifier(nullifier)
-			_ = sp.backend.DeleteNote(nullifier)
-			_ = sp.backend.SaveTotalShielded(sp.totalShield)
+		if err := sp.backend.SaveNullifier(nullifier); err != nil {
+			log.Printf("[ERROR] shielded pool: failed to persist nullifier: %v", err)
+			return 0, fmt.Errorf("persist nullifier: %w", err)
+		}
+		if err := sp.backend.DeleteNote(nullifier); err != nil {
+			log.Printf("[ERROR] shielded pool: failed to delete note: %v", err)
+			return 0, fmt.Errorf("delete note: %w", err)
+		}
+		if err := sp.backend.SaveTotalShielded(sp.totalShield); err != nil {
+			log.Printf("[ERROR] shielded pool: failed to persist total shielded: %v", err)
+			return 0, fmt.Errorf("persist total shielded: %w", err)
+		}
 
-			return value, nil
+		return value, nil
 		}
 	}
 

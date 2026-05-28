@@ -9,6 +9,7 @@ import (
 	"github.com/viri-chain/viri/internal/layer1/crypto"
 	"github.com/viri-chain/viri/internal/layer1/ledger"
 	"github.com/viri-chain/viri/internal/layer2/contracts"
+	"github.com/viri-chain/viri/internal/layer2/gas"
 	"github.com/viri-chain/viri/internal/layer2/privacy"
 	"github.com/viri-chain/viri/internal/layer2/vm"
 	"github.com/viri-chain/viri/internal/layer2/zk"
@@ -112,6 +113,7 @@ type ExecutionEngine struct {
 	gnarkVerifier  *zk.GnarkVerifier
 	gnarkCircuit   *zk.Circuit
 	contractMgr    *contracts.ContractManager
+	feOracle       *gas.FeeConversionOracle
 	parallel       bool
 }
 
@@ -142,6 +144,10 @@ func (e *ExecutionEngine) SetParallel(enabled bool) {
 
 func (e *ExecutionEngine) SetContractManager(cm *contracts.ContractManager) {
 	e.contractMgr = cm
+}
+
+func (e *ExecutionEngine) SetFeeOracle(fo *gas.FeeConversionOracle) {
+	e.feOracle = fo
 }
 
 func isPrecompileAddress(addr []byte) bool {
@@ -231,11 +237,20 @@ func (e *ExecutionEngine) ExecuteTransaction(tx *ledger.Transaction, blockHeight
 				Err: fmt.Errorf("insufficient native balance for value transfer"),
 			}, nil
 		}
+		// If FeeOracle is available, convert fee to token equivalent
+		feeInToken := feeAmount
+		if e.feOracle != nil {
+			nativeFee := feeAmount.Uint64()
+			tokenFee := e.feOracle.ConvertFromNative(feeToken, nativeFee)
+			if tokenFee > 0 {
+				feeInToken = new(big.Int).SetUint64(tokenFee)
+			}
+		}
 		tokenBal := sender.GetTokenBalance(feeToken)
-		if tokenBal.Cmp(feeAmount) < 0 {
+		if tokenBal.Cmp(feeInToken) < 0 {
 			return &ExecutionResult{
 				GasUsed: 0, Status: 0,
-				Err: fmt.Errorf("insufficient token balance for fee: have %s, need %s", tokenBal, feeAmount),
+				Err: fmt.Errorf("insufficient token balance for fee: have %s, need %s", tokenBal, feeInToken),
 			}, nil
 		}
 	}
@@ -361,22 +376,7 @@ func (e *ExecutionEngine) executeDeploy(tx *ledger.Transaction, getAccount func(
 
 	nonceBytes := make([]byte, 8)
 	binary.BigEndian.PutUint64(nonceBytes, tx.Nonce)
-	contractAddr := crypto.Keccak256(append(tx.SenderAddress(), nonceBytes...))[:20]
-
-	contract := &AccountState{
-		Address: contractAddr,
-		Balance: new(big.Int).SetUint64(tx.Value),
-		Nonce:   0,
-		Code:    nil,
-		Storage: make(map[string][]byte),
-	}
-
-	if err := setAccount(contractAddr, contract); err != nil {
-		return &ExecutionResult{
-			Status: 0,
-			Err:    fmt.Errorf("failed to create contract account"),
-		}
-	}
+	contractAddr := crypto.Keccak256(append(tx.SenderAddress(), nonceBytes...))[12:]
 
 	stateAdapter := &evmStateAdapter{
 		getAccount: getAccount,
@@ -402,8 +402,23 @@ func (e *ExecutionEngine) executeDeploy(tx *ledger.Transaction, getAccount func(
 		initCode = tx.Data[:len(tx.Data)-32]
 	}
 
-	executor := vm.NewEVMExecutor(ctx, stateAdapter)
-	runtimeCode, gasUsed, err := executor.Execute(initCode)
+	var runtimeCode []byte
+	var gasUsed uint64
+	var err error
+	if len(initCode) >= 4 && initCode[0] == 0x00 && initCode[1] == 0x61 && initCode[2] == 0x73 && initCode[3] == 0x6d {
+		wasmCtx := &vm.WASMContext{
+			Caller:   ctx.Caller,
+			Address:  contractAddr,
+			Value:    ctx.Value,
+			GasLimit: ctx.GasLimit,
+			Data:     constructorArgs,
+		}
+		wasmExecutor := vm.NewWASMExecutor(wasmCtx, stateAdapter)
+		runtimeCode, gasUsed, err = wasmExecutor.Execute(initCode)
+	} else {
+		executor := vm.NewEVMExecutor(ctx, stateAdapter)
+		runtimeCode, gasUsed, err = executor.Execute(initCode)
+	}
 
 	if err != nil {
 		return &ExecutionResult{
@@ -413,16 +428,31 @@ func (e *ExecutionEngine) executeDeploy(tx *ledger.Transaction, getAccount func(
 			Logs:    stateAdapter.logs,
 		}
 	}
+	if err := stateAdapter.Err(); err != nil {
+		return &ExecutionResult{
+			Status:  0,
+			GasUsed: gasUsed,
+			Err:     fmt.Errorf("state persistence failed during init: %v", err),
+			Logs:    stateAdapter.logs,
+		}
+	}
 
 	if len(runtimeCode) == 0 {
 		runtimeCode = initCode
 	}
 
-	contract.Code = runtimeCode
-
 	deployedContract, _ := getAccount(contractAddr)
+	storage := make(map[string][]byte)
 	if deployedContract != nil && deployedContract.Storage != nil {
-		contract.Storage = deployedContract.Storage
+		storage = deployedContract.Storage
+	}
+
+	contract := &AccountState{
+		Address: contractAddr,
+		Balance: new(big.Int).SetUint64(tx.Value),
+		Nonce:   0,
+		Code:    runtimeCode,
+		Storage: storage,
 	}
 
 	if err := setAccount(contractAddr, contract); err != nil {
@@ -442,11 +472,9 @@ func (e *ExecutionEngine) executeDeploy(tx *ledger.Transaction, getAccount func(
 }
 
 func (e *ExecutionEngine) executeCall(tx *ledger.Transaction, getAccount func([]byte) (*AccountState, error), setAccount func([]byte, *AccountState) error) *ExecutionResult {
-	// Check for precompile addresses
-	if e.shieldedPool != nil || e.gnarkVerifier != nil {
-		if res := e.handlePrecompile(tx, getAccount, setAccount); res != nil {
-			return res
-		}
+	// Check for precompile and standard contracts (always, even without shielded pool)
+	if res := e.handlePrecompile(tx, getAccount, setAccount); res != nil {
+		return res
 	}
 
 	contract, err := getAccount(tx.To)
@@ -476,23 +504,45 @@ func (e *ExecutionEngine) executeCall(tx *ledger.Transaction, getAccount func([]
 		setAccount: setAccount,
 	}
 
-	ctx := &vm.EVMContext{
-		Caller:   tx.SenderAddress(),
-		Address:  tx.To,
-		Value:    new(big.Int).SetUint64(tx.Value),
-		GasLimit: tx.GasLimit,
-		GasPrice: new(big.Int).SetUint64(tx.GasPrice),
-		Data:     tx.Data,
+	// Detect WASM contract by magic bytes
+	var output []byte
+	var gasUsed uint64
+	if len(contract.Code) >= 4 && contract.Code[0] == 0x00 && contract.Code[1] == 0x61 && contract.Code[2] == 0x73 && contract.Code[3] == 0x6d {
+		wasmCtx := &vm.WASMContext{
+			Caller:   tx.SenderAddress(),
+			Address:  tx.To,
+			Value:    new(big.Int).SetUint64(tx.Value),
+			GasLimit: tx.GasLimit,
+			Data:     tx.Data,
+		}
+		wasmExecutor := vm.NewWASMExecutor(wasmCtx, stateAdapter)
+		output, gasUsed, err = wasmExecutor.Execute(contract.Code)
+	} else {
+		ctx := &vm.EVMContext{
+			Caller:   tx.SenderAddress(),
+			Address:  tx.To,
+			Value:    new(big.Int).SetUint64(tx.Value),
+			GasLimit: tx.GasLimit,
+			GasPrice: new(big.Int).SetUint64(tx.GasPrice),
+			Data:     tx.Data,
+		}
+		executor := vm.NewEVMExecutor(ctx, stateAdapter)
+		output, gasUsed, err = executor.Execute(contract.Code)
 	}
-
-	executor := vm.NewEVMExecutor(ctx, stateAdapter)
-	output, gasUsed, err := executor.Execute(contract.Code)
 
 	if err != nil {
 		return &ExecutionResult{
 			Status:  0,
 			GasUsed: gasUsed,
 			Err:     err,
+			Logs:    stateAdapter.logs,
+		}
+	}
+	if err := stateAdapter.Err(); err != nil {
+		return &ExecutionResult{
+			Status:  0,
+			GasUsed: gasUsed,
+			Err:     fmt.Errorf("state persistence failed during call: %v", err),
 			Logs:    stateAdapter.logs,
 		}
 	}
@@ -598,6 +648,16 @@ type evmStateAdapter struct {
 	logs       []*ledger.Log
 	journal    []journalEntry
 	snapshots  []int
+	lastErr    error
+}
+
+func (s *evmStateAdapter) Err() error { return s.lastErr }
+
+func (s *evmStateAdapter) setAccountErr(addr []byte, acct *AccountState) {
+	if s.lastErr != nil {
+		return
+	}
+	s.lastErr = s.setAccount(addr, acct)
 }
 
 type journalAction uint8
@@ -650,7 +710,13 @@ func (s *evmStateAdapter) GetStorage(addr []byte, key []byte) []byte {
 func (s *evmStateAdapter) SetStorage(addr []byte, key []byte, value []byte) {
 	acct, err := s.getAccount(addr)
 	if err != nil || acct == nil {
-		return
+		acct = &AccountState{
+			Address: addr,
+			Balance: new(big.Int),
+			Nonce:   0,
+			Storage: make(map[string][]byte),
+		}
+		s.journal = append(s.journal, journalEntry{action: jCreate, addr: string(addr)})
 	}
 	if acct.Storage == nil {
 		acct.Storage = make(map[string][]byte)
@@ -659,7 +725,7 @@ func (s *evmStateAdapter) SetStorage(addr []byte, key []byte, value []byte) {
 	oldVal := acct.Storage[keyStr]
 	acct.Storage[keyStr] = value
 	s.journal = append(s.journal, journalEntry{action: jStor, addr: string(addr), key: keyStr, oldVal: oldVal})
-	_ = s.setAccount(addr, acct)
+	s.setAccountErr(addr, acct)
 }
 
 func (s *evmStateAdapter) Transfer(from, to []byte, amount *big.Int) {
@@ -683,8 +749,8 @@ func (s *evmStateAdapter) Transfer(from, to []byte, amount *big.Int) {
 		toAcct.Balance.Add(toAcct.Balance, amount)
 		s.journal = append(s.journal, journalEntry{action: jBal, addr: string(from), oldVal: oldFrom})
 		s.journal = append(s.journal, journalEntry{action: jBal, addr: string(to), oldVal: oldTo})
-		_ = s.setAccount(from, fromAcct)
-		_ = s.setAccount(to, toAcct)
+		s.setAccountErr(from, fromAcct)
+		s.setAccountErr(to, toAcct)
 	}
 }
 
@@ -696,7 +762,7 @@ func (s *evmStateAdapter) CreateAccount(addr []byte) {
 		Storage: make(map[string][]byte),
 	}
 	s.journal = append(s.journal, journalEntry{action: jCreate, addr: string(addr)})
-	_ = s.setAccount(addr, acct)
+	s.setAccountErr(addr, acct)
 }
 
 func (s *evmStateAdapter) AddLog(addr []byte, topics [][]byte, data []byte) {
@@ -723,7 +789,7 @@ func (s *evmStateAdapter) RevertToSnapshot(id int) {
 				acct = &AccountState{Address: []byte(entry.addr), Balance: new(big.Int), Storage: make(map[string][]byte)}
 			}
 			acct.Balance = new(big.Int).Set(entry.oldVal.(*big.Int))
-			_ = s.setAccount([]byte(entry.addr), acct)
+			s.setAccountErr([]byte(entry.addr), acct)
 		case jStor:
 			acct, err := s.getAccount([]byte(entry.addr))
 			if err != nil || acct == nil {
@@ -737,9 +803,9 @@ func (s *evmStateAdapter) RevertToSnapshot(id int) {
 			} else {
 				acct.Storage[entry.key] = entry.oldVal.([]byte)
 			}
-			_ = s.setAccount([]byte(entry.addr), acct)
+			s.setAccountErr([]byte(entry.addr), acct)
 		case jCreate:
-			_ = s.setAccount([]byte(entry.addr), &AccountState{Address: []byte(entry.addr)})
+			s.setAccountErr([]byte(entry.addr), &AccountState{Address: []byte(entry.addr)})
 		}
 	}
 	s.snapshots = s.snapshots[:id]

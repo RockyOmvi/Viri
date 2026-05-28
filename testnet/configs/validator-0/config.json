@@ -38,7 +38,7 @@
     "finality_threshold": "2s"
   },
   "storage": {
-    "backend": "badgerdb",
+    "backend": "badger",
     "path": "/home/viri/.viri/chaindata",
     "max_state_size": 10737418240,
     "pruning_enabled": true,

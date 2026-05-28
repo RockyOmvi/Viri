@@ -161,17 +161,20 @@ func (h *SimpleMessageHandler) OnAnnounce(msg *Message, from peer.ID) error {
 	return nil
 }
 
-func NewViriNetwork(config *NetworkConfig, bc *ledger.PersistentBlockchain, log *logging.Logger) (*ViriNetwork, error) {
+func NewViriNetwork(config *NetworkConfig, bc *ledger.PersistentBlockchain, log *logging.Logger, privKey *crypto.PrivateKey) (*ViriNetwork, error) {
 	if config == nil {
 		config = DefaultNetworkConfig()
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	privKey, err := crypto.GenerateKey()
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("failed to generate crypto key: %w", err)
+	if privKey == nil {
+		var err error
+		privKey, err = crypto.GenerateKey()
+		if err != nil {
+			cancel()
+			return nil, fmt.Errorf("failed to generate crypto key: %w", err)
+		}
 	}
 
 	authenticator := NewMessageAuthenticator(privKey, config.ChainID, DefaultMaxMessageAge)
@@ -1861,9 +1864,38 @@ func (n *ViriNetwork) startPeerDiscoveryLoop() {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
 
+		// Initial connection attempt to bootstraps is already done in Start(),
+		// but we retry them here periodically if we need more peers.
+
 		for {
 			select {
 			case <-ticker.C:
+				// 1. Retry bootstraps if we are low on peers
+				if n.peerManager.NeedsPeers() && len(n.config.Bootstraps) > 0 {
+					for _, addrStr := range n.config.Bootstraps {
+						addr, err := multiaddr.NewMultiaddr(addrStr)
+						if err != nil {
+							continue
+						}
+						peerinfo, err := peer.AddrInfoFromP2pAddr(addr)
+						if err != nil {
+							continue
+						}
+						if n.host.Network().Connectedness(peerinfo.ID) == network.Connected {
+							continue
+						}
+
+						ctx, cancel := context.WithTimeout(n.ctx, 5*time.Second)
+						if err := n.host.Connect(ctx, *peerinfo); err != nil {
+							n.logger.Debug(fmt.Sprintf("Failed to reconnect to bootstrap peer %s: %v", addrStr, err))
+						} else {
+							n.logger.Info(fmt.Sprintf("Reconnected to bootstrap peer %s", addrStr))
+						}
+						cancel()
+					}
+				}
+
+				// 2. DHT discovery
 				if n.peerManager.NeedsPeers() && n.dht != nil && n.config.Rendezvous != "" {
 					routingDiscovery := routing.NewRoutingDiscovery(n.dht)
 					peers, err := routingDiscovery.FindPeers(n.ctx, n.config.Rendezvous)

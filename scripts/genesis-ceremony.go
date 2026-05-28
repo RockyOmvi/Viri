@@ -32,7 +32,7 @@ func main() {
 	networkName := "viri-mainnet"
 	validatorCount := 4
 	stake := uint64(1000000)
-	passphrase := "genesis-ceremony-passphrase-2026"
+	passphrase := ""
 	outputDir := "./.viri/genesis-ceremony"
 	outputFile := "configs/genesis/mainnet.json"
 
@@ -54,6 +54,11 @@ func main() {
 		case "--output":
 			if i+1 < len(args) { outputFile = args[i+1]; i++ }
 		}
+	}
+
+	if passphrase == "" {
+		fmt.Fprintf(os.Stderr, "Error: --passphrase is required\n")
+		os.Exit(1)
 	}
 
 	if err := os.MkdirAll(outputDir+"/keys", 0700); err != nil {
@@ -163,7 +168,6 @@ func main() {
 	fmt.Printf("Total stake:    %d\n", totalStake)
 	fmt.Printf("Genesis hash:   %s\n", hex.EncodeToString(genesisHash[:]))
 	fmt.Printf("Key directory:  %s/keys/\n", outputDir)
-	fmt.Printf("Passphrase:     %s\n", passphrase)
 	fmt.Println()
 	fmt.Println("IMPORTANT: Keep all key files in keys/ directory secure!")
 	fmt.Println("Distribute genesis.json to all mainnet participants.")

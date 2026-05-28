@@ -29,6 +29,8 @@ docker/data/
 *.key
 *.key.enc
 *.pem
+*.crt
+*.enc
 
 # Logs
 *.log
@@ -44,4 +46,57 @@ stitch_viri_explorer/
 
 # TLC model checker state snapshots (binary, regenerated each run)
 states/
- 
+
+# Terraform state (contains secrets)
+deploy/terraform/.terraform/
+deploy/terraform/terraform.tfstate
+deploy/terraform/terraform.tfstate.backup
+deploy/terraform/tfplan*
+deploy/terraform/main.tf.bak
+deploy/terraform/genesis-tmp.json
+deploy/terraform/terraform.tfvars
+
+# Old deploy artifacts
+deploy/faucet*.html
+deploy/faucet-service*.js
+deploy/nginx*.conf
+deploy/rpc-proxy.js
+deploy/server.js
+deploy/explorer.html
+deploy/install_proxy.sh
+deploy/viri-*.service
+deploy/docker-compose-bootstrap.yml
+deploy/scripts/
+deploy/test_rpc.py
+
+# One-off test/utility scripts
+test_*.sh
+test_*.py
+test_*.go
+fix_imports.py
+fund_faucet.js
+node*-compose.yml
+
+# Generated archives and binaries
+viri-*.tar.gz
+viri-*.zip
+virid-linux
+Dockerfile.patched
+
+# Playwright test artifacts
+frontend/playwright-report/
+frontend/test-results/
+
+# One-off genesis and deploy files
+final_genesis.go
+deploy/genesis/
+deploy/terraform/docker-compose-bootstrap.yml
+
+# Test scripts
+tests/stress_test.py
+
+# Environment files
+.env
+.env.local
+.env.production
+.env.development

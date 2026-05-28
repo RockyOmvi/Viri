@@ -11,7 +11,7 @@
 ## Requirements
 
 - **Hardware**: 2 vCPU, 4GB RAM, 20GB storage
-- **Network**: Static public IP, open ports (4000/TCP for P2P, 8545/TCP for RPC)
+- **Network**: Static public IP, open ports (30303/TCP for P2P, 8545/TCP for RPC)
 - **Uptime**: 24/7 operation recommended
 
 ## Consensus Participation
