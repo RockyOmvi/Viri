@@ -219,9 +219,22 @@ func (n *ViriNetwork) Start() error {
 
 	n.logger.Info("Initializing libp2p host")
 
-	privKey, _, err := libp2pcrypto.GenerateSecp256k1Key(rand.Reader)
-	if err != nil {
-		return fmt.Errorf("failed to generate libp2p key: %w", err)
+	var (
+		privKey libp2pcrypto.PrivKey
+		err     error
+	)
+	if n.privKey != nil {
+		rawKey := n.privKey.PrivateBytes()
+		privKey, err = libp2pcrypto.UnmarshalSecp256k1PrivateKey(rawKey)
+		if err != nil {
+			return fmt.Errorf("failed to create libp2p key from node key: %w", err)
+		}
+		n.logger.Info("Using persistent node key for libp2p identity")
+	} else {
+		privKey, _, err = libp2pcrypto.GenerateSecp256k1Key(rand.Reader)
+		if err != nil {
+			return fmt.Errorf("failed to generate libp2p key: %w", err)
+		}
 	}
 
 	opts := []libp2p.Option{
