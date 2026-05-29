@@ -15,6 +15,7 @@ services:
       - VIRI_CHAIN_ID=2
       - VIRI_GENESIS_FILE=/home/viri/.viri/genesis.json
       - VIRI_EXTERNAL_ADDR=/ip4/10.0.1.12/tcp/30303
+      - VIRI_P2P_KEY=a5588048bf403c6bfd27fb6ef83980272d8bcd6270e6e1fba91c43f0ce59b1d3
       - VIRI_VALIDATOR_MODE=true
       - VIRI_VALIDATOR_KEY=/home/viri/config/validator.key
       - VIRI_RPC_PORT=8545

@@ -2,6 +2,7 @@ package state
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/dgraph-io/badger/v4"
 )
@@ -11,13 +12,24 @@ type BadgerStore struct {
 }
 
 func NewBadgerStore(dir string) (*BadgerStore, error) {
-	opts := badger.DefaultOptions(dir)
-	opts = opts.WithLogger(nil)
-	opts = opts.WithValueLogFileSize(1 << 20)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create badger directory: %w", err)
+	}
+
+	opts := badger.DefaultOptions(dir).
+		WithLogger(nil).
+		WithValueLogFileSize(1 << 20)
 
 	db, err := badger.Open(opts)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open badger db: %w", err)
+		// DB may be corrupted (e.g. killed during compaction).
+		// Remove the directory and recreate fresh.
+		os.RemoveAll(dir)
+		os.MkdirAll(dir, 0755)
+		db, err = badger.Open(opts)
+		if err != nil {
+			return nil, fmt.Errorf("failed to open badger db after reset: %w", err)
+		}
 	}
 
 	return &BadgerStore{db: db}, nil

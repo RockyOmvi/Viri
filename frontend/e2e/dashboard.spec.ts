@@ -12,7 +12,7 @@ test.describe('Dashboard smoke tests', () => {
 
   test('search bar accepts input', async ({ page }) => {
     await page.goto('/')
-    const searchInput = page.locator('input[placeholder*="search" i], input[placeholder*="Search" i]')
+    const searchInput = page.locator('input[placeholder*="Search" i]').first()
     await expect(searchInput).toBeVisible()
     await searchInput.fill('0xabcd')
     await expect(searchInput).toHaveValue('0xabcd')
