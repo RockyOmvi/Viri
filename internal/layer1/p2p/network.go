@@ -1774,7 +1774,8 @@ func (n *ViriNetwork) handlePeerSync(stream network.Stream) {
 		peerAddrs := make([]string, 0, len(peers))
 		for _, p := range peers {
 			if p.ID != remotePeer {
-				peerAddrs = append(peerAddrs, p.Address.String())
+				fullAddr := p.Address.Encapsulate(multiaddr.StringCast("/p2p/" + p.ID.String()))
+				peerAddrs = append(peerAddrs, fullAddr.String())
 			}
 		}
 		payload, _ := encodePeerList(peerAddrs)
@@ -1786,14 +1787,23 @@ func (n *ViriNetwork) handlePeerSync(stream network.Stream) {
 		peerAddrs, err := decodePeerList(msg.Payload)
 		if err == nil {
 			for _, addr := range peerAddrs {
-				ai, err := peer.AddrInfoFromString(addr)
+				ma, err := multiaddr.NewMultiaddr(addr)
+				if err != nil {
+					continue
+				}
+				ai, err := peer.AddrInfoFromP2pAddr(ma)
 				if err != nil {
 					continue
 				}
 				if ai.ID == n.host.ID() {
 					continue
 				}
-				n.peerManager.AddPeer(ai.ID, ai.Addrs[0], network.DirOutbound)
+				n.peerManager.AddPeer(ai.ID, ai.Addrs[0], network.DirInbound)
+				ctx, cancel := context.WithTimeout(n.ctx, 10*time.Second)
+				if err := n.host.Connect(ctx, *ai); err == nil {
+					n.logger.Info(fmt.Sprintf("Connected to discovered peer peer=%s addr=%s", ai.ID.String()[:12]+"...", addr))
+				}
+				cancel()
 			}
 		}
 	}
@@ -2238,17 +2248,64 @@ func (n *ViriNetwork) SendHandshake(ctx context.Context, peerID peer.ID) (*Hands
 	}, nil
 }
 
-func (n *ViriNetwork) BroadcastGetPeers() {
-	peers := n.peerManager.GetConnectedPeers()
+func (net *ViriNetwork) BroadcastGetPeers() {
+	peers := net.peerManager.GetConnectedPeers()
 	for _, p := range peers {
-		if p.ID == n.host.ID() {
+		if p.ID == net.host.ID() {
 			continue
 		}
 		req := NewMessage(MsgGetPeers, []byte{})
 		go func(pid peer.ID) {
-			ctx, cancel := context.WithTimeout(n.ctx, 10*time.Second)
+			ctx, cancel := context.WithTimeout(net.ctx, 15*time.Second)
 			defer cancel()
-			n.SendToPeer(ctx, pid, req)
+
+			stream, err := net.host.NewStream(ctx, pid, PeerSyncProtocol)
+			if err != nil {
+				return
+			}
+			defer stream.Close()
+
+			data, err := req.Encode()
+			if err != nil {
+				return
+			}
+			if _, err := stream.Write(data); err != nil {
+				return
+			}
+
+			buf := make([]byte, MaxMessageSize)
+			readN, err := stream.Read(buf)
+			if err != nil || readN == 0 {
+				return
+			}
+
+			resp, err := DecodeMessage(buf[:readN])
+			if err != nil || resp.Type != MsgPeers {
+				return
+			}
+
+			peerAddrs, err := decodePeerList(resp.Payload)
+			if err != nil {
+				return
+			}
+			for _, addr := range peerAddrs {
+				ma, err := multiaddr.NewMultiaddr(addr)
+				if err != nil {
+					continue
+				}
+				ai, err := peer.AddrInfoFromP2pAddr(ma)
+				if err != nil || ai.ID == net.host.ID() {
+					continue
+				}
+				if net.host.Network().Connectedness(ai.ID) == network.Connected {
+					continue
+				}
+				connectCtx, connectCancel := context.WithTimeout(net.ctx, 10*time.Second)
+				if err := net.host.Connect(connectCtx, *ai); err == nil {
+					net.logger.Info(fmt.Sprintf("Connected to discovered peer via GetPeers peer=%s", ai.ID.String()[:12]+"..."))
+				}
+				connectCancel()
+			}
 		}(p.ID)
 	}
 }
