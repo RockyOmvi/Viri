@@ -499,7 +499,7 @@ func (n *ViriNetwork) connectToBootstrap() error {
 		if len(ai.Addrs) > 0 {
 			n.peerManager.AddPeer(ai.ID, ai.Addrs[0], network.DirOutbound)
 		}
-		n.stats.SetPeerCount(len(n.host.Network().Peers()))
+		n.stats.SetPeerCount(n.LivePeerCount())
 		n.logger.Info(fmt.Sprintf("Connected to bootstrap peer peer=%s", ai.ID.String()))
 	}
 
@@ -1192,10 +1192,7 @@ func (n *ViriNetwork) PeerCount() int {
 }
 
 func (n *ViriNetwork) LivePeerCount() int {
-	if n.host == nil {
-		return 0
-	}
-	return len(n.host.Network().Peers())
+	return len(n.peerManager.GetConnectedPeers())
 }
 
 func (n *ViriNetwork) PeerID() peer.ID {
@@ -1296,7 +1293,7 @@ func (n *ViriNetwork) ConnectPeer(maddr string) error {
 	if len(ai.Addrs) > 0 {
 		n.peerManager.AddPeer(ai.ID, ai.Addrs[0], network.DirOutbound)
 	}
-	n.stats.SetPeerCount(len(n.host.Network().Peers()))
+	n.stats.SetPeerCount(n.LivePeerCount())
 	n.logger.Info(fmt.Sprintf("Connected to peer peer=%s addr=%s", ai.ID.String()[:12]+"...", maddr))
 	return nil
 }
@@ -1731,7 +1728,7 @@ func (n *ViriNetwork) handlePeerSync(stream network.Stream) {
 	}
 
 	n.peerManager.AddPeer(remotePeer, remoteAddr, stream.Conn().Stat().Direction)
-	n.stats.SetPeerCount(len(n.host.Network().Peers()))
+	n.stats.SetPeerCount(n.LivePeerCount())
 
 	buf := make([]byte, MaxMessageSize)
 	bytesRead, err := stream.Read(buf)
@@ -1971,7 +1968,7 @@ func (n *ViriNetwork) startPeerDiscoveryLoop() {
 					n.BroadcastGetPeers()
 				}
 
-				n.stats.SetPeerCount(len(n.host.Network().Peers()))
+				n.stats.SetPeerCount(n.LivePeerCount())
 				n.peerManager.UpdateScore(n.host.ID(), 0)
 			case <-n.ctx.Done():
 				return
