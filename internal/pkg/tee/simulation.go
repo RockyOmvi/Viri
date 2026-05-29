@@ -131,9 +131,10 @@ func (e *Enclave) Attest(data []byte) (*AttestationQuote, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	now := time.Now().Unix()
 	payload := append(e.measurement[:], data...)
 	payload = append(payload, e.id[:]...)
-	payload = binary.LittleEndian.AppendUint64(payload, uint64(time.Now().Unix()))
+	payload = binary.LittleEndian.AppendUint64(payload, uint64(now))
 
 	hash := sha256.Sum256(payload)
 	sig, err := e.attestKey.SignHash(hash[:])
@@ -146,7 +147,7 @@ func (e *Enclave) Attest(data []byte) (*AttestationQuote, error) {
 		Measurement: e.measurement,
 		Data:        data,
 		Signature:   sig.Bytes(),
-		Timestamp:   time.Now().Unix(),
+		Timestamp:   now,
 	}, nil
 }
 
