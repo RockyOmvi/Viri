@@ -1,0 +1,29 @@
+services:
+  validator:
+    image: viri:patched
+    container_name: viri-validator-1
+    ports:
+      - 9090:9090
+      - 30303:30303
+      - 8545:8545
+      - 8546:8546
+    volumes:
+      - /opt/viri/config:/home/viri/config:ro
+      - /opt/viri/genesis/genesis.json:/home/viri/.viri/genesis.json:ro
+      - /opt/viri/data:/home/viri/.viri
+      - /opt/viri/logs:/home/viri/logs
+    environment:
+      - VIRI_NODE_NAME=validator-1
+      - VIRI_LOG_LEVEL=info
+      - VIRI_TESTNET=true
+      - VIRI_CHAIN_ID=2
+      - VIRI_GENESIS_FILE=/home/viri/.viri/genesis.json
+      - VIRI_EXTERNAL_ADDR=/ip4/10.0.1.11/tcp/30303
+      - VIRI_VALIDATOR_MODE=true
+      - VIRI_VALIDATOR_KEY=/home/viri/config/validator.key
+      - VIRI_RPC_PORT=8545
+      - VIRI_API_PORT=8546
+      - VIRI_KEY_PASSPHRASE=testnet-passphrase
+      - VIRI_BOOTSTRAP_PEER=/ip4/10.0.1.10/tcp/30303/p2p/16Uiu2HAmAVmCgtmPjxpSnsqiG4cb4pSushpXKhfNv6KqyxzQzxwW
+    restart: unless-stopped
+    command: [virid, -validator]

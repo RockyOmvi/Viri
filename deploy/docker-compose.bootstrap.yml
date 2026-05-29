@@ -1,0 +1,56 @@
+services:
+  bootstrap:
+    image: viri:patched
+    container_name: viri-bootstrap
+    ports:
+      - 9090:9090
+      - 30303:30303
+      - 8545:8545
+      - 8546:8546
+    volumes:
+      - /opt/viri/config:/home/viri/config:ro
+      - /opt/viri/genesis/genesis.json:/home/viri/.viri/genesis.json:ro
+      - /opt/viri/data/bootstrap:/home/viri/.viri
+      - /opt/viri/logs:/home/viri/logs
+    environment:
+      - VIRI_NODE_NAME=bootstrap-0
+      - VIRI_LOG_LEVEL=debug
+      - VIRI_TESTNET=true
+      - VIRI_CHAIN_ID=2
+      - VIRI_GENESIS_FILE=/home/viri/.viri/genesis.json
+      - VIRI_EXTERNAL_ADDR=/ip4/10.0.1.10/tcp/30303
+      - VIRI_P2P_KEY=2933fdfff24663268595c1a622ea0a77e136c222daf6c5bc76c45facb5602d9a
+      - VIRI_RPC_PORT=8545
+      - VIRI_API_PORT=8546
+      - VIRI_KEY_PASSPHRASE=${VIRI_KEY_PASSPHRASE:-testnet-passphrase}
+    restart: unless-stopped
+    command: [virid]
+
+  validator-0:
+    image: viri:patched
+    container_name: viri-validator-0
+    ports:
+      - 9091:9090
+      - 30304:30303
+      - 8555:8545
+      - 8556:8546
+    volumes:
+      - /opt/viri/config:/home/viri/config:ro
+      - /opt/viri/genesis/genesis.json:/home/viri/.viri/genesis.json:ro
+      - /opt/viri/data/validator-0:/home/viri/.viri
+      - /opt/viri/logs:/home/viri/logs
+    environment:
+      - VIRI_NODE_NAME=validator-0
+      - VIRI_LOG_LEVEL=debug
+      - VIRI_TESTNET=true
+      - VIRI_CHAIN_ID=2
+      - VIRI_GENESIS_FILE=/home/viri/.viri/genesis.json
+      - VIRI_EXTERNAL_ADDR=/ip4/10.0.1.10/tcp/30304
+      - VIRI_VALIDATOR_MODE=true
+      - VIRI_VALIDATOR_KEY=/home/viri/config/validator.key
+      - VIRI_RPC_PORT=8545
+      - VIRI_API_PORT=8546
+      - VIRI_KEY_PASSPHRASE=${VIRI_KEY_PASSPHRASE:-testnet-passphrase}
+      - VIRI_BOOTSTRAP_PEER=/ip4/10.0.1.10/tcp/30303/p2p/16Uiu2HAmAVmCgtmPjxpSnsqiG4cb4pSushpXKhfNv6KqyxzQzxwW
+    restart: unless-stopped
+    command: [virid, -validator]

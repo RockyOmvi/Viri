@@ -570,6 +570,9 @@ func main() {
 	netConfig := p2p.DefaultNetworkConfig()
 	netConfig.ChainID = cfg.Chain.ChainID
 	netConfig.ListenAddr = fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", flags.p2pPort)
+	if cfg.Network.ExternalAddr != "" {
+		netConfig.ExternalAddr = cfg.Network.ExternalAddr
+	}
 	if flags.noMDNS || runtime.GOOS == "windows" {
 		netConfig.EnableMDNS = false
 	}

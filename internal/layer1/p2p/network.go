@@ -237,9 +237,19 @@ func (n *ViriNetwork) Start() error {
 		}
 	}
 
+	addrsFactory := func(addrs []multiaddr.Multiaddr) []multiaddr.Multiaddr {
+		if n.config.ExternalAddr != "" {
+			if extAddr, err := multiaddr.NewMultiaddr(n.config.ExternalAddr); err == nil {
+				return []multiaddr.Multiaddr{extAddr}
+			}
+		}
+		return addrs
+	}
+
 	opts := []libp2p.Option{
 		libp2p.Identity(privKey),
 		libp2p.ListenAddrStrings(n.config.ListenAddr),
+		libp2p.AddrsFactory(addrsFactory),
 		libp2p.UserAgent("viri/0.1.0"),
 		libp2p.Ping(true),
 		libp2p.NATPortMap(),
@@ -489,6 +499,7 @@ func (n *ViriNetwork) connectToBootstrap() error {
 		if len(ai.Addrs) > 0 {
 			n.peerManager.AddPeer(ai.ID, ai.Addrs[0], network.DirOutbound)
 		}
+		n.stats.SetPeerCount(len(n.host.Network().Peers()))
 		n.logger.Info(fmt.Sprintf("Connected to bootstrap peer peer=%s", ai.ID.String()))
 	}
 

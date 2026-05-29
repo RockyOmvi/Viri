@@ -1,0 +1,58 @@
+services:
+  validator-2:
+    image: viri:patched
+    container_name: viri-validator-2
+    network_mode: host
+    volumes:
+      - /opt/viri/config:/home/viri/config:ro
+      - /opt/viri/genesis/genesis.json:/home/viri/.viri/genesis.json:ro
+      - /opt/viri/data/validator-2:/home/viri/.viri
+      - /opt/viri/logs:/home/viri/logs
+    environment:
+      - VIRI_NODE_NAME=validator-2
+      - VIRI_LOG_LEVEL=info
+      - VIRI_TESTNET=true
+      - VIRI_CHAIN_ID=2
+      - VIRI_GENESIS_FILE=/home/viri/.viri/genesis.json
+      - VIRI_EXTERNAL_ADDR=/ip4/10.0.1.12/tcp/30303
+      - VIRI_VALIDATOR_MODE=true
+      - VIRI_VALIDATOR_KEY=/home/viri/config/validator.key
+      - VIRI_RPC_PORT=8545
+      - VIRI_API_PORT=8546
+      - VIRI_KEY_PASSPHRASE=testnet-passphrase
+      - VIRI_BOOTSTRAP_PEER=/ip4/10.0.1.10/tcp/30303/p2p/16Uiu2HAmAVmCgtmPjxpSnsqiG4cb4pSushpXKhfNv6KqyxzQzxwW
+    restart: unless-stopped
+
+  faucet:
+    image: viri:patched
+    container_name: viri-faucet
+    network_mode: host
+    volumes:
+      - /opt/viri/config:/home/viri/config:ro
+      - /opt/viri/genesis/genesis.json:/home/viri/.viri/genesis.json:ro
+      - /opt/viri/faucet-data:/home/viri/.viri
+    environment:
+      - VIRI_LOG_LEVEL=info
+      - FAUCET_PORT=8081
+      - FAUCET_WALLET_KEY=ab73db00298166a90c11f8f6fdcca3e9b22f3db8755a554db3e4e5abbf6f54da
+      - FAUCET_DAILY_LIMIT=100000000000000000
+      - FAUCET_PER_CLAIM=1000000000000000
+      - FAUCET_COOLDOWN=18000
+      - VIRI_RPC_URL=http://10.0.1.12:8545
+      - VIRI_KEY_PASSPHRASE=testnet-passphrase
+    restart: unless-stopped
+    command: [virid, --faucet]
+
+  explorer:
+    image: rockysinghrajput/viri:latest
+    container_name: viri-explorer
+    network_mode: host
+    volumes:
+      - /opt/viri/config:/home/viri/config:ro
+      - /opt/viri/genesis/genesis.json:/home/viri/.viri/genesis.json:ro
+    environment:
+      - EXPLORER_PORT=8080
+      - VIRI_RPC_URL=http://10.0.1.12:8545
+      - VIRI_KEY_PASSPHRASE=testnet-passphrase
+    restart: unless-stopped
+    command: [virid, --explorer]
