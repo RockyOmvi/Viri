@@ -1191,6 +1191,13 @@ func (n *ViriNetwork) PeerCount() int {
 	return n.peerManager.PeerCount()
 }
 
+func (n *ViriNetwork) LivePeerCount() int {
+	if n.host == nil {
+		return 0
+	}
+	return len(n.host.Network().Peers())
+}
+
 func (n *ViriNetwork) PeerID() peer.ID {
 	if n.host == nil {
 		return ""
@@ -1964,6 +1971,7 @@ func (n *ViriNetwork) startPeerDiscoveryLoop() {
 					n.BroadcastGetPeers()
 				}
 
+				n.stats.SetPeerCount(len(n.host.Network().Peers()))
 				n.peerManager.UpdateScore(n.host.ID(), 0)
 			case <-n.ctx.Done():
 				return

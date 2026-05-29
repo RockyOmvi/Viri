@@ -1015,7 +1015,8 @@ func main() {
 			select {
 			case <-ticker.C:
 				stats := viriNet.Stats().Snapshot()
-				log.WithField("peers", stats.CurrentPeers).
+				livePeers := viriNet.LivePeerCount()
+				log.WithField("peers", livePeers).
 					WithField("blocks_in", stats.TotalBlocksIn).
 					WithField("blocks_out", stats.TotalBlocksOut).
 					WithField("txs_in", stats.TotalTxsIn).
@@ -1023,7 +1024,7 @@ func main() {
 					WithField("bytes_in", stats.TotalBytesIn).
 					WithField("bytes_out", stats.TotalBytesOut).
 					WithField("rejected", stats.RejectedMessages).
-					WithField("conn_active", stats.CurrentPeers).
+					WithField("conn_active", livePeers).
 					WithField("uptime", stats.Uptime.String()).
 					Info("Network stats")
 			case <-stopCh:

@@ -161,7 +161,9 @@ func (ss *StateSyncer) ApplyBlock(blockData []byte) error {
 			return err
 		}
 
-		ss.logInfo(fmt.Sprintf("Applied block during sync height=%d", ss.currentHeight))
+		if ss.currentHeight%1000 == 0 {
+			ss.logInfo(fmt.Sprintf("Applied block during sync height=%d", ss.currentHeight))
+		}
 		ss.currentHeight++
 	}
 
