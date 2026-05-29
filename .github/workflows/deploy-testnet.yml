@@ -80,6 +80,7 @@ jobs:
           pip install ansible
 
       - name: Setup SSH key
+        if: ${{ secrets.TESTNET_SSH_KEY != '' }}
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.TESTNET_SSH_KEY }}" > ~/.ssh/id_ed25519
@@ -92,6 +93,7 @@ jobs:
           ssh-keyscan -H ${{ secrets.FAUCET_PUBLIC_IP }} >> ~/.ssh/known_hosts 2>/dev/null || true
 
       - name: Run Ansible playbook
+        if: ${{ secrets.TESTNET_SSH_KEY != '' }}
         run: |
           ansible-playbook \
             -i deploy/ansible/inventory/oracle-cloud.yml \
@@ -105,7 +107,35 @@ jobs:
             --extra-vars "FAUCET_PUBLIC_IP=${{ secrets.FAUCET_PUBLIC_IP }}" \
             --extra-vars "domain=${{ secrets.TESTNET_DOMAIN }}"
 
+      - name: Manual deploy instructions
+        if: ${{ secrets.TESTNET_SSH_KEY == '' }}
+        run: |
+          echo "========================================"
+          echo "  MANUAL DEPLOY REQUIRED"
+          echo "========================================"
+          echo ""
+          echo "SSH into each VM (from Azure Bastion/VNet) and run:"
+          echo ""
+          echo "--- Bootstrap VM (10.0.1.10) ---"
+          echo "docker pull ghcr.io/rockyomvi/viri:testnet"
+          echo "docker tag ghcr.io/rockyomvi/viri:testnet viri:patched"
+          echo "docker compose -f /opt/viri/docker-compose.yml down"
+          echo "docker compose -f /opt/viri/docker-compose.yml up -d"
+          echo ""
+          echo "--- Validator-1 VM (10.0.1.11) ---"
+          echo "docker pull ghcr.io/rockyomvi/viri:testnet"
+          echo "docker tag ghcr.io/rockyomvi/viri:testnet viri:patched"
+          echo "docker compose -f /opt/viri/docker-compose.yml down"
+          echo "docker compose -f /opt/viri/docker-compose.yml up -d"
+          echo ""
+          echo "--- Validator-2 VM (10.0.1.12) ---"
+          echo "docker pull ghcr.io/rockyomvi/viri:testnet"
+          echo "docker tag ghcr.io/rockyomvi/viri:testnet viri:patched"
+          echo "docker compose -f /opt/viri/docker-compose.yml down"
+          echo "docker compose -f /opt/viri/docker-compose.yml up -d"
+
       - name: Verify deployment
+        if: ${{ secrets.TESTNET_SSH_KEY != '' }}
         run: |
           sleep 10
           for host in "${{ secrets.BOOTSTRAP_PUBLIC_IP }}" "${{ secrets.VALIDATOR_0_IP }}" "${{ secrets.VALIDATOR_1_IP }}" "${{ secrets.VALIDATOR_2_IP }}" "${{ secrets.VALIDATOR_3_IP }}"; do
