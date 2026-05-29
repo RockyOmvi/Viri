@@ -42,12 +42,14 @@ type ConnRecord struct {
 }
 
 type ConnManager struct {
-	mu      sync.RWMutex
-	config  *ConnManagerConfig
-	conns   map[peer.ID]*ConnRecord
-	notifee *viriNotifee
-	done    chan struct{}
-	host    network.Network
+	mu               sync.RWMutex
+	config           *ConnManagerConfig
+	conns            map[peer.ID]*ConnRecord
+	notifee          *viriNotifee
+	done             chan struct{}
+	host             network.Network
+	onPeerConnected  func(peer.ID, multiaddr.Multiaddr, network.Direction)
+	onPeerDisconnected func(peer.ID)
 }
 
 type viriNotifee struct {
@@ -165,9 +167,14 @@ func (cm *ConnManager) Notifee() network.Notifiee {
 	return cm.notifee
 }
 
-func (cm *ConnManager) handleConnected(conn network.Conn) {
+func (cm *ConnManager) OnPeerConnected(cb func(peer.ID, multiaddr.Multiaddr, network.Direction)) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
+	cm.onPeerConnected = cb
+}
+
+func (cm *ConnManager) handleConnected(conn network.Conn) {
+	cm.mu.Lock()
 
 	peerID := conn.RemotePeer()
 	now := time.Now()
@@ -184,15 +191,28 @@ func (cm *ConnManager) handleConnected(conn network.Conn) {
 	}
 
 	record.Connections = append(record.Connections, conn)
+
+	cb := cm.onPeerConnected
+	cm.mu.Unlock()
+
+	if cb != nil {
+		cb(peerID, conn.RemoteMultiaddr(), conn.Stat().Direction)
+	}
+}
+
+func (cm *ConnManager) OnPeerDisconnected(cb func(peer.ID)) {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	cm.onPeerDisconnected = cb
 }
 
 func (cm *ConnManager) handleDisconnected(conn network.Conn) {
 	cm.mu.Lock()
-	defer cm.mu.Unlock()
 
 	peerID := conn.RemotePeer()
 	record, exists := cm.conns[peerID]
 	if !exists {
+		cm.mu.Unlock()
 		return
 	}
 
@@ -204,8 +224,16 @@ func (cm *ConnManager) handleDisconnected(conn network.Conn) {
 	}
 	record.Connections = remaining
 
-	if len(record.Connections) == 0 {
+	noConnsLeft := len(remaining) == 0
+	if noConnsLeft {
 		delete(cm.conns, peerID)
+	}
+
+	cb := cm.onPeerDisconnected
+	cm.mu.Unlock()
+
+	if cb != nil && noConnsLeft {
+		cb(peerID)
 	}
 }
 

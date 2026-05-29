@@ -265,6 +265,12 @@ func (n *ViriNetwork) Start() error {
 
 	n.host.Network().Notify(n.connManager.Notifee())
 	n.connManager.SetHost(n.host.Network())
+	n.connManager.OnPeerConnected(func(id peer.ID, addr multiaddr.Multiaddr, dir network.Direction) {
+		n.peerManager.AddPeer(id, addr, dir)
+	})
+	n.connManager.OnPeerDisconnected(func(id peer.ID) {
+		n.peerManager.RemovePeer(id)
+	})
 	n.connManager.Start()
 
 	n.logger.Info("libp2p host created")
