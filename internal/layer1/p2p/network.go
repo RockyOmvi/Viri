@@ -456,12 +456,33 @@ func (n *ViriNetwork) connectToBootstrap() error {
 			continue
 		}
 
-		ctx, cancel := context.WithTimeout(n.ctx, 30*time.Second)
-		err = n.host.Connect(ctx, *ai)
-		cancel()
+		// Retry with exponential backoff to handle race condition where bootstrap
+		// is still initializing its libp2p host.
+		var lastErr error
+		for attempt := 0; attempt < 5; attempt++ {
+			if attempt > 0 {
+				delay := time.Duration(1<<attempt) * time.Second
+				n.logger.Debug(fmt.Sprintf("Retrying bootstrap connection attempt=%d delay=%v", attempt+1, delay))
+				select {
+				case <-time.After(delay):
+				case <-n.ctx.Done():
+					return n.ctx.Err()
+				}
+			}
 
-		if err != nil {
-			n.logger.Warn(fmt.Sprintf("Failed to connect to bootstrap peer peer=%s error=%v", ai.ID.String(), err))
+			ctx, cancel := context.WithTimeout(n.ctx, 10*time.Second)
+			err = n.host.Connect(ctx, *ai)
+			cancel()
+
+			if err == nil {
+				lastErr = nil
+				break
+			}
+			lastErr = err
+		}
+
+		if lastErr != nil {
+			n.logger.Warn(fmt.Sprintf("Failed to connect to bootstrap peer after retries peer=%s error=%v", ai.ID.String(), lastErr))
 			continue
 		}
 
