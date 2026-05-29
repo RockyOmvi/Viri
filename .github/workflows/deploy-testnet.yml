@@ -79,8 +79,17 @@ jobs:
         run: |
           pip install ansible
 
+      - name: Check SSH key availability
+        id: check-ssh
+        run: |
+          if [ -z "${{ secrets.TESTNET_SSH_KEY }}" ]; then
+            echo "has_key=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_key=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Setup SSH key
-        if: ${{ secrets.TESTNET_SSH_KEY != '' }}
+        if: steps.check-ssh.outputs.has_key == 'true'
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.TESTNET_SSH_KEY }}" > ~/.ssh/id_ed25519
@@ -93,7 +102,7 @@ jobs:
           ssh-keyscan -H ${{ secrets.FAUCET_PUBLIC_IP }} >> ~/.ssh/known_hosts 2>/dev/null || true
 
       - name: Run Ansible playbook
-        if: ${{ secrets.TESTNET_SSH_KEY != '' }}
+        if: steps.check-ssh.outputs.has_key == 'true'
         run: |
           ansible-playbook \
             -i deploy/ansible/inventory/oracle-cloud.yml \
@@ -108,7 +117,7 @@ jobs:
             --extra-vars "domain=${{ secrets.TESTNET_DOMAIN }}"
 
       - name: Manual deploy instructions
-        if: ${{ secrets.TESTNET_SSH_KEY == '' }}
+        if: steps.check-ssh.outputs.has_key == 'false'
         run: |
           echo "========================================"
           echo "  MANUAL DEPLOY REQUIRED"
@@ -135,7 +144,7 @@ jobs:
           echo "docker compose -f /opt/viri/docker-compose.yml up -d"
 
       - name: Verify deployment
-        if: ${{ secrets.TESTNET_SSH_KEY != '' }}
+        if: steps.check-ssh.outputs.has_key == 'true'
         run: |
           sleep 10
           for host in "${{ secrets.BOOTSTRAP_PUBLIC_IP }}" "${{ secrets.VALIDATOR_0_IP }}" "${{ secrets.VALIDATOR_1_IP }}" "${{ secrets.VALIDATOR_2_IP }}" "${{ secrets.VALIDATOR_3_IP }}"; do
