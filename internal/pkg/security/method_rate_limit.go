@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/viri-chain/viri/internal/pkg/jsonrpc"
 )
 
 type MethodRateLimiter struct {
@@ -50,14 +52,12 @@ func (mrl *MethodRateLimiter) Middleware(getClientID func(*http.Request) string)
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			clientID := getClientID(r)
 
-			method := extractRPCMethod(r)
+			method, reqID := parseRPCRequest(r)
 			if method != "" && !mrl.Allow(clientID, method) {
 				w.Header().Set("Retry-After", "30")
-				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusTooManyRequests)
-				json.NewEncoder(w).Encode(map[string]interface{}{
-					"error":   "method rate limit exceeded",
-					"method":  method,
+				jsonrpc.WriteError(w, reqID, jsonrpc.CodeServerError, "Method rate limit exceeded", map[string]interface{}{
+					"method":              method,
 					"retry_after_seconds": 30,
 				})
 				return
@@ -69,32 +69,35 @@ func (mrl *MethodRateLimiter) Middleware(getClientID func(*http.Request) string)
 }
 
 func extractRPCMethod(r *http.Request) string {
+	method, _ := parseRPCRequest(r)
+	return method
+}
+
+func parseRPCRequest(r *http.Request) (method string, id interface{}) {
 	if r.Method != http.MethodPost {
-		return ""
+		return "", nil
 	}
 
 	if r.URL.Path != "/" && r.URL.Path != "/rpc" {
-		return ""
+		return "", nil
 	}
 
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		return ""
+		return "", nil
 	}
-	defer r.Body.Close()
 
 	r.Body = io.NopCloser(bytes.NewReader(body))
 
-	type rpcRequest struct {
-		Method string `json:"method"`
+	var req struct {
+		Method string      `json:"method"`
+		ID     interface{} `json:"id"`
 	}
-
-	var req rpcRequest
 	if err := json.Unmarshal(body, &req); err != nil {
-		return ""
+		return "", jsonrpc.RequestID(body)
 	}
 
-	return req.Method
+	return req.Method, req.ID
 }
 
 type BlockRangeLimiter struct {

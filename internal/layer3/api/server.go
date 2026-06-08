@@ -203,7 +203,7 @@ func (s *L3APIServer) getProposal(w http.ResponseWriter, r *http.Request) {
 		ID uint64 `json:"id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.sendError(w, http.StatusBadRequest, "invalid request")
+		s.sendError(w, http.StatusBadRequest, "invalid JSON request body: "+err.Error())
 		return
 	}
 
@@ -226,7 +226,7 @@ func (s *L3APIServer) createProposal(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.sendError(w, http.StatusBadRequest, "invalid request")
+		s.sendError(w, http.StatusBadRequest, "invalid JSON request body: "+err.Error())
 		return
 	}
 
@@ -253,7 +253,7 @@ func (s *L3APIServer) handleVote(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.sendError(w, http.StatusBadRequest, "invalid request")
+		s.sendError(w, http.StatusBadRequest, "invalid JSON request body: "+err.Error())
 		return
 	}
 
@@ -292,7 +292,7 @@ func (s *L3APIServer) initiateTransfer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.sendError(w, http.StatusBadRequest, "invalid request")
+		s.sendError(w, http.StatusBadRequest, "invalid JSON request body: "+err.Error())
 		return
 	}
 
@@ -317,7 +317,7 @@ func (s *L3APIServer) handleValidateTransfer(w http.ResponseWriter, r *http.Requ
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.sendError(w, http.StatusBadRequest, "invalid request")
+		s.sendError(w, http.StatusBadRequest, "invalid JSON request body: "+err.Error())
 		return
 	}
 
@@ -355,7 +355,7 @@ func (s *L3APIServer) createChannel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.sendError(w, http.StatusBadRequest, "invalid request")
+		s.sendError(w, http.StatusBadRequest, "invalid JSON request body: "+err.Error())
 		return
 	}
 
@@ -382,7 +382,7 @@ func (s *L3APIServer) handlePackets(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.sendError(w, http.StatusBadRequest, "invalid request")
+		s.sendError(w, http.StatusBadRequest, "invalid JSON request body: "+err.Error())
 		return
 	}
 
@@ -422,7 +422,7 @@ func (s *L3APIServer) createIntent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.sendError(w, http.StatusBadRequest, "invalid request")
+		s.sendError(w, http.StatusBadRequest, "invalid JSON request body: "+err.Error())
 		return
 	}
 
@@ -447,7 +447,7 @@ func (s *L3APIServer) handleSolveIntent(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.sendError(w, http.StatusBadRequest, "invalid request")
+		s.sendError(w, http.StatusBadRequest, "invalid JSON request body: "+err.Error())
 		return
 	}
 
