@@ -393,6 +393,112 @@ func TestBlockGasLimitExceeded(t *testing.T) {
 	}
 }
 
+func TestBaseFeeClampsAtMaxBound(t *testing.T) {
+	config := DefaultGasConfig()
+	config.MaxBaseFee = 1_200_000_000
+	config.InitialBaseFee = 1_100_000_000
+	oracle := NewGasOracle(config)
+
+	for i := 0; i < 50; i++ {
+		block := BlockGasInfo{
+			BlockNumber:  uint64(i + 1),
+			GasUsed:      29_000_000,
+			GasLimit:     30_000_000,
+			BaseFee:      oracle.GetBaseFee(),
+			Timestamp:    1000,
+			PriorityFees: []uint64{2_000_000_000},
+		}
+		if err := oracle.ProcessBlock(block); err != nil {
+			t.Fatalf("process block %d: %v", i, err)
+		}
+	}
+
+	if got := oracle.GetBaseFee(); got != config.MaxBaseFee {
+		t.Errorf("base fee = %d, want max clamp %d", got, config.MaxBaseFee)
+	}
+}
+
+func TestBaseFeeClampsAtMinBound(t *testing.T) {
+	config := DefaultGasConfig()
+	config.MinBaseFee = 500_000_000
+	config.InitialBaseFee = 550_000_000
+	oracle := NewGasOracle(config)
+
+	for i := 0; i < 50; i++ {
+		block := BlockGasInfo{
+			BlockNumber:  uint64(i + 1),
+			GasUsed:      1_000_000,
+			GasLimit:     30_000_000,
+			BaseFee:      oracle.GetBaseFee(),
+			Timestamp:    1000,
+			PriorityFees: []uint64{100_000_000},
+		}
+		if err := oracle.ProcessBlock(block); err != nil {
+			t.Fatalf("process block %d: %v", i, err)
+		}
+	}
+
+	if got := oracle.GetBaseFee(); got != config.MinBaseFee {
+		t.Errorf("base fee = %d, want min clamp %d", got, config.MinBaseFee)
+	}
+}
+
+func TestPriorityFeePercentilesSparseBlocks(t *testing.T) {
+	oracle := NewGasOracle(DefaultGasConfig())
+
+	sparseFees := [][]uint64{
+		{1_000_000_000},
+		{3_000_000_000},
+	}
+
+	for i, fees := range sparseFees {
+		block := BlockGasInfo{
+			BlockNumber:  uint64(i + 1),
+			GasUsed:      15_000_000,
+			GasLimit:     30_000_000,
+			BaseFee:      oracle.GetBaseFee(),
+			Timestamp:    1000,
+			PriorityFees: fees,
+		}
+		if err := oracle.ProcessBlock(block); err != nil {
+			t.Fatalf("process block: %v", err)
+		}
+	}
+
+	estimate := oracle.EstimateGas([]uint64{50})
+	if estimate.PriorityFee == 0 {
+		t.Fatal("expected non-zero priority fee estimate from sparse history")
+	}
+
+	slow := oracle.GetSlowPriorityFee()
+	fast := oracle.GetFastPriorityFee()
+	if slow > fast {
+		t.Errorf("slow %d should be <= fast %d with sparse samples", slow, fast)
+	}
+}
+
+func TestProcessBlockPartialGasFillWithinLimit(t *testing.T) {
+	oracle := NewGasOracle(DefaultGasConfig())
+
+	block := BlockGasInfo{
+		BlockNumber:  1,
+		GasUsed:      28_500_000,
+		GasLimit:     30_000_000,
+		BaseFee:      oracle.GetBaseFee(),
+		Timestamp:    1000,
+		PriorityFees: []uint64{1_800_000_000, 2_100_000_000},
+	}
+
+	if err := oracle.ProcessBlock(block); err != nil {
+		t.Fatalf("partial fill within gas limit should succeed: %v", err)
+	}
+
+	history := oracle.GetGasPriceHistory()
+	if len(history) != 1 || history[0].GasUsed != block.GasUsed {
+		t.Fatalf("history = %+v, want gas used %d recorded", history, block.GasUsed)
+	}
+}
+
 func TestEstimateGasWithPercentiles(t *testing.T) {
 	oracle := NewGasOracle(DefaultGasConfig())
 
