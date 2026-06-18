@@ -39,10 +39,18 @@ func (mrl *MethodRateLimiter) Allow(clientID, method string) bool {
 	mrl.mu.RUnlock()
 
 	if exists {
-		return limiter.Allow(clientID)
+		if !limiter.Allow(clientID) {
+			recordRateLimitHit(method)
+			return false
+		}
+		return true
 	}
 
-	return mrl.defaultLimiter.Allow(clientID)
+	if !mrl.defaultLimiter.Allow(clientID) {
+		recordRateLimitHit(method)
+		return false
+	}
+	return true
 }
 
 func (mrl *MethodRateLimiter) Middleware(getClientID func(*http.Request) string) func(http.Handler) http.Handler {
@@ -52,6 +60,7 @@ func (mrl *MethodRateLimiter) Middleware(getClientID func(*http.Request) string)
 
 			method := extractRPCMethod(r)
 			if method != "" && !mrl.Allow(clientID, method) {
+				recordThrottled("method")
 				w.Header().Set("Retry-After", "30")
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusTooManyRequests)

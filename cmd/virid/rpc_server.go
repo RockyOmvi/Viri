@@ -235,6 +235,7 @@ func (s *RPCServer) Start() error {
 	baseHandler := observability.InstrumentHandler("rpc", mux, func() {
 		observability.SetChainStats("rpc", s.blockchain.Height(), s.network.PeerCount())
 		observability.UpdateReadiness(s.network.PeerCount(), s.blockchain.Height())
+		security.ExportRateLimitMetrics(rateLimiter, methodRateLimiter)
 	})
 
 	tlsEnabled := s.tlsCert != "" && s.tlsKey != ""
