@@ -10,21 +10,72 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 
 	"github.com/viri-chain/viri/internal/layer1/crypto"
 	"github.com/viri-chain/viri/internal/layer1/ledger"
 	"github.com/viri-chain/viri/internal/layer1/state"
+	"golang.org/x/term"
 )
 
-const Version = "0.1.0"
+const Version = "0.1.1"
+
+const releaseURL = "https://viri.me/cli/version.json"
+
+type ReleaseInfo struct {
+	Version     string            `json:"version"`
+	DownloadURL map[string]string `json:"download_url"`
+	Notes       string            `json:"notes"`
+}
+
+func checkUpdate() {
+	if hasFlag("no-update-check") {
+		return
+	}
+	resp, err := http.Get(releaseURL)
+	if err != nil || resp.StatusCode != 200 {
+		return
+	}
+	defer resp.Body.Close()
+	var rel ReleaseInfo
+	if json.NewDecoder(resp.Body).Decode(&rel) != nil {
+		return
+	}
+	if rel.Version > Version {
+		fmt.Fprintf(os.Stderr, "\n  ⚡ Update available: v%s → v%s\n", Version, rel.Version)
+		if rel.Notes != "" {
+			fmt.Fprintf(os.Stderr, "     %s\n", rel.Notes)
+		}
+		fmt.Fprintf(os.Stderr, "     Download: https://viri.me/cli/\n\n")
+	}
+}
+
+const logo = `
+   __   _      ___
+   \ \ / /__ _|_ _|_ __ ___  _ __ ___
+    \ V / _ \__| | '_ \` + "`" + ` _ \| '__/ __|
+     | |  __/  | | | | | (_) | |  \__ \
+     |_|\___|___|_|_| |_|\___/|_|  |___/
+              |_____|
+`
+
+func printLogo() {
+	fmt.Fprint(os.Stderr, logo)
+}
+
 const defaultRPCURL = "http://localhost:8545"
 const defaultWalletDir = ".viri"
 
 func main() {
+	checkUpdate()
 	if len(os.Args) < 2 {
 		printUsage()
+		if runtime.GOOS == "windows" && term.IsTerminal(int(os.Stdin.Fd())) {
+			fmt.Fprint(os.Stderr, "\nPress Enter to exit...")
+			fmt.Scanln()
+		}
 		os.Exit(0)
 	}
 
@@ -48,6 +99,7 @@ func main() {
 	case "genesis":
 		handleGenesis()
 	case "version":
+		printLogo()
 		fmt.Printf("virictl v%s\n", Version)
 	case "help", "--help", "-h":
 		printUsage()
@@ -59,7 +111,9 @@ func main() {
 }
 
 func printUsage() {
+	printLogo()
 	fmt.Println("Viri CLI - Control and interact with the Viri blockchain")
+	fmt.Printf("Version: %s\n", Version)
 	fmt.Println()
 	fmt.Println("Usage:")
 	fmt.Println("  virictl <command> [subcommand] [flags]")
@@ -75,7 +129,7 @@ func printUsage() {
 	fmt.Println("    get <height>                Get block by height")
 	fmt.Println()
 	fmt.Println("  tx                            Transaction management")
-	fmt.Println("    send <to> <amount>          Send tokens")
+	fmt.Println("    send <to> <amount>          Send tokens (use --gas-limit to override, default: 50000)")
 	fmt.Println("    status                      Show node status")
 	fmt.Println()
 	fmt.Println("  account                       Account queries")
@@ -112,15 +166,56 @@ func printUsage() {
 	fmt.Println()
 	fmt.Println("Flags:")
 	fmt.Println("  --rpc <url>                   RPC endpoint (default: http://localhost:8545)")
+	fmt.Println("  --api-key <key>               API key for authenticated requests")
+	fmt.Println("  --chain-id <id>               Chain ID (default: auto-detect from RPC)")
+	fmt.Println("  --interactive                 Enable interactive passphrase prompts")
+	fmt.Println("  --no-update-check             Disable version update check")
+	fmt.Println()
+	fmt.Println("Environment:")
+	fmt.Println("  VIRI_API_KEY                  API key for authenticated requests")
+	fmt.Println("  VIRI_WALLET_PASSPHRASE        Wallet encryption passphrase")
+}
+
+func getFlag(name string) (string, bool) {
+	for i, arg := range os.Args {
+		if arg == "--"+name && i+1 < len(os.Args) {
+			return os.Args[i+1], true
+		}
+	}
+	return "", false
+}
+
+func hasFlag(name string) bool {
+	for _, arg := range os.Args {
+		if arg == "--"+name {
+			return true
+		}
+	}
+	return false
 }
 
 func getRPCURL() string {
-	for i, arg := range os.Args {
-		if arg == "--rpc" && i+1 < len(os.Args) {
-			return os.Args[i+1]
-		}
+	if v, ok := getFlag("rpc"); ok {
+		return v
 	}
 	return defaultRPCURL
+}
+
+func getAPIKey() string {
+	if v, ok := getFlag("api-key"); ok {
+		return v
+	}
+	return os.Getenv("VIRI_API_KEY")
+}
+
+func getChainID() uint64 {
+	if v, ok := getFlag("chain-id"); ok {
+		cid, err := strconv.ParseUint(v, 0, 64)
+		if err == nil {
+			return cid
+		}
+	}
+	return 0
 }
 
 func parseRPCURL() (*url.URL, error) {
@@ -158,7 +253,16 @@ func rpcCall(method string, params []interface{}) (map[string]interface{}, error
 
 	reqData, _ := json.Marshal(reqBody)
 
-	resp, err := http.Post(rpcURL, "application/json", bytes.NewReader(reqData))
+	req, err := http.NewRequest("POST", rpcURL, bytes.NewReader(reqData))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if key := getAPIKey(); key != "" {
+		req.Header.Set("X-API-Key", key)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("RPC connection failed: %w", err)
 	}
@@ -483,7 +587,7 @@ func handleTx() {
 	switch os.Args[2] {
 	case "send":
 		if len(os.Args) < 5 {
-			fmt.Println("Usage: virictl tx send <to> <amount>")
+			fmt.Println("Usage: virictl tx send <to> <amount> [--gas-limit <gas>]")
 			return
 		}
 		txSend(os.Args[3], os.Args[4])
@@ -543,7 +647,24 @@ func txSend(to string, amountStr string) {
 	}
 
 	// Create and sign transaction
-	tx, err := ledger.NewTransactionFromKey(nonce, toBytes, amount, 21000, 1, nil, uint64(1), key)
+	chainID := getChainID()
+	if chainID == 0 {
+		if res, err := rpcCall("eth_chainId", nil); err == nil {
+			if cidHex, ok := res["result"].(string); ok {
+				fmt.Sscanf(cidHex, "0x%x", &chainID)
+			}
+		}
+		if chainID == 0 {
+			chainID = 99997
+		}
+	}
+	gasLimit := uint64(50000)
+	if gl, ok := getFlag("gas-limit"); ok {
+		if g, err := strconv.ParseUint(gl, 10, 64); err == nil {
+			gasLimit = g
+		}
+	}
+	tx, err := ledger.NewTransactionFromKey(nonce, toBytes, amount, gasLimit, 1, nil, chainID, key)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to create transaction: %v\n", err)
 		os.Exit(1)
@@ -790,16 +911,33 @@ func getDefaultBackupDir() string {
 
 func getWalletPassphrase() string {
 	passphrase := os.Getenv("VIRI_WALLET_PASSPHRASE")
-	if passphrase == "" {
-		fmt.Fprintln(os.Stderr, "ERROR: VIRI_WALLET_PASSPHRASE environment variable is required.")
-		fmt.Fprintln(os.Stderr, "       Set it to a strong passphrase for wallet encryption.")
-		os.Exit(2)
+	if passphrase != "" {
+		if len(passphrase) < 12 {
+			fmt.Fprintln(os.Stderr, "ERROR: VIRI_WALLET_PASSPHRASE must be at least 12 characters long.")
+			os.Exit(2)
+		}
+		return passphrase
 	}
-	if len(passphrase) < 12 {
-		fmt.Fprintln(os.Stderr, "ERROR: VIRI_WALLET_PASSPHRASE must be at least 12 characters long.")
-		os.Exit(2)
+	if hasFlag("interactive") {
+		fmt.Fprint(os.Stderr, "Enter wallet passphrase: ")
+		bytepw, err := term.ReadPassword(int(os.Stdin.Fd()))
+		fmt.Fprintln(os.Stderr)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to read passphrase: %v\n", err)
+			os.Exit(1)
+		}
+		passphrase = string(bytepw)
+		if len(passphrase) < 12 {
+			fmt.Fprintln(os.Stderr, "ERROR: Passphrase must be at least 12 characters long.")
+			os.Exit(2)
+		}
+		return passphrase
 	}
-	return passphrase
+	fmt.Fprintln(os.Stderr, "ERROR: VIRI_WALLET_PASSPHRASE environment variable is required.")
+	fmt.Fprintln(os.Stderr, "       Or use --interactive flag to enter passphrase interactively.")
+	fmt.Fprintln(os.Stderr, "       Set it to a strong passphrase for wallet encryption.")
+	os.Exit(2)
+	return ""
 }
 
 func handleGenesis() {

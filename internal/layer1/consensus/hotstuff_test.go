@@ -3,6 +3,7 @@ package consensus
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/hex"
 	"sync"
 	"testing"
 	"time"
@@ -187,12 +188,20 @@ func TestHotStuffEngineStateTransitions(t *testing.T) {
 	engine := NewHotStuffEngine(config, vs, bp, sm, log, nil)
 	engine.Start(1)
 
-	heightKey := "1-0-PREPARE"
-	engine.votes[heightKey] = make(map[Phase]map[string]bool)
-	engine.votes[heightKey][PhasePrepare] = make(map[string]bool)
+	heightKey := "1-0"
+	reg := &ViewVoteRegistry{
+		Votes:              make(map[Phase]map[string]map[string]bool),
+		VoteCache:          make(map[Phase]map[string][]*Vote),
+		VoteSignatureCache: make(map[Phase]map[string]map[string]*crypto.Signature),
+		MyVotes:            make(map[Phase][]byte),
+	}
+	engine.viewVotes[heightKey] = reg
+	reg.Votes[PhasePrepare] = make(map[string]map[string]bool)
+	blockHashStr := ""
+	reg.Votes[PhasePrepare][blockHashStr] = make(map[string]bool)
 
 	for _, v := range validators {
-		engine.votes[heightKey][PhasePrepare][string(v.Address)] = true
+		reg.Votes[PhasePrepare][blockHashStr][hex.EncodeToString(v.Address)] = true
 	}
 
 	state := engine.GetState()

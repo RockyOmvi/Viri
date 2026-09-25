@@ -277,3 +277,50 @@ func TestMPT_RootChanges(t *testing.T) {
 		t.Error("root should change after delete")
 	}
 }
+
+func TestMPT_GarbageCollection(t *testing.T) {
+	db := NewMemoryStore()
+	mpt := NewMPT(db)
+
+	// Step 1: Insert key1 under Epoch 1
+	if err := mpt.Update([]byte("k1"), []byte("v1")); err != nil {
+		t.Fatal(err)
+	}
+	r1 := mpt.Root()
+	if err := mpt.SaveEpochRoot(1, r1); err != nil {
+		t.Fatal(err)
+	}
+
+	// Step 2: Update key1 to v2 under Epoch 2 (orphans the old leaf/nodes of Epoch 1)
+	if err := mpt.Update([]byte("k1"), []byte("v2")); err != nil {
+		t.Fatal(err)
+	}
+	r2 := mpt.Root()
+	if err := mpt.SaveEpochRoot(2, r2); err != nil {
+		t.Fatal(err)
+	}
+
+	// Step 3: Verify both roots exist and are different
+	if bytes.Equal(r1, r2) {
+		t.Fatal("roots should be different")
+	}
+
+	// Step 4: Run garbage collection before Epoch 2 (pruning Epoch 1)
+	pruned, err := mpt.GarbageCollect(2)
+	if err != nil {
+		t.Fatalf("GarbageCollect failed: %v", err)
+	}
+	if pruned != 1 {
+		t.Errorf("expected 1 pruned epoch, got %d", pruned)
+	}
+
+	// Epoch 1 root should no longer be in database, but Epoch 2 root and its values should be active
+	got, err := mpt.Get([]byte("k1"))
+	if err != nil {
+		t.Fatalf("k1 should still be retrievable from Epoch 2: %v", err)
+	}
+	if !bytes.Equal(got, []byte("v2")) {
+		t.Errorf("got %s, want v2", got)
+	}
+}
+

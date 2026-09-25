@@ -10,12 +10,15 @@ import (
 )
 
 type StateManager struct {
-	mu           sync.RWMutex
-	db           KVStore
-	accountState *AccountState
-	totalSupply  *big.Int
-	blockHeight  uint64
-	stateRoot    []byte
+	mu            sync.RWMutex
+	db            KVStore
+	accountState  *AccountState
+	totalSupply   *big.Int
+	maxSupply     *big.Int // S-03: cap on total supply
+	blockHeight   uint64
+	stateRoot     []byte
+	mpt           *MerklePatriciaTrie
+	dirtyAccounts map[string]bool // tracks accounts modified since last Commit
 }
 
 type StateSnapshot struct {
@@ -27,9 +30,11 @@ type StateSnapshot struct {
 
 func NewStateManager(db KVStore) (*StateManager, error) {
 	sm := &StateManager{
-		db:           db,
-		accountState: NewAccountState(db),
-		totalSupply:  big.NewInt(0),
+		db:            db,
+		accountState:  NewAccountState(db),
+		totalSupply:   big.NewInt(0),
+		mpt:           NewMPT(db),
+		dirtyAccounts: make(map[string]bool),
 	}
 
 	if err := sm.loadState(); err != nil {
@@ -45,6 +50,11 @@ func NewStateManager(db KVStore) (*StateManager, error) {
 func (sm *StateManager) Initialize(totalSupply *big.Int) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
+
+	// S-01: Guard against re-initialization if state already exists.
+	if sm.blockHeight > 0 || sm.totalSupply.Sign() > 0 {
+		return nil // already initialized
+	}
 
 	sm.totalSupply = new(big.Int).Set(totalSupply)
 	sm.blockHeight = 0
@@ -62,6 +72,7 @@ func (sm *StateManager) GetAccount(address []byte) (*Account, error) {
 func (sm *StateManager) SetAccount(account *Account) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
+	sm.dirtyAccounts[string(account.Address)] = true
 	return sm.accountState.SetAccount(account)
 }
 
@@ -81,6 +92,7 @@ func (sm *StateManager) CreateAccount(address []byte, accountType AccountType, i
 		return nil, err
 	}
 
+	sm.dirtyAccounts[string(address)] = true
 	return account, nil
 }
 
@@ -112,6 +124,8 @@ func (sm *StateManager) IncrementNonce(address []byte) error {
 func (sm *StateManager) Transfer(from, to []byte, amount *big.Int) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
+	sm.dirtyAccounts[string(from)] = true
+	sm.dirtyAccounts[string(to)] = true
 	return sm.accountState.Transfer(from, to, amount)
 }
 
@@ -134,6 +148,7 @@ func (sm *StateManager) SetCode(address []byte, code []byte) error {
 	account.CodeHash = crypto.SHA256(code)
 	account.Type = AccountTypeContract
 
+	sm.dirtyAccounts[string(address)] = true
 	return sm.accountState.SetAccount(account)
 }
 
@@ -161,6 +176,7 @@ func (sm *StateManager) SetStorage(address []byte, key []byte, value []byte) err
 		account.Storage = make(map[string][]byte)
 	}
 	account.Storage[string(key)] = value
+	sm.dirtyAccounts[string(address)] = true
 	return sm.accountState.SetAccount(account)
 }
 
@@ -170,26 +186,63 @@ func (sm *StateManager) Commit(blockHeight uint64) error {
 
 	sm.blockHeight = blockHeight
 
-	// Compute real state root from account data
-	root, err := sm.computeStateRoot()
+	// Incrementally update state root — only re-hash dirty accounts into the MPT.
+	root, err := sm.computeStateRootIncremental()
 	if err != nil {
 		return fmt.Errorf("failed to compute state root: %w", err)
 	}
 	sm.stateRoot = root
 
+	// Save the MPT root for this epoch
+	if err := sm.mpt.SaveEpochRoot(blockHeight, root); err != nil {
+		return fmt.Errorf("failed to save MPT epoch root: %w", err)
+	}
+
+	// Prune unreachable nodes from old epochs on commit (keep last 10 epochs)
+	const keepWindow = 10
+	if blockHeight > keepWindow {
+		if _, err := sm.mpt.GarbageCollect(blockHeight - keepWindow); err != nil {
+			return fmt.Errorf("failed to garbage collect old MPT nodes: %w", err)
+		}
+	}
+
+	// Clear dirty set after successful commit
+	sm.dirtyAccounts = make(map[string]bool)
+
 	return sm.saveState()
 }
 
-// computeStateRoot builds a Merkle root from all account state.
-// WARNING: This is O(n) in the number of accounts and called on every Commit.
-// A production system should use an incremental sparse Merkle tree instead.
+// computeStateRootIncremental updates the MPT with only the accounts that
+// changed since the last Commit, making this O(k) where k is the number of
+// modified accounts rather than O(n) over all accounts.
+func (sm *StateManager) computeStateRootIncremental() ([]byte, error) {
+	for addrStr := range sm.dirtyAccounts {
+		acc, err := sm.accountState.GetAccount([]byte(addrStr))
+		if err != nil {
+			// Account was deleted — remove from trie
+			_ = sm.mpt.Delete([]byte(addrStr))
+			continue
+		}
+		data, err := acc.Serialize()
+		if err != nil {
+			continue
+		}
+		if err := sm.mpt.Update([]byte(addrStr), data); err != nil {
+			return nil, fmt.Errorf("mpt update for account %x failed: %w", addrStr, err)
+		}
+	}
+
+	return sm.mpt.Root(), nil
+}
+
+// computeStateRoot is the legacy O(n) state root computation.
+// Retained for migration and verification purposes.
 func (sm *StateManager) computeStateRoot() ([]byte, error) {
 	accounts, err := sm.accountState.AllAccounts()
 	if err != nil || len(accounts) == 0 {
 		return crypto.SHA256([]byte("empty-state")), nil
 	}
 
-	// Build leaf hashes from each serialized account
 	leaves := make([][]byte, 0, len(accounts))
 	for _, acc := range accounts {
 		data, err := acc.Serialize()
@@ -249,6 +302,11 @@ func (sm *StateManager) AllAccounts() ([]*Account, error) {
 	return sm.accountState.AllAccounts()
 }
 
+// Prove generates a Merkle proof for the given key against the current state trie.
+func (sm *StateManager) Prove(key []byte) ([][]byte, error) {
+	return nil, fmt.Errorf("merkle proofs not yet supported for MPT state trie")
+}
+
 // DeleteBefore prunes state data before the given epoch for light client mode.
 // For the current in-memory state model, this resets the state to force re-sync
 // from full nodes. Returns the number of accounts pruned.
@@ -264,6 +322,8 @@ func (sm *StateManager) DeleteBefore(epoch uint64) (uint64, error) {
 
 	// Reset state — light client will re-fetch from full nodes
 	sm.accountState = NewAccountState(sm.db)
+	sm.mpt = NewMPT(sm.db)
+	sm.dirtyAccounts = make(map[string]bool)
 	sm.blockHeight = 0
 	sm.stateRoot = crypto.SHA256([]byte("empty-state"))
 
@@ -280,9 +340,18 @@ func (sm *StateManager) IsInitialized() bool {
 	return sm.blockHeight > 0 || sm.totalSupply.Sign() > 0
 }
 
+// S-03: MintTokens now enforces MaxSupply if set.
 func (sm *StateManager) MintTokens(address []byte, amount *big.Int) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
+
+	// S-03: Validate against MaxSupply
+	if sm.maxSupply != nil && sm.maxSupply.Sign() > 0 {
+		newSupply := new(big.Int).Add(sm.totalSupply, amount)
+		if newSupply.Cmp(sm.maxSupply) > 0 {
+			return fmt.Errorf("minting %s would exceed max supply %s (current: %s)", amount, sm.maxSupply, sm.totalSupply)
+		}
+	}
 
 	acct, err := sm.accountState.GetAccount(address)
 	if err != nil {
@@ -290,14 +359,34 @@ func (sm *StateManager) MintTokens(address []byte, amount *big.Int) error {
 	}
 	acct.Balance = new(big.Int).Add(acct.Balance, amount)
 	sm.totalSupply = new(big.Int).Add(sm.totalSupply, amount)
+	sm.dirtyAccounts[string(address)] = true
 	return sm.accountState.SetAccount(acct)
 }
 
-func (sm *StateManager) BurnTokens(amount *big.Int) error {
+// S-02: BurnTokens now requires an address and actually deducts from account balance.
+func (sm *StateManager) BurnTokens(address []byte, amount *big.Int) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
+
+	acct, err := sm.accountState.GetAccount(address)
+	if err != nil {
+		return fmt.Errorf("account not found for burn: %w", err)
+	}
+	if acct.Balance.Cmp(amount) < 0 {
+		return fmt.Errorf("insufficient balance for burn: have %s, burn %s", acct.Balance, amount)
+	}
+
+	acct.Balance = new(big.Int).Sub(acct.Balance, amount)
 	sm.totalSupply = new(big.Int).Sub(sm.totalSupply, amount)
-	return nil
+	sm.dirtyAccounts[string(address)] = true
+	return sm.accountState.SetAccount(acct)
+}
+
+// SetMaxSupply sets the maximum supply cap (S-03).
+func (sm *StateManager) SetMaxSupply(max *big.Int) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.maxSupply = new(big.Int).Set(max)
 }
 
 func (sm *StateManager) loadState() error {
@@ -341,3 +430,10 @@ func (sm *StateManager) saveState() error {
 
 	return sm.db.Put([]byte("__state__"), data)
 }
+
+func (sm *StateManager) GarbageCollect(beforeEpoch uint64) (uint64, error) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	return sm.mpt.GarbageCollect(beforeEpoch)
+}
+

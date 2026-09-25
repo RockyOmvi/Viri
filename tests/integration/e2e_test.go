@@ -62,6 +62,7 @@ func TestMultiNodeValidatorSet(t *testing.T) {
 
 func TestGovernanceFlow(t *testing.T) {
 	dao := governance.NewGovernanceDAO(10*time.Millisecond, 1000, 0.5)
+	dao.SetTotalNetworkStake(1400000)
 
 	key1, _ := crypto.GenerateKey()
 	key2, _ := crypto.GenerateKey()
@@ -340,6 +341,7 @@ func TestFullBlockchainWithGovernance(t *testing.T) {
 	}
 
 	dao := governance.NewGovernanceDAO(10, 1000, 0.5)
+	dao.SetTotalNetworkStake(1000000)
 	br := bridge.NewChainBridge(2)
 	protocol := interop.NewInteropProtocol()
 	solver := intent.NewIntentSolver()

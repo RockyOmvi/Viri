@@ -4,37 +4,72 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math/big"
+	"sync"
 
 	"github.com/viri-chain/viri/internal/layer1/crypto"
 )
 
 var two256 = new(big.Int).Lsh(big.NewInt(1), 256)
+var maxUint256 = new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))
+var bigThirtyOne = big.NewInt(31)
+var bigFF = big.NewInt(0xFF)
+
+var intPool = sync.Pool{
+	New: func() any {
+		return new(big.Int)
+	},
+}
+
+func acquireInt() *big.Int {
+	v := intPool.Get().(*big.Int)
+	v.SetUint64(0)
+	return v
+}
+
+func releaseInt(v *big.Int) {
+	if v != nil {
+		intPool.Put(v)
+	}
+}
 
 func wrap256(x *big.Int) *big.Int {
-	return new(big.Int).Mod(x, two256)
+	res := acquireInt()
+	res.Mod(x, two256)
+	return res
+}
+
+func wrap256InPlace(x *big.Int) {
+	x.Mod(x, two256)
 }
 
 func safeSetBig(v *big.Int) *big.Int {
-	if v == nil {
-		return new(big.Int)
+	res := acquireInt()
+	if v != nil {
+		res.Set(v)
 	}
-	return new(big.Int).Set(v)
+	return res
 }
 
 func toSigned256(x *big.Int) *big.Int {
 	b := make([]byte, 32)
 	x.FillBytes(b)
+	res := acquireInt()
 	if b[0]&0x80 != 0 {
-		return new(big.Int).Sub(x, two256)
+		res.Sub(x, two256)
+	} else {
+		res.Set(x)
 	}
-	return new(big.Int).Set(x)
+	return res
 }
 
 func toUnsigned256(x *big.Int) *big.Int {
+	res := acquireInt()
 	if x.Sign() < 0 {
-		return new(big.Int).Add(x, two256)
+		res.Add(x, two256)
+	} else {
+		res.Set(x)
 	}
-	return new(big.Int).Set(x)
+	return res
 }
 
 type EVMOpCode byte
@@ -262,6 +297,8 @@ func (evm *EVMExecutor) emitTrace(op EVMOpCode) {
 	})
 }
 
+const evmMaxStackDepth = 1024
+
 const (
 	gasFastest   uint64 = 3
 	gasFast      uint64 = 5
@@ -273,7 +310,7 @@ const (
 	gasSload     uint64 = 100
 	gasSstoreSet uint64 = 20000
 	gasSstoreReset uint64 = 5000
-	gasBalance   uint64 = 700
+	gasBalance   uint64 = 2600 // E-02: Updated to post-EIP-2929 cold access cost
 	gasCreate    uint64 = 32000
 	gasCodeDeposit uint64 = 200
 	gasCall      uint64 = 700
@@ -298,13 +335,20 @@ func (evm *EVMExecutor) useGas(cost uint64) error {
 	return nil
 }
 
+// E-03: Add quadratic memory gas component: Gmem × words + words²/512 (Yellow Paper)
 func memoryGas(currentSize, newSize uint64) uint64 {
 	if newSize <= currentSize {
 		return 0
 	}
 	newWords := (newSize + 31) / 32
 	oldWords := (currentSize + 31) / 32
-	return (newWords - oldWords) * gasMemory
+	// Quadratic formula: cost = Gmem * words + words^2 / 512
+	newCost := newWords*gasMemory + (newWords*newWords)/512
+	oldCost := oldWords*gasMemory + (oldWords*oldWords)/512
+	if newCost <= oldCost {
+		return 0
+	}
+	return newCost - oldCost
 }
 
 func (evm *EVMExecutor) expandMemory(offset, size uint64) error {
@@ -348,7 +392,9 @@ func (evm *EVMExecutor) popUint64() (uint64, error) {
 	}
 	val := evm.stack[len(evm.stack)-1]
 	evm.stack = evm.stack[:len(evm.stack)-1]
-	return val.Uint64(), nil
+	res := val.Uint64()
+	releaseInt(val)
+	return res, nil
 }
 
 func (evm *EVMExecutor) popBig() *big.Int {
@@ -360,6 +406,14 @@ func (evm *EVMExecutor) popBig() *big.Int {
 	return val
 }
 
+func (evm *EVMExecutor) pushStack(val *big.Int) error {
+	if len(evm.stack) >= evmMaxStackDepth {
+		return fmt.Errorf("stack overflow: depth %d exceeds maximum %d", len(evm.stack), evmMaxStackDepth)
+	}
+	evm.stack = append(evm.stack, val)
+	return nil
+}
+
 func (evm *EVMExecutor) toAddress(val *big.Int) []byte {
 	normalized := wrap256(val)
 	bytes := normalized.Bytes()
@@ -369,6 +423,7 @@ func (evm *EVMExecutor) toAddress(val *big.Int) []byte {
 	} else {
 		copy(addr[20-len(bytes):], bytes)
 	}
+	releaseInt(normalized)
 	return addr
 }
 
@@ -396,9 +451,39 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 	evm.code = code
 	evm.jumpDests = evm.computeJumpDests(code)
 
+	defer func() {
+		for _, val := range evm.stack {
+			releaseInt(val)
+		}
+		evm.stack = evm.stack[:0]
+	}()
+
 	for evm.pc < uint64(len(code)) {
 		op := EVMOpCode(code[evm.pc])
 		evm.pc++
+
+		// Enforce EVM stack depth limit (Yellow Paper §9.1).
+		// Opcodes that consume items first (e.g. ADD pops 2, pushes 1) cannot
+		// overflow, but pure-push opcodes (PUSH*, DUP*, ADDRESS, etc.) can.
+		// A conservative pre-check here prevents any path from exceeding 1024.
+		if len(evm.stack) >= evmMaxStackDepth {
+			// Only error for opcodes that would increase stack depth.
+			// Opcodes that only pop or leave stack unchanged are fine.
+			switch {
+			case op >= EVMPUSH0 && op <= EVMPUSH32:
+				return nil, evm.gasUsed, fmt.Errorf("stack overflow: depth %d", len(evm.stack))
+			case op >= EVMDUP1 && op < EVMDUP1+16:
+				return nil, evm.gasUsed, fmt.Errorf("stack overflow: depth %d", len(evm.stack))
+			case op == EVMADDRESS, op == EVMORIGIN, op == EVMCALLER,
+				op == EVMCALLVALUE, op == EVMCALLDATASIZE, op == EVMCODESIZE,
+				op == EVMGASPRICE, op == EVMRETURNDATASIZE,
+				op == EVMCOINBASE, op == EVMTIMESTAMP, op == EVMNUMBER,
+				op == EVMPREVRANDAO, op == EVMGASLIMIT, op == EVMCHAINID,
+				op == EVMSELFBALANCE, op == EVMBASEFEE,
+				op == EVMPC, op == EVMMSIZE, op == EVMGAS:
+				return nil, evm.gasUsed, fmt.Errorf("stack overflow: depth %d", len(evm.stack))
+			}
+		}
 
 		evm.emitTrace(op)
 
@@ -415,7 +500,10 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 			}
 			b, a := evm.stack[len(evm.stack)-1], evm.stack[len(evm.stack)-2]
 			evm.stack = evm.stack[:len(evm.stack)-2]
-			evm.stack = append(evm.stack, wrap256(new(big.Int).Add(a, b)))
+			a.Add(a, b)
+			wrap256InPlace(a)
+			evm.stack = append(evm.stack, a)
+			releaseInt(b)
 
 		case EVMSUB:
 			if len(evm.stack) < 2 {
@@ -426,7 +514,10 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 			}
 			b, a := evm.stack[len(evm.stack)-1], evm.stack[len(evm.stack)-2]
 			evm.stack = evm.stack[:len(evm.stack)-2]
-			evm.stack = append(evm.stack, wrap256(new(big.Int).Sub(a, b)))
+			a.Sub(a, b)
+			wrap256InPlace(a)
+			evm.stack = append(evm.stack, a)
+			releaseInt(b)
 
 		case EVMMUL:
 			if len(evm.stack) < 2 {
@@ -437,7 +528,10 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 			}
 			b, a := evm.stack[len(evm.stack)-1], evm.stack[len(evm.stack)-2]
 			evm.stack = evm.stack[:len(evm.stack)-2]
-			evm.stack = append(evm.stack, wrap256(new(big.Int).Mul(a, b)))
+			a.Mul(a, b)
+			wrap256InPlace(a)
+			evm.stack = append(evm.stack, a)
+			releaseInt(b)
 
 		case EVMDIV:
 			if len(evm.stack) < 2 {
@@ -449,10 +543,13 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 			b, a := evm.stack[len(evm.stack)-1], evm.stack[len(evm.stack)-2]
 			evm.stack = evm.stack[:len(evm.stack)-2]
 			if b.Sign() == 0 {
-				evm.stack = append(evm.stack, new(big.Int))
+				a.SetUint64(0)
+				evm.stack = append(evm.stack, a)
 			} else {
-				evm.stack = append(evm.stack, new(big.Int).Div(a, b))
+				a.Div(a, b)
+				evm.stack = append(evm.stack, a)
 			}
+			releaseInt(b)
 
 		case EVMSDIV:
 			if len(evm.stack) < 2 {
@@ -464,12 +561,20 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 			b, a := evm.stack[len(evm.stack)-1], evm.stack[len(evm.stack)-2]
 			evm.stack = evm.stack[:len(evm.stack)-2]
 			if b.Sign() == 0 {
-				evm.stack = append(evm.stack, new(big.Int))
+				a.SetUint64(0)
+				evm.stack = append(evm.stack, a)
 			} else {
 				sa := toSigned256(a)
 				sb := toSigned256(b)
-				evm.stack = append(evm.stack, toUnsigned256(new(big.Int).Div(sa, sb)))
+				sa.Div(sa, sb)
+				u2 := toUnsigned256(sa)
+				a.Set(u2)
+				evm.stack = append(evm.stack, a)
+				releaseInt(sa)
+				releaseInt(sb)
+				releaseInt(u2)
 			}
+			releaseInt(b)
 
 		case EVMMOD:
 			if len(evm.stack) < 2 {
@@ -481,10 +586,13 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 			b, a := evm.stack[len(evm.stack)-1], evm.stack[len(evm.stack)-2]
 			evm.stack = evm.stack[:len(evm.stack)-2]
 			if b.Sign() == 0 {
-				evm.stack = append(evm.stack, new(big.Int))
+				a.SetUint64(0)
+				evm.stack = append(evm.stack, a)
 			} else {
-				evm.stack = append(evm.stack, new(big.Int).Mod(a, b))
+				a.Mod(a, b)
+				evm.stack = append(evm.stack, a)
 			}
+			releaseInt(b)
 
 		case EVMSMOD:
 			if len(evm.stack) < 2 {
@@ -496,12 +604,20 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 			b, a := evm.stack[len(evm.stack)-1], evm.stack[len(evm.stack)-2]
 			evm.stack = evm.stack[:len(evm.stack)-2]
 			if b.Sign() == 0 {
-				evm.stack = append(evm.stack, new(big.Int))
+				a.SetUint64(0)
+				evm.stack = append(evm.stack, a)
 			} else {
-					sa := toSigned256(a)
+				sa := toSigned256(a)
 				sb := toSigned256(b)
-				evm.stack = append(evm.stack, toUnsigned256(new(big.Int).Mod(sa, sb)))
+				sa.Mod(sa, sb)
+				u2 := toUnsigned256(sa)
+				a.Set(u2)
+				evm.stack = append(evm.stack, a)
+				releaseInt(sa)
+				releaseInt(sb)
+				releaseInt(u2)
 			}
+			releaseInt(b)
 
 		case EVMADDMOD:
 			if len(evm.stack) < 3 {
@@ -513,11 +629,15 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 			c, b, a := evm.stack[len(evm.stack)-1], evm.stack[len(evm.stack)-2], evm.stack[len(evm.stack)-3]
 			evm.stack = evm.stack[:len(evm.stack)-3]
 			if c.Sign() == 0 {
-				evm.stack = append(evm.stack, new(big.Int))
+				a.SetUint64(0)
+				evm.stack = append(evm.stack, a)
 			} else {
-				sum := new(big.Int).Add(a, b)
-				evm.stack = append(evm.stack, new(big.Int).Mod(sum, c))
+				a.Add(a, b)
+				a.Mod(a, c)
+				evm.stack = append(evm.stack, a)
 			}
+			releaseInt(b)
+			releaseInt(c)
 
 		case EVMMULMOD:
 			if len(evm.stack) < 3 {
@@ -529,11 +649,15 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 			c, b, a := evm.stack[len(evm.stack)-1], evm.stack[len(evm.stack)-2], evm.stack[len(evm.stack)-3]
 			evm.stack = evm.stack[:len(evm.stack)-3]
 			if c.Sign() == 0 {
-				evm.stack = append(evm.stack, new(big.Int))
+				a.SetUint64(0)
+				evm.stack = append(evm.stack, a)
 			} else {
-				product := new(big.Int).Mul(a, b)
-				evm.stack = append(evm.stack, new(big.Int).Mod(product, c))
+				a.Mul(a, b)
+				a.Mod(a, c)
+				evm.stack = append(evm.stack, a)
 			}
+			releaseInt(b)
+			releaseInt(c)
 
 		case EVMEXP:
 			if len(evm.stack) < 2 {
@@ -544,13 +668,21 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 			expBytes := exponent.Bytes()
 			expGas := gasExp + gasExpByte*uint64(len(expBytes))
 			if err := evm.useGas(expGas); err != nil {
+				releaseInt(exponent)
+				releaseInt(base)
 				return nil, evm.gasUsed, err
 			}
 			if exponent.Sign() == 0 {
-				evm.stack = append(evm.stack, big.NewInt(1))
+				base.SetUint64(1)
+				evm.stack = append(evm.stack, base)
+				releaseInt(exponent)
 			} else {
-				result := new(big.Int).Exp(base, exponent, two256)
-				evm.stack = append(evm.stack, wrap256(result))
+				res := acquireInt()
+				res.Exp(base, exponent, two256)
+				wrap256InPlace(res)
+				evm.stack = append(evm.stack, res)
+				releaseInt(base)
+				releaseInt(exponent)
 			}
 
 		case EVMSIGNEXTEND:
@@ -564,11 +696,13 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 			evm.stack = evm.stack[:len(evm.stack)-2]
 			if b.Sign() < 0 {
 				evm.stack = append(evm.stack, a)
+				releaseInt(b)
 				break
 			}
 			t := b.Uint64()
 			if t >= 31 {
 				evm.stack = append(evm.stack, a)
+				releaseInt(b)
 				break
 			}
 			bytes := make([]byte, 32)
@@ -582,7 +716,9 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 			for i := 0; i < signBytePos; i++ {
 				bytes[i] = fillByte
 			}
-			evm.stack = append(evm.stack, new(big.Int).SetBytes(bytes))
+			a.SetBytes(bytes)
+			evm.stack = append(evm.stack, a)
+			releaseInt(b)
 
 		case EVMLT:
 			if len(evm.stack) < 2 {
@@ -594,10 +730,12 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 			b, a := evm.stack[len(evm.stack)-1], evm.stack[len(evm.stack)-2]
 			evm.stack = evm.stack[:len(evm.stack)-2]
 			if b.Cmp(a) < 0 {
-				evm.stack = append(evm.stack, big.NewInt(1))
+				a.SetUint64(1)
 			} else {
-				evm.stack = append(evm.stack, big.NewInt(0))
+				a.SetUint64(0)
 			}
+			evm.stack = append(evm.stack, a)
+			releaseInt(b)
 
 		case EVMGT:
 			if len(evm.stack) < 2 {
@@ -609,10 +747,12 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 			b, a := evm.stack[len(evm.stack)-1], evm.stack[len(evm.stack)-2]
 			evm.stack = evm.stack[:len(evm.stack)-2]
 			if b.Cmp(a) > 0 {
-				evm.stack = append(evm.stack, big.NewInt(1))
+				a.SetUint64(1)
 			} else {
-				evm.stack = append(evm.stack, big.NewInt(0))
+				a.SetUint64(0)
 			}
+			evm.stack = append(evm.stack, a)
+			releaseInt(b)
 
 		case EVMSLT:
 			if len(evm.stack) < 2 {
@@ -625,10 +765,14 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 			evm.stack = evm.stack[:len(evm.stack)-2]
 			sb, sa := toSigned256(b), toSigned256(a)
 			if sb.Cmp(sa) < 0 {
-				evm.stack = append(evm.stack, big.NewInt(1))
+				a.SetUint64(1)
 			} else {
-				evm.stack = append(evm.stack, big.NewInt(0))
+				a.SetUint64(0)
 			}
+			evm.stack = append(evm.stack, a)
+			releaseInt(b)
+			releaseInt(sb)
+			releaseInt(sa)
 
 		case EVMSGT:
 			if len(evm.stack) < 2 {
@@ -641,10 +785,14 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 			evm.stack = evm.stack[:len(evm.stack)-2]
 			sb, sa := toSigned256(b), toSigned256(a)
 			if sb.Cmp(sa) > 0 {
-				evm.stack = append(evm.stack, big.NewInt(1))
+				a.SetUint64(1)
 			} else {
-				evm.stack = append(evm.stack, big.NewInt(0))
+				a.SetUint64(0)
 			}
+			evm.stack = append(evm.stack, a)
+			releaseInt(b)
+			releaseInt(sb)
+			releaseInt(sa)
 
 		case EVMEQ:
 			if len(evm.stack) < 2 {
@@ -656,10 +804,12 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 			b, a := evm.stack[len(evm.stack)-1], evm.stack[len(evm.stack)-2]
 			evm.stack = evm.stack[:len(evm.stack)-2]
 			if a.Cmp(b) == 0 {
-				evm.stack = append(evm.stack, big.NewInt(1))
+				a.SetUint64(1)
 			} else {
-				evm.stack = append(evm.stack, big.NewInt(0))
+				a.SetUint64(0)
 			}
+			evm.stack = append(evm.stack, a)
+			releaseInt(b)
 
 		case EVMISZERO:
 			if len(evm.stack) < 1 {
@@ -669,9 +819,10 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 				return nil, evm.gasUsed, err
 			}
 			a := evm.stack[len(evm.stack)-1]
-			evm.stack[len(evm.stack)-1] = big.NewInt(0)
 			if a.Sign() == 0 {
-				evm.stack[len(evm.stack)-1] = big.NewInt(1)
+				a.SetUint64(1)
+			} else {
+				a.SetUint64(0)
 			}
 
 		case EVMAND:
@@ -683,7 +834,9 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 			}
 			b, a := evm.stack[len(evm.stack)-1], evm.stack[len(evm.stack)-2]
 			evm.stack = evm.stack[:len(evm.stack)-2]
-			evm.stack = append(evm.stack, new(big.Int).And(a, b))
+			a.And(a, b)
+			evm.stack = append(evm.stack, a)
+			releaseInt(b)
 
 		case EVMOR:
 			if len(evm.stack) < 2 {
@@ -694,7 +847,9 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 			}
 			b, a := evm.stack[len(evm.stack)-1], evm.stack[len(evm.stack)-2]
 			evm.stack = evm.stack[:len(evm.stack)-2]
-			evm.stack = append(evm.stack, new(big.Int).Or(a, b))
+			a.Or(a, b)
+			evm.stack = append(evm.stack, a)
+			releaseInt(b)
 
 		case EVMXOR:
 			if len(evm.stack) < 2 {
@@ -705,7 +860,9 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 			}
 			b, a := evm.stack[len(evm.stack)-1], evm.stack[len(evm.stack)-2]
 			evm.stack = evm.stack[:len(evm.stack)-2]
-			evm.stack = append(evm.stack, new(big.Int).Xor(a, b))
+			a.Xor(a, b)
+			evm.stack = append(evm.stack, a)
+			releaseInt(b)
 
 		case EVMNOT:
 			if len(evm.stack) < 1 {
@@ -715,8 +872,7 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 				return nil, evm.gasUsed, err
 			}
 			a := evm.stack[len(evm.stack)-1]
-			mask := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))
-			evm.stack[len(evm.stack)-1] = new(big.Int).Xor(a, mask)
+			a.Xor(a, maxUint256)
 
 		case EVMBYTE:
 			if len(evm.stack) < 2 {
@@ -727,15 +883,16 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 			}
 			pos, val := evm.stack[len(evm.stack)-1], evm.stack[len(evm.stack)-2]
 			evm.stack = evm.stack[:len(evm.stack)-2]
-			if pos.Sign() >= 0 && pos.Cmp(big.NewInt(31)) <= 0 {
-				shift := new(big.Int).Sub(big.NewInt(31), pos)
-				shift = shift.Mul(shift, big.NewInt(8))
-				byteVal := new(big.Int).Rsh(val, uint(shift.Uint64()))
-				byteVal = byteVal.And(byteVal, big.NewInt(0xFF))
-				evm.stack = append(evm.stack, byteVal)
+			if pos.Sign() >= 0 && pos.Cmp(bigThirtyOne) <= 0 {
+				shift := uint(31 - pos.Uint64()) * 8
+				val.Rsh(val, shift)
+				val.And(val, bigFF)
+				evm.stack = append(evm.stack, val)
 			} else {
-				evm.stack = append(evm.stack, big.NewInt(0))
+				val.SetUint64(0)
+				evm.stack = append(evm.stack, val)
 			}
+			releaseInt(pos)
 
 		case EVMSHL:
 			if len(evm.stack) < 2 {
@@ -748,13 +905,14 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 			evm.stack = evm.stack[:len(evm.stack)-2]
 			s := shift.Uint64()
 			if s > 255 {
-				evm.stack = append(evm.stack, big.NewInt(0))
+				val.SetUint64(0)
+				evm.stack = append(evm.stack, val)
 			} else {
-				r := new(big.Int).Lsh(val, uint(s))
-				mask := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))
-				r.And(r, mask)
-				evm.stack = append(evm.stack, r)
+				val.Lsh(val, uint(s))
+				wrap256InPlace(val)
+				evm.stack = append(evm.stack, val)
 			}
+			releaseInt(shift)
 
 		case EVMSHR:
 			if len(evm.stack) < 2 {
@@ -767,10 +925,13 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 			evm.stack = evm.stack[:len(evm.stack)-2]
 			s := shift.Uint64()
 			if s > 255 {
-				evm.stack = append(evm.stack, big.NewInt(0))
+				val.SetUint64(0)
+				evm.stack = append(evm.stack, val)
 			} else {
-				evm.stack = append(evm.stack, new(big.Int).Rsh(val, uint(s)))
+				val.Rsh(val, uint(s))
+				evm.stack = append(evm.stack, val)
 			}
+			releaseInt(shift)
 
 		case EVMSAR:
 			if len(evm.stack) < 2 {
@@ -786,8 +947,13 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 				s = 255
 			}
 			sval := toSigned256(val)
-			r := new(big.Int).Rsh(sval, uint(s))
-			evm.stack = append(evm.stack, toUnsigned256(r))
+			sval.Rsh(sval, uint(s))
+			uval := toUnsigned256(sval)
+			val.Set(uval)
+			evm.stack = append(evm.stack, val)
+			releaseInt(shift)
+			releaseInt(sval)
+			releaseInt(uval)
 
 		case EVMSHA3:
 			if len(evm.stack) < 2 {
@@ -796,27 +962,35 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 			offset, size := evm.stack[len(evm.stack)-1], evm.stack[len(evm.stack)-2]
 			evm.stack = evm.stack[:len(evm.stack)-2]
 			if size.Sign() < 0 || offset.Sign() < 0 {
+				releaseInt(offset)
+				releaseInt(size)
 				return nil, evm.gasUsed, fmt.Errorf("negative sha3 offset or size")
 			}
 			off := offset.Uint64()
 			sz := size.Uint64()
 			if err := evm.expandMemory(off, sz); err != nil {
+				releaseInt(offset)
+				releaseInt(size)
 				return nil, evm.gasUsed, err
 			}
 			wordCount := (sz + 31) / 32
 			sha3Gas := gasSha3 + gasSha3Word*wordCount
 			if err := evm.useGas(sha3Gas); err != nil {
+				releaseInt(offset)
+				releaseInt(size)
 				return nil, evm.gasUsed, err
 			}
 			data := evm.getMemory(off, sz)
 			hash := crypto.Keccak256(data)
-			evm.stack = append(evm.stack, new(big.Int).SetBytes(hash))
+			size.SetBytes(hash)
+			evm.stack = append(evm.stack, size)
+			releaseInt(offset)
 
 		case EVMADDRESS:
 			if err := evm.useGas(gasMid); err != nil {
 				return nil, evm.gasUsed, err
 			}
-			evm.stack = append(evm.stack, new(big.Int).SetBytes(evm.ctx.Address))
+			evm.stack = append(evm.stack, acquireInt().SetBytes(evm.ctx.Address))
 
 		case EVMBALANCE:
 			if len(evm.stack) < 1 {
@@ -826,19 +1000,19 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 				return nil, evm.gasUsed, err
 			}
 			addr := evm.toAddress(evm.stack[len(evm.stack)-1])
-			evm.stack[len(evm.stack)-1] = evm.state.GetBalance(addr)
+			evm.stack[len(evm.stack)-1].Set(evm.state.GetBalance(addr))
 
 		case EVMORIGIN:
 			if err := evm.useGas(gasMid); err != nil {
 				return nil, evm.gasUsed, err
 			}
-			evm.stack = append(evm.stack, new(big.Int).SetBytes(evm.ctx.Caller))
+			evm.stack = append(evm.stack, acquireInt().SetBytes(evm.ctx.Caller))
 
 		case EVMCALLER:
 			if err := evm.useGas(gasMid); err != nil {
 				return nil, evm.gasUsed, err
 			}
-			evm.stack = append(evm.stack, new(big.Int).SetBytes(evm.ctx.Caller))
+			evm.stack = append(evm.stack, acquireInt().SetBytes(evm.ctx.Caller))
 
 		case EVMGASPRICE:
 			if err := evm.useGas(gasMid); err != nil {
@@ -870,13 +1044,13 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 					data[i] = evm.ctx.Data[idx]
 				}
 			}
-			evm.stack = append(evm.stack, new(big.Int).SetBytes(data))
+			evm.stack = append(evm.stack, acquireInt().SetBytes(data))
 
 		case EVMCALLDATASIZE:
 			if err := evm.useGas(gasMid); err != nil {
 				return nil, evm.gasUsed, err
 			}
-			evm.stack = append(evm.stack, big.NewInt(int64(len(evm.ctx.Data))))
+			evm.stack = append(evm.stack, acquireInt().SetInt64(int64(len(evm.ctx.Data))))
 
 		case EVMCALLDATACOPY:
 			if len(evm.stack) < 3 {
@@ -911,7 +1085,7 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 			if err := evm.useGas(gasMid); err != nil {
 				return nil, evm.gasUsed, err
 			}
-			evm.stack = append(evm.stack, big.NewInt(int64(len(evm.code))))
+			evm.stack = append(evm.stack, acquireInt().SetInt64(int64(len(evm.code))))
 
 		case EVMCODECOPY:
 			if len(evm.stack) < 3 {
@@ -946,7 +1120,7 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 			if err := evm.useGas(gasMid); err != nil {
 				return nil, evm.gasUsed, err
 			}
-			evm.stack = append(evm.stack, big.NewInt(int64(len(evm.returndata))))
+			evm.stack = append(evm.stack, acquireInt().SetInt64(int64(len(evm.returndata))))
 
 		case EVMRETURNDATACOPY:
 			if len(evm.stack) < 3 {
@@ -1000,7 +1174,7 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 			if err := evm.useGas(gasFastest); err != nil {
 				return nil, evm.gasUsed, err
 			}
-			evm.stack = append(evm.stack, new(big.Int).SetBytes(evm.getMemory(offset, 32)))
+			evm.stack = append(evm.stack, acquireInt().SetBytes(evm.getMemory(offset, 32)))
 
 		case EVMMSTORE:
 			if len(evm.stack) < 2 {
@@ -1023,6 +1197,7 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 			valBytes := make([]byte, 32)
 			val.FillBytes(valBytes)
 			copy(evm.memory[offset:], valBytes)
+			releaseInt(val)
 
 		case EVMMSTORE8:
 			if len(evm.stack) < 2 {
@@ -1046,6 +1221,7 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 			if len(valBytes) > 0 && offset < uint64(len(evm.memory)) {
 				evm.memory[offset] = valBytes[len(valBytes)-1]
 			}
+			releaseInt(val)
 
 		case EVMSLOAD:
 			if len(evm.stack) < 1 {
@@ -1056,7 +1232,7 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 			}
 			key := make([]byte, 32)
 			evm.stack[len(evm.stack)-1].FillBytes(key)
-			evm.stack[len(evm.stack)-1] = new(big.Int).SetBytes(evm.state.GetStorage(evm.ctx.Address, key))
+			evm.stack[len(evm.stack)-1].SetBytes(evm.state.GetStorage(evm.ctx.Address, key))
 
 		case EVMSSTORE:
 			if evm.staticCall {
@@ -1067,9 +1243,12 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 			}
 			key := make([]byte, 32)
 			val := make([]byte, 32)
-			evm.stack[len(evm.stack)-1].FillBytes(key)
-			evm.stack[len(evm.stack)-2].FillBytes(val)
+			keyVal, valueVal := evm.stack[len(evm.stack)-1], evm.stack[len(evm.stack)-2]
 			evm.stack = evm.stack[:len(evm.stack)-2]
+			keyVal.FillBytes(key)
+			valueVal.FillBytes(val)
+			releaseInt(keyVal)
+			releaseInt(valueVal)
 			current := evm.state.GetStorage(evm.ctx.Address, key)
 			currentIsZero := len(current) == 0 || (len(current) == 1 && current[0] == 0)
 			valIsZero := len(val) == 0 || (len(val) == 1 && val[0] == 0)
@@ -1091,8 +1270,10 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 			if err := evm.useGas(gasMid); err != nil {
 				return nil, evm.gasUsed, err
 			}
-			dest := evm.stack[len(evm.stack)-1].Uint64()
+			destVal := evm.stack[len(evm.stack)-1]
+			dest := destVal.Uint64()
 			evm.stack = evm.stack[:len(evm.stack)-1]
+			releaseInt(destVal)
 			if !evm.jumpDests[dest] {
 				return nil, evm.gasUsed, fmt.Errorf("invalid jump destination")
 			}
@@ -1105,9 +1286,13 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 			if err := evm.useGas(gasMid); err != nil {
 				return nil, evm.gasUsed, err
 			}
-			dest, cond := evm.stack[len(evm.stack)-2].Uint64(), evm.stack[len(evm.stack)-1]
+			destVal, cond := evm.stack[len(evm.stack)-2], evm.stack[len(evm.stack)-1]
+			dest := destVal.Uint64()
 			evm.stack = evm.stack[:len(evm.stack)-2]
-			if cond.Sign() != 0 {
+			condSign := cond.Sign()
+			releaseInt(destVal)
+			releaseInt(cond)
+			if condSign != 0 {
 				if !evm.jumpDests[dest] {
 					return nil, evm.gasUsed, fmt.Errorf("invalid jump destination")
 				}
@@ -1118,20 +1303,20 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 			if err := evm.useGas(gasFastest); err != nil {
 				return nil, evm.gasUsed, err
 			}
-			evm.stack = append(evm.stack, big.NewInt(int64(evm.pc-1)))
+			evm.stack = append(evm.stack, acquireInt().SetInt64(int64(evm.pc-1)))
 
 		case EVMMSIZE:
 			if err := evm.useGas(gasFastest); err != nil {
 				return nil, evm.gasUsed, err
 			}
-			evm.stack = append(evm.stack, big.NewInt(int64(len(evm.memory))))
+			evm.stack = append(evm.stack, acquireInt().SetInt64(int64(len(evm.memory))))
 
 		case EVMGAS:
 			if err := evm.useGas(gasFastest); err != nil {
 				return nil, evm.gasUsed, err
 			}
 			remaining := evm.ctx.GasLimit - evm.gasUsed
-			evm.stack = append(evm.stack, new(big.Int).SetUint64(remaining))
+			evm.stack = append(evm.stack, acquireInt().SetUint64(remaining))
 
 		case EVMJUMPDEST:
 			if err := evm.useGas(gasFastest); err != nil {
@@ -1146,8 +1331,11 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 			if len(evm.stack) < 2 {
 				return nil, evm.gasUsed, fmt.Errorf("stack underflow")
 			}
-			offset, size := evm.stack[len(evm.stack)-1].Uint64(), evm.stack[len(evm.stack)-2].Uint64()
+			offsetVal, sizeVal := evm.stack[len(evm.stack)-1], evm.stack[len(evm.stack)-2]
+			offset, size := offsetVal.Uint64(), sizeVal.Uint64()
 			evm.stack = evm.stack[:len(evm.stack)-2]
+			releaseInt(offsetVal)
+			releaseInt(sizeVal)
 			if err := evm.useGas(gasSlow); err != nil {
 				return nil, evm.gasUsed, err
 			}
@@ -1157,8 +1345,11 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 			if len(evm.stack) < 2 {
 				return nil, evm.gasUsed, fmt.Errorf("stack underflow")
 			}
-			offset, size := evm.stack[len(evm.stack)-1].Uint64(), evm.stack[len(evm.stack)-2].Uint64()
+			offsetVal, sizeVal := evm.stack[len(evm.stack)-1], evm.stack[len(evm.stack)-2]
+			offset, size := offsetVal.Uint64(), sizeVal.Uint64()
 			evm.stack = evm.stack[:len(evm.stack)-2]
+			releaseInt(offsetVal)
+			releaseInt(sizeVal)
 			if err := evm.useGas(gasSlow); err != nil {
 				return nil, evm.gasUsed, err
 			}
@@ -1174,15 +1365,24 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 			value, offset, size := evm.stack[len(evm.stack)-1], evm.stack[len(evm.stack)-2], evm.stack[len(evm.stack)-3]
 			evm.stack = evm.stack[:len(evm.stack)-3]
 			if value.Sign() > 0 && evm.state.GetBalance(evm.ctx.Address).Cmp(value) < 0 {
-				evm.stack = append(evm.stack, big.NewInt(0))
+				evm.stack = append(evm.stack, acquireInt().SetUint64(0))
+				releaseInt(value)
+				releaseInt(offset)
+				releaseInt(size)
 				break
 			}
 			if err := evm.useGas(gasCreate); err != nil {
+				releaseInt(value)
+				releaseInt(offset)
+				releaseInt(size)
 				return nil, evm.gasUsed, err
 			}
 			off := offset.Uint64()
 			sz := size.Uint64()
 			if err := evm.expandMemory(off, sz); err != nil {
+				releaseInt(value)
+				releaseInt(offset)
+				releaseInt(size)
 				return nil, evm.gasUsed, err
 			}
 			initCode := evm.getMemory(off, sz)
@@ -1197,27 +1397,31 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 				Address:  contractAddr,
 				Value:    new(big.Int).Set(value),
 				GasLimit: evm.ctx.GasLimit - evm.gasUsed,
-				GasPrice: safeSetBig(evm.ctx.GasPrice),
+				GasPrice: new(big.Int).Set(evm.ctx.GasPrice),
 				Data:     nil,
 				BlockNum: evm.ctx.BlockNum,
 			}
+			releaseInt(value)
+			releaseInt(offset)
+			releaseInt(size)
+
 			sub := NewEVMExecutor(subCtx, evm.state)
 			retdata, subGas, err := sub.Execute(initCode)
 			evm.gasUsed += subGas
 			if err != nil {
 				evm.state.RevertToSnapshot(snap)
-				evm.stack = append(evm.stack, big.NewInt(0))
+				evm.stack = append(evm.stack, acquireInt().SetUint64(0))
 			} else {
 				if uint64(len(retdata)) > gMaxCodeSize {
 					evm.state.RevertToSnapshot(snap)
-					evm.stack = append(evm.stack, big.NewInt(0))
+					evm.stack = append(evm.stack, acquireInt().SetUint64(0))
 				} else {
 					deployGas := gasCodeDeposit * ((uint64(len(retdata)) + 31) / 32)
 					if err := evm.useGas(deployGas); err != nil {
 						evm.state.RevertToSnapshot(snap)
 						return nil, evm.gasUsed, err
 					}
-					evm.stack = append(evm.stack, new(big.Int).SetBytes(contractAddr))
+					evm.stack = append(evm.stack, acquireInt().SetBytes(contractAddr))
 				}
 			}
 
@@ -1231,15 +1435,27 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 			value, offset, size, salt := evm.stack[len(evm.stack)-1], evm.stack[len(evm.stack)-2], evm.stack[len(evm.stack)-3], evm.stack[len(evm.stack)-4]
 			evm.stack = evm.stack[:len(evm.stack)-4]
 			if value.Sign() > 0 && evm.state.GetBalance(evm.ctx.Address).Cmp(value) < 0 {
-				evm.stack = append(evm.stack, big.NewInt(0))
+				evm.stack = append(evm.stack, acquireInt().SetUint64(0))
+				releaseInt(value)
+				releaseInt(offset)
+				releaseInt(size)
+				releaseInt(salt)
 				break
 			}
 			if err := evm.useGas(gasCreate); err != nil {
+				releaseInt(value)
+				releaseInt(offset)
+				releaseInt(size)
+				releaseInt(salt)
 				return nil, evm.gasUsed, err
 			}
 			off := offset.Uint64()
 			sz := size.Uint64()
 			if err := evm.expandMemory(off, sz); err != nil {
+				releaseInt(value)
+				releaseInt(offset)
+				releaseInt(size)
+				releaseInt(salt)
 				return nil, evm.gasUsed, err
 			}
 			initCode := evm.getMemory(off, sz)
@@ -1255,27 +1471,32 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 				Address:  contractAddr,
 				Value:    new(big.Int).Set(value),
 				GasLimit: evm.ctx.GasLimit - evm.gasUsed,
-				GasPrice: safeSetBig(evm.ctx.GasPrice),
+				GasPrice: new(big.Int).Set(evm.ctx.GasPrice),
 				Data:     nil,
 				BlockNum: evm.ctx.BlockNum,
 			}
+			releaseInt(value)
+			releaseInt(offset)
+			releaseInt(size)
+			releaseInt(salt)
+
 			sub := NewEVMExecutor(subCtx, evm.state)
 			retdata, subGas, err := sub.Execute(initCode)
 			evm.gasUsed += subGas
 			if err != nil {
 				evm.state.RevertToSnapshot(snap)
-				evm.stack = append(evm.stack, big.NewInt(0))
+				evm.stack = append(evm.stack, acquireInt().SetUint64(0))
 			} else {
 				if uint64(len(retdata)) > gMaxCodeSize {
 					evm.state.RevertToSnapshot(snap)
-					evm.stack = append(evm.stack, big.NewInt(0))
+					evm.stack = append(evm.stack, acquireInt().SetUint64(0))
 				} else {
 					deployGas := gasCodeDeposit * ((uint64(len(retdata)) + 31) / 32)
 					if err := evm.useGas(deployGas); err != nil {
 						evm.state.RevertToSnapshot(snap)
 						return nil, evm.gasUsed, err
 					}
-					evm.stack = append(evm.stack, new(big.Int).SetBytes(contractAddr))
+					evm.stack = append(evm.stack, acquireInt().SetBytes(contractAddr))
 				}
 			}
 
@@ -1313,29 +1534,45 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 				evm.stack = evm.stack[:len(evm.stack)-7]
 			}
 
+			cleanup := func() {
+				releaseInt(gasLimit)
+				releaseInt(calleeAddr)
+				releaseInt(argOffset)
+				releaseInt(argSize)
+				releaseInt(retOffset)
+				releaseInt(retSize)
+				if !isDelegate {
+					releaseInt(value)
+				}
+			}
+
 			target := evm.toAddress(calleeAddr)
 
 			callGas := gasCall
 			valueTransferred := value.Sign() > 0 && (op == EVMCALL || op == EVMCALLCODE)
 			if valueTransferred {
 				if evm.state.GetBalance(evm.ctx.Address).Cmp(value) < 0 {
-					evm.stack = append(evm.stack, big.NewInt(0))
+					evm.stack = append(evm.stack, acquireInt().SetUint64(0))
+					cleanup()
 					break
 				}
 				callGas += gasCallValue
 			}
 			if err := evm.useGas(callGas); err != nil {
+				cleanup()
 				return nil, evm.gasUsed, err
 			}
 
 			aOff := argOffset.Uint64()
 			aSz := argSize.Uint64()
 			if err := evm.expandMemory(aOff, aSz); err != nil {
+				cleanup()
 				return nil, evm.gasUsed, err
 			}
 			rOff := retOffset.Uint64()
 			rSz := retSize.Uint64()
 			if err := evm.expandMemory(rOff, rSz); err != nil {
+				cleanup()
 				return nil, evm.gasUsed, err
 			}
 
@@ -1363,7 +1600,7 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 					Address:  target,
 					Value:    new(big.Int).Set(value),
 					GasLimit: gasAvailable,
-					GasPrice: safeSetBig(evm.ctx.GasPrice),
+					GasPrice: new(big.Int).Set(evm.ctx.GasPrice),
 					Data:     callData,
 					BlockNum: evm.ctx.BlockNum,
 				}
@@ -1373,7 +1610,7 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 					Address:  evm.ctx.Address,
 					Value:    new(big.Int).Set(value),
 					GasLimit: gasAvailable,
-					GasPrice: safeSetBig(evm.ctx.GasPrice),
+					GasPrice: new(big.Int).Set(evm.ctx.GasPrice),
 					Data:     callData,
 					BlockNum: evm.ctx.BlockNum,
 				}
@@ -1381,9 +1618,9 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 				subCtx = &EVMContext{
 					Caller:   evm.ctx.Caller,
 					Address:  evm.ctx.Address,
-					Value:    safeSetBig(evm.ctx.Value),
+					Value:    new(big.Int).Set(evm.ctx.Value),
 					GasLimit: gasAvailable,
-					GasPrice: safeSetBig(evm.ctx.GasPrice),
+					GasPrice: new(big.Int).Set(evm.ctx.GasPrice),
 					Data:     callData,
 					BlockNum: evm.ctx.BlockNum,
 				}
@@ -1393,18 +1630,20 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 					Address:  target,
 					Value:    big.NewInt(0),
 					GasLimit: gasAvailable,
-					GasPrice: safeSetBig(evm.ctx.GasPrice),
+					GasPrice: new(big.Int).Set(evm.ctx.GasPrice),
 					Data:     callData,
 					BlockNum: evm.ctx.BlockNum,
 				}
 			}
+
+			cleanup()
 
 			code := evm.state.GetCode(target)
 			if op == EVMCALLCODE || op == EVMDELEGATECALL {
 				code = evm.state.GetCode(target)
 			}
 			if len(code) == 0 {
-				evm.stack = append(evm.stack, big.NewInt(1))
+				evm.stack = append(evm.stack, acquireInt().SetUint64(1))
 				evm.returndata = nil
 			} else {
 				sub := NewEVMExecutor(subCtx, evm.state)
@@ -1418,9 +1657,9 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 					if op != EVMSTATICCALL {
 						evm.state.RevertToSnapshot(snap)
 					}
-					evm.stack = append(evm.stack, big.NewInt(0))
+					evm.stack = append(evm.stack, acquireInt().SetUint64(0))
 				} else {
-					evm.stack = append(evm.stack, big.NewInt(1))
+					evm.stack = append(evm.stack, acquireInt().SetUint64(1))
 					copyLen := rSz
 					if uint64(len(retdata)) < copyLen {
 						copyLen = uint64(len(retdata))
@@ -1447,13 +1686,17 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 			if len(evm.stack) < needed {
 				return nil, evm.gasUsed, fmt.Errorf("stack underflow")
 			}
-			offset, size := evm.stack[len(evm.stack)-2].Uint64(), evm.stack[len(evm.stack)-1].Uint64()
+			offsetVal, sizeVal := evm.stack[len(evm.stack)-2], evm.stack[len(evm.stack)-1]
+			offset, size := offsetVal.Uint64(), sizeVal.Uint64()
 			stackIdx := len(evm.stack) - 2 - numTopics
 			topics := make([][]byte, numTopics)
 			for i := 0; i < numTopics; i++ {
 				topic := make([]byte, 32)
 				evm.stack[stackIdx+i].FillBytes(topic)
 				topics[i] = topic
+			}
+			for i := 0; i < needed; i++ {
+				releaseInt(evm.stack[stackIdx+i])
 			}
 			evm.stack = evm.stack[:stackIdx]
 			logGas := gasLog + uint64(numTopics)*gasLogTopic + size*gasLogData
@@ -1478,8 +1721,10 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 			if err := evm.useGas(gasSelfdestruct); err != nil {
 				return nil, evm.gasUsed, err
 			}
-			recipient := evm.toAddress(evm.stack[len(evm.stack)-1])
+			recipientVal := evm.stack[len(evm.stack)-1]
+			recipient := evm.toAddress(recipientVal)
 			evm.stack = evm.stack[:len(evm.stack)-1]
+			releaseInt(recipientVal)
 			balance := evm.state.GetBalance(evm.ctx.Address)
 			if balance.Sign() > 0 {
 				evm.state.Transfer(evm.ctx.Address, recipient, balance)
@@ -1492,63 +1737,63 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 				return nil, evm.gasUsed, err
 			}
 			if evm.ctx.Coinbase == nil {
-				evm.stack = append(evm.stack, big.NewInt(0))
+				evm.stack = append(evm.stack, acquireInt().SetUint64(0))
 			} else {
-				evm.stack = append(evm.stack, new(big.Int).SetBytes(evm.ctx.Coinbase))
+				evm.stack = append(evm.stack, acquireInt().SetBytes(evm.ctx.Coinbase))
 			}
 
 		case EVMTIMESTAMP:
 			if err := evm.useGas(gasMid); err != nil {
 				return nil, evm.gasUsed, err
 			}
-			evm.stack = append(evm.stack, new(big.Int).SetUint64(evm.ctx.Timestamp))
+			evm.stack = append(evm.stack, acquireInt().SetUint64(evm.ctx.Timestamp))
 
 		case EVMNUMBER:
 			if err := evm.useGas(gasMid); err != nil {
 				return nil, evm.gasUsed, err
 			}
-			evm.stack = append(evm.stack, new(big.Int).SetUint64(evm.ctx.BlockNum))
+			evm.stack = append(evm.stack, acquireInt().SetUint64(evm.ctx.BlockNum))
 
 		case EVMPREVRANDAO:
 			if err := evm.useGas(gasMid); err != nil {
 				return nil, evm.gasUsed, err
 			}
 			if evm.ctx.PrevRandao == nil {
-				evm.stack = append(evm.stack, big.NewInt(0))
+				evm.stack = append(evm.stack, acquireInt().SetUint64(0))
 			} else {
-				evm.stack = append(evm.stack, new(big.Int).SetBytes(evm.ctx.PrevRandao))
+				evm.stack = append(evm.stack, acquireInt().SetBytes(evm.ctx.PrevRandao))
 			}
 
 		case EVMGASLIMIT:
 			if err := evm.useGas(gasMid); err != nil {
 				return nil, evm.gasUsed, err
 			}
-			evm.stack = append(evm.stack, new(big.Int).SetUint64(evm.ctx.BlockGasLimit))
+			evm.stack = append(evm.stack, acquireInt().SetUint64(evm.ctx.BlockGasLimit))
 
 		case EVMCHAINID:
 			if err := evm.useGas(gasMid); err != nil {
 				return nil, evm.gasUsed, err
 			}
 			if evm.ctx.ChainID != nil {
-				evm.stack = append(evm.stack, new(big.Int).Set(evm.ctx.ChainID))
+				evm.stack = append(evm.stack, acquireInt().Set(evm.ctx.ChainID))
 			} else {
-				evm.stack = append(evm.stack, big.NewInt(0))
+				evm.stack = append(evm.stack, acquireInt().SetUint64(0))
 			}
 
 		case EVMSELFBALANCE:
 			if err := evm.useGas(gasFast); err != nil {
 				return nil, evm.gasUsed, err
 			}
-			evm.stack = append(evm.stack, evm.state.GetBalance(evm.ctx.Address))
+			evm.stack = append(evm.stack, safeSetBig(evm.state.GetBalance(evm.ctx.Address)))
 
 		case EVMBASEFEE:
 			if err := evm.useGas(gasMid); err != nil {
 				return nil, evm.gasUsed, err
 			}
 			if evm.ctx.BaseFee != nil {
-				evm.stack = append(evm.stack, new(big.Int).Set(evm.ctx.BaseFee))
+				evm.stack = append(evm.stack, acquireInt().Set(evm.ctx.BaseFee))
 			} else {
-				evm.stack = append(evm.stack, big.NewInt(0))
+				evm.stack = append(evm.stack, acquireInt().SetUint64(0))
 			}
 
 		case EVMBLOCKHASH:
@@ -1558,24 +1803,26 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 			if err := evm.useGas(gasMid); err != nil {
 				return nil, evm.gasUsed, err
 			}
-			blockNum := evm.stack[len(evm.stack)-1].Uint64()
+			blockNumVal := evm.stack[len(evm.stack)-1]
+			blockNum := blockNumVal.Uint64()
 			evm.stack = evm.stack[:len(evm.stack)-1]
+			releaseInt(blockNumVal)
 			if evm.ctx.GetBlockHash != nil {
 				hash := evm.ctx.GetBlockHash(blockNum)
 				if len(hash) == 0 {
-					evm.stack = append(evm.stack, big.NewInt(0))
+					evm.stack = append(evm.stack, acquireInt().SetUint64(0))
 				} else {
-					evm.stack = append(evm.stack, new(big.Int).SetBytes(hash))
+					evm.stack = append(evm.stack, acquireInt().SetBytes(hash))
 				}
 			} else {
-				evm.stack = append(evm.stack, big.NewInt(0))
+				evm.stack = append(evm.stack, acquireInt().SetUint64(0))
 			}
 
 		case EVMPUSH0:
 			if err := evm.useGas(gasFastest); err != nil {
 				return nil, evm.gasUsed, err
 			}
-			evm.stack = append(evm.stack, big.NewInt(0))
+			evm.stack = append(evm.stack, acquireInt().SetUint64(0))
 
 		case EVMTLOAD:
 			if len(evm.stack) < 1 {
@@ -1586,7 +1833,7 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 			}
 			key := make([]byte, 32)
 			evm.stack[len(evm.stack)-1].FillBytes(key)
-			evm.stack[len(evm.stack)-1] = new(big.Int).SetBytes(evm.state.GetStorage(evm.ctx.Address, key))
+			evm.stack[len(evm.stack)-1].SetBytes(evm.state.GetStorage(evm.ctx.Address, key))
 
 		case EVMTSTORE:
 			if len(evm.stack) < 2 {
@@ -1594,9 +1841,12 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 			}
 			key := make([]byte, 32)
 			val := make([]byte, 32)
-			evm.stack[len(evm.stack)-1].FillBytes(key)
-			evm.stack[len(evm.stack)-2].FillBytes(val)
+			keyVal, valueVal := evm.stack[len(evm.stack)-1], evm.stack[len(evm.stack)-2]
 			evm.stack = evm.stack[:len(evm.stack)-2]
+			keyVal.FillBytes(key)
+			valueVal.FillBytes(val)
+			releaseInt(keyVal)
+			releaseInt(valueVal)
 			if err := evm.useGas(gasSstoreReset); err != nil {
 				return nil, evm.gasUsed, err
 			}
@@ -1608,12 +1858,16 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 			}
 			dstV, srcV, sizeV := evm.stack[len(evm.stack)-1], evm.stack[len(evm.stack)-2], evm.stack[len(evm.stack)-3]
 			evm.stack = evm.stack[:len(evm.stack)-3]
-			if dstV.Sign() < 0 || srcV.Sign() < 0 || sizeV.Sign() < 0 {
-				return nil, evm.gasUsed, fmt.Errorf("negative mcopy offset or size")
-			}
 			dst := dstV.Uint64()
 			src := srcV.Uint64()
 			sz := sizeV.Uint64()
+			dstSign, srcSign, szSign := dstV.Sign(), srcV.Sign(), sizeV.Sign()
+			releaseInt(dstV)
+			releaseInt(srcV)
+			releaseInt(sizeV)
+			if dstSign < 0 || srcSign < 0 || szSign < 0 {
+				return nil, evm.gasUsed, fmt.Errorf("negative mcopy offset or size")
+			}
 			maxEnd := dst + sz
 			if src+sz > maxEnd {
 				maxEnd = src + sz
@@ -1639,8 +1893,9 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 			if err := evm.useGas(gasExt); err != nil {
 				return nil, evm.gasUsed, err
 			}
-			addr := evm.toAddress(evm.stack[len(evm.stack)-1])
-			evm.stack[len(evm.stack)-1] = big.NewInt(int64(len(evm.state.GetCode(addr))))
+			addrVal := evm.stack[len(evm.stack)-1]
+			addr := evm.toAddress(addrVal)
+			addrVal.SetInt64(int64(len(evm.state.GetCode(addr))))
 
 		case EXTCODECOPY:
 			if len(evm.stack) < 4 {
@@ -1648,13 +1903,18 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 			}
 			addrV, memOffsetV, codeOffsetV, sizeV := evm.stack[len(evm.stack)-1], evm.stack[len(evm.stack)-2], evm.stack[len(evm.stack)-3], evm.stack[len(evm.stack)-4]
 			evm.stack = evm.stack[:len(evm.stack)-4]
-			if addrV.Sign() < 0 || memOffsetV.Sign() < 0 || codeOffsetV.Sign() < 0 || sizeV.Sign() < 0 {
-				return nil, evm.gasUsed, fmt.Errorf("negative extcodecopy offset or size")
-			}
+			addrSign, memSign, codeSign, szSign := addrV.Sign(), memOffsetV.Sign(), codeOffsetV.Sign(), sizeV.Sign()
 			addr := evm.toAddress(addrV)
 			memOffset := memOffsetV.Uint64()
 			codeOffset := codeOffsetV.Uint64()
 			size := sizeV.Uint64()
+			releaseInt(addrV)
+			releaseInt(memOffsetV)
+			releaseInt(codeOffsetV)
+			releaseInt(sizeV)
+			if addrSign < 0 || memSign < 0 || codeSign < 0 || szSign < 0 {
+				return nil, evm.gasUsed, fmt.Errorf("negative extcodecopy offset or size")
+			}
 			if err := evm.expandMemory(memOffset, size); err != nil {
 				return nil, evm.gasUsed, err
 			}
@@ -1677,13 +1937,14 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 			if err := evm.useGas(gasExt); err != nil {
 				return nil, evm.gasUsed, err
 			}
-			addr := evm.toAddress(evm.stack[len(evm.stack)-1])
+			addrVal := evm.stack[len(evm.stack)-1]
+			addr := evm.toAddress(addrVal)
 			code := evm.state.GetCode(addr)
 			if len(code) == 0 {
-				evm.stack[len(evm.stack)-1] = big.NewInt(0)
+				addrVal.SetUint64(0)
 			} else {
 				hash := crypto.Keccak256(code)
-				evm.stack[len(evm.stack)-1] = new(big.Int).SetBytes(hash)
+				addrVal.SetBytes(hash)
 			}
 
 		default:
@@ -1692,12 +1953,12 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 					return nil, evm.gasUsed, err
 				}
 				numBytes := int(op) - int(EVMPUSH1) + 1
-				var val *big.Int
+				val := acquireInt()
 				if evm.pc+uint64(numBytes) <= uint64(len(code)) {
-					val = new(big.Int).SetBytes(code[evm.pc : evm.pc+uint64(numBytes)])
+					val.SetBytes(code[evm.pc : evm.pc+uint64(numBytes)])
 					evm.pc += uint64(numBytes)
 				} else {
-					val = new(big.Int).SetBytes(code[evm.pc:])
+					val.SetBytes(code[evm.pc:])
 					evm.pc = uint64(len(code))
 				}
 				evm.stack = append(evm.stack, val)
@@ -1709,7 +1970,7 @@ func (evm *EVMExecutor) Execute(code []byte) ([]byte, uint64, error) {
 				if len(evm.stack) < n {
 					return nil, evm.gasUsed, fmt.Errorf("stack underflow")
 				}
-				evm.stack = append(evm.stack, new(big.Int).Set(evm.stack[len(evm.stack)-n]))
+				evm.stack = append(evm.stack, acquireInt().Set(evm.stack[len(evm.stack)-n]))
 			} else if op >= EVMSWAP1 && op < EVMSWAP1+16 {
 				if err := evm.useGas(gasFastest); err != nil {
 					return nil, evm.gasUsed, err

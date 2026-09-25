@@ -11,43 +11,58 @@ import (
 	"github.com/cloudflare/circl/sign/slhdsa"
 )
 
+// SchemeInfo stores metadata and the generator for a scheme.
+type SchemeInfo struct {
+	Name         string
+	PrivateBytes int
+	PublicBytes  int
+	SigBytes     int
+	Generator    KeyGenerator
+}
+
 // SchemeRegistry maps scheme names to their generators.
 // It is populated at init time with built-in schemes.
 type SchemeRegistry struct {
-	mu       sync.RWMutex
-	schemes  map[Scheme]KeyGenerator
-	names    map[string]Scheme
+	mu            sync.RWMutex
+	schemes       map[Scheme]SchemeInfo
+	names         map[string]Scheme
 	defaultScheme Scheme
 }
 
 var globalRegistry = &SchemeRegistry{
-	schemes: make(map[Scheme]KeyGenerator),
+	schemes: make(map[Scheme]SchemeInfo),
 	names:   make(map[string]Scheme),
 }
 
 func init() {
-	RegisterScheme(SchemeECDSA, &ecdsaGenerator{})
-	RegisterScheme(SchemeMLDSA44, &mldsaGenerator{scheme: SchemeMLDSA44})
-	RegisterScheme(SchemeMLDSA65, &mldsaGenerator{scheme: SchemeMLDSA65})
-	RegisterScheme(SchemeMLDSA87, &mldsaGenerator{scheme: SchemeMLDSA87})
-	RegisterScheme(SchemeSPHINCS, &sphincsGenerator{})
+	RegisterScheme(SchemeECDSA, "secp256k1", 32, 65, 64, &ecdsaGenerator{})
+	RegisterScheme(SchemeMLDSA44, "mldsa44", 2560, 1312, 2420, &mldsaGenerator{scheme: SchemeMLDSA44})
+	RegisterScheme(SchemeMLDSA65, "mldsa65", 4032, 1952, 3309, &mldsaGenerator{scheme: SchemeMLDSA65})
+	RegisterScheme(SchemeMLDSA87, "mldsa87", 4896, 2592, 4627, &mldsaGenerator{scheme: SchemeMLDSA87})
+	RegisterScheme(SchemeSPHINCS, "sphincs-sha256-128s", 64, 32, 7856, &sphincsGenerator{})
 	globalRegistry.defaultScheme = SchemeECDSA
 }
 
 // RegisterScheme registers a key generator for a scheme.
-func RegisterScheme(scheme Scheme, gen KeyGenerator) {
+func RegisterScheme(scheme Scheme, name string, privBytes, pubBytes, sigBytes int, gen KeyGenerator) {
 	globalRegistry.mu.Lock()
 	defer globalRegistry.mu.Unlock()
-	globalRegistry.schemes[scheme] = gen
-	globalRegistry.names[scheme.String()] = scheme
+	globalRegistry.schemes[scheme] = SchemeInfo{
+		Name:         name,
+		PrivateBytes: privBytes,
+		PublicBytes:  pubBytes,
+		SigBytes:     sigBytes,
+		Generator:    gen,
+	}
+	globalRegistry.names[name] = scheme
 }
 
 // GetGenerator returns the key generator for the given scheme.
 func GetGenerator(scheme Scheme) (KeyGenerator, bool) {
 	globalRegistry.mu.RLock()
 	defer globalRegistry.mu.RUnlock()
-	gen, ok := globalRegistry.schemes[scheme]
-	return gen, ok
+	info, ok := globalRegistry.schemes[scheme]
+	return info.Generator, ok
 }
 
 // DefaultScheme returns the default signature scheme.

@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math/big"
+	"time"
 
 	"github.com/viri-chain/viri/internal/layer1/crypto"
 	"github.com/viri-chain/viri/internal/layer1/ledger"
@@ -286,9 +287,9 @@ func (e *ExecutionEngine) ExecuteTransaction(tx *ledger.Transaction, blockHeight
 	case TxTransfer:
 		result = e.executeTransfer(tx, getAccount, setAccount)
 	case TxContractDeploy:
-		result = e.executeDeploy(tx, getAccount, setAccount)
+		result = e.executeDeploy(tx, blockHeight, getAccount, setAccount)
 	case TxContractCall:
-		result = e.executeCall(tx, getAccount, setAccount)
+		result = e.executeCall(tx, blockHeight, getAccount, setAccount)
 	default:
 		result = &ExecutionResult{
 			Status: 0,
@@ -314,7 +315,15 @@ func (e *ExecutionEngine) ExecuteTransaction(tx *ledger.Transaction, blockHeight
 		refundAddr := tx.SenderAddress()
 		refundAccount, err := getAccount(refundAddr)
 		if err == nil {
-			refundAccount.AddTokenBalance(feeToken, new(big.Int).SetUint64(result.GasRefund))
+			// EX-01: Refund in native token when fee was paid in native.
+			// Only use feeToken for refund if fee was actually paid in that token.
+			refundToken := feeToken
+			if len(refundToken) == 0 {
+				// Native fee — refund to native balance
+				refundAccount.Balance = new(big.Int).Add(refundAccount.Balance, new(big.Int).SetUint64(result.GasRefund))
+			} else {
+				refundAccount.AddTokenBalance(refundToken, new(big.Int).SetUint64(result.GasRefund))
+			}
 			if err := setAccount(refundAddr, refundAccount); err != nil {
 				fmt.Printf("[WARN] Failed to persist gas refund for %x: %v\n", refundAddr, err)
 			}
@@ -366,7 +375,7 @@ func (e *ExecutionEngine) executeTransfer(tx *ledger.Transaction, getAccount fun
 	}
 }
 
-func (e *ExecutionEngine) executeDeploy(tx *ledger.Transaction, getAccount func([]byte) (*AccountState, error), setAccount func([]byte, *AccountState) error) *ExecutionResult {
+func (e *ExecutionEngine) executeDeploy(tx *ledger.Transaction, blockHeight uint64, getAccount func([]byte) (*AccountState, error), setAccount func([]byte, *AccountState) error) *ExecutionResult {
 	if len(tx.Data) == 0 {
 		return &ExecutionResult{
 			Status: 0,
@@ -383,10 +392,10 @@ func (e *ExecutionEngine) executeDeploy(tx *ledger.Transaction, getAccount func(
 		setAccount: setAccount,
 	}
 
-	constructorArgs := []byte{}
-	if len(tx.Data) > 32 {
-		constructorArgs = tx.Data[len(tx.Data)-32:]
-	}
+	// EX-02: Pass full tx.Data as init code. Remove the fragile 32-byte
+	// constructor arg heuristic which incorrectly splits init code.
+	initCode := tx.Data
+	constructorArgs := tx.Data
 
 	ctx := &vm.EVMContext{
 		Caller:   tx.SenderAddress(),
@@ -395,11 +404,12 @@ func (e *ExecutionEngine) executeDeploy(tx *ledger.Transaction, getAccount func(
 		GasLimit: tx.GasLimit,
 		GasPrice: new(big.Int).SetUint64(tx.GasPrice),
 		Data:     constructorArgs,
-	}
-
-	initCode := tx.Data
-	if len(tx.Data) > 32 {
-		initCode = tx.Data[:len(tx.Data)-32]
+		// EX-03: Populate EVM context with block state
+		BlockNum:  blockHeight,
+		Timestamp: uint64(time.Now().Unix()),
+		ChainID:   new(big.Int).SetUint64(tx.ChainID),
+		Coinbase:  nil,
+		BaseFee:   new(big.Int),
 	}
 
 	var runtimeCode []byte
@@ -471,7 +481,7 @@ func (e *ExecutionEngine) executeDeploy(tx *ledger.Transaction, getAccount func(
 	}
 }
 
-func (e *ExecutionEngine) executeCall(tx *ledger.Transaction, getAccount func([]byte) (*AccountState, error), setAccount func([]byte, *AccountState) error) *ExecutionResult {
+func (e *ExecutionEngine) executeCall(tx *ledger.Transaction, blockHeight uint64, getAccount func([]byte) (*AccountState, error), setAccount func([]byte, *AccountState) error) *ExecutionResult {
 	// Check for precompile and standard contracts (always, even without shielded pool)
 	if res := e.handlePrecompile(tx, getAccount, setAccount); res != nil {
 		return res
@@ -519,12 +529,17 @@ func (e *ExecutionEngine) executeCall(tx *ledger.Transaction, getAccount func([]
 		output, gasUsed, err = wasmExecutor.Execute(contract.Code)
 	} else {
 		ctx := &vm.EVMContext{
-			Caller:   tx.SenderAddress(),
-			Address:  tx.To,
-			Value:    new(big.Int).SetUint64(tx.Value),
-			GasLimit: tx.GasLimit,
-			GasPrice: new(big.Int).SetUint64(tx.GasPrice),
-			Data:     tx.Data,
+			Caller:    tx.SenderAddress(),
+			Address:   tx.To,
+			Value:     new(big.Int).SetUint64(tx.Value),
+			GasLimit:  tx.GasLimit,
+			GasPrice:  new(big.Int).SetUint64(tx.GasPrice),
+			Data:      tx.Data,
+			BlockNum:  blockHeight,
+			Timestamp: uint64(time.Now().Unix()),
+			ChainID:   new(big.Int).SetUint64(tx.ChainID),
+			Coinbase:  nil,
+			BaseFee:   new(big.Int),
 		}
 		executor := vm.NewEVMExecutor(ctx, stateAdapter)
 		output, gasUsed, err = executor.Execute(contract.Code)

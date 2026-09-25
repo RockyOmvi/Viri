@@ -365,3 +365,36 @@ func TestStateManagerClose(t *testing.T) {
 		t.Fatalf("Failed to close state manager: %v", err)
 	}
 }
+
+func TestStateManagerGarbageCollection(t *testing.T) {
+	store := NewMemoryStore()
+	stateMgr, err := NewStateManager(store)
+	if err != nil {
+		t.Fatalf("Failed to create state manager: %v", err)
+	}
+	stateMgr.Initialize(big.NewInt(1_000_000))
+
+	addr := []byte("test-account")
+	_, err = stateMgr.CreateAccount(addr, AccountTypeNormal, big.NewInt(1000))
+	if err != nil {
+		t.Fatalf("Failed to create account: %v", err)
+	}
+
+	// Commit 15 times. With keepWindow = 10, epochs before 5 should be pruned.
+	for i := uint64(1); i <= 15; i++ {
+		stateMgr.MintTokens(addr, big.NewInt(1))
+		if err := stateMgr.Commit(i); err != nil {
+			t.Fatalf("Commit %d failed: %v", i, err)
+		}
+	}
+
+	// Verify that we can still query the state
+	balance, err := stateMgr.GetBalance(addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if balance.Cmp(big.NewInt(1015)) != 0 {
+		t.Errorf("Expected balance 1015, got %s", balance.String())
+	}
+}
+

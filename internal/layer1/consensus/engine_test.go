@@ -391,8 +391,8 @@ func TestRewardDistribution(t *testing.T) {
 	engine.AddReward(1000)
 	engine.distributeRewards(1)
 
-	if engine.rewardPool != 0 {
-		t.Errorf("Expected reward pool 0 after distribution, got %d", engine.rewardPool)
+	if engine.rewardPool.Sign() != 0 {
+		t.Errorf("Expected reward pool 0 after distribution, got %s", engine.rewardPool.String())
 	}
 }
 

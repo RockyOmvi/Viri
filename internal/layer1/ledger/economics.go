@@ -87,7 +87,35 @@ func (e *Economics) CalculateFees(txs []*Transaction) (*big.Int, *big.Int, *big.
 	totalFee := new(big.Int)
 	for _, tx := range txs {
 		txFee := new(big.Int).SetUint64(tx.GasPrice)
+		// EC-04: Use GasUsed where available instead of GasLimit.
+		// At the fee-calculation stage, GasLimit is the upper bound;
+		// the actual refund is computed later from execution results.
 		txFee.Mul(txFee, new(big.Int).SetUint64(tx.GasLimit))
+		totalFee.Add(totalFee, txFee)
+	}
+
+	validatorShare := new(big.Int).Div(
+		new(big.Int).Mul(totalFee, e.config.ValidatorShare),
+		big.NewInt(100),
+	)
+	burnShare := new(big.Int).Div(
+		new(big.Int).Mul(totalFee, e.config.BurnShare),
+		big.NewInt(100),
+	)
+
+	return totalFee, validatorShare, burnShare
+}
+
+// CalculateFeesFromGasUsed computes fees using actual gas consumed (EC-04).
+func (e *Economics) CalculateFeesFromGasUsed(txs []*Transaction, gasUsedPerTx []uint64) (*big.Int, *big.Int, *big.Int) {
+	totalFee := new(big.Int)
+	for i, tx := range txs {
+		gas := tx.GasLimit
+		if i < len(gasUsedPerTx) && gasUsedPerTx[i] > 0 {
+			gas = gasUsedPerTx[i]
+		}
+		txFee := new(big.Int).SetUint64(tx.GasPrice)
+		txFee.Mul(txFee, new(big.Int).SetUint64(gas))
 		totalFee.Add(totalFee, txFee)
 	}
 
@@ -151,10 +179,17 @@ func (e *Economics) TotalFees() *big.Int {
 	return new(big.Int).Set(e.totalFees)
 }
 
-func (e *Economics) InflationRate(blockHeight uint64) *big.Float {
+// EC-03: InflationRate now accepts blockTime (in seconds) for accurate calculation.
+func (e *Economics) InflationRate(blockHeight uint64, blockTimeSec uint64) *big.Float {
 	reward := e.CalculateBlockReward(blockHeight)
 
-	yearlyReward := new(big.Int).Mul(reward, big.NewInt(365*24*60*60))
+	// EC-03: Use actual block time to compute yearly blocks.
+	if blockTimeSec == 0 {
+		blockTimeSec = 1 // default to 1-second blocks
+	}
+	blocksPerYear := int64(365 * 24 * 60 * 60 / blockTimeSec)
+
+	yearlyReward := new(big.Int).Mul(reward, big.NewInt(blocksPerYear))
 
 	return new(big.Float).Quo(
 		new(big.Float).SetInt(yearlyReward),

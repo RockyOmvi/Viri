@@ -11,17 +11,18 @@ import (
 )
 
 type RLPTx struct {
-	Nonce    uint64
-	GasPrice uint64
-	GasLimit uint64
-	To       []byte
-	Value    uint64
-	Data     []byte
-	V        byte
-	R        []byte
-	S        []byte
-	ChainID  uint64
-	txType   byte // 0 = legacy, 1 = EIP-2930, 2 = EIP-1559
+	Nonce                 uint64
+	GasPrice              uint64
+	GasLimit              uint64
+	To                    []byte
+	Value                 uint64
+	Data                  []byte
+	V                     byte
+	R                     []byte
+	S                     []byte
+	ChainID               uint64
+	txType                byte  // 0 = legacy, 1 = EIP-2930, 2 = EIP-1559
+	MaxPriorityFeePerGas  uint64 // EIP-1559 only
 }
 
 func decodeRLPItem(data []byte) ([]byte, []byte, error) {
@@ -123,6 +124,7 @@ func DecodeRLPTransaction(raw []byte) (*RLPTx, error) {
 		}
 		tx.ChainID = decodeRLPBigInt(items[0])
 		tx.Nonce = decodeRLPBigInt(items[1])
+		tx.MaxPriorityFeePerGas = decodeRLPBigInt(items[2])
 		tx.GasPrice = decodeRLPBigInt(items[3]) // maxFeePerGas
 		tx.GasLimit = decodeRLPBigInt(items[4])
 		tx.To = items[5]
@@ -174,7 +176,7 @@ func (tx *RLPTx) SigningHash() []byte {
 		buf = append([]byte{tx.txType}, rlpEncodeList(
 			rlpEncodeUint64(tx.ChainID),
 			rlpEncodeUint64(tx.Nonce),
-			rlpEncodeUint64(0), // maxPriorityFeePerGas = 0
+			rlpEncodeUint64(tx.MaxPriorityFeePerGas),
 			rlpEncodeUint64(tx.GasPrice), // maxFeePerGas
 			rlpEncodeUint64(tx.GasLimit),
 			rlpEncodeBytes(tx.To),
@@ -206,7 +208,7 @@ func (tx *RLPTx) TxHash() []byte {
 		buf = append([]byte{tx.txType}, rlpEncodeList(
 			rlpEncodeUint64(tx.ChainID),
 			rlpEncodeUint64(tx.Nonce),
-			rlpEncodeUint64(0),
+			rlpEncodeUint64(tx.MaxPriorityFeePerGas),
 			rlpEncodeUint64(tx.GasPrice),
 			rlpEncodeUint64(tx.GasLimit),
 			rlpEncodeBytes(tx.To),
@@ -282,6 +284,7 @@ func (tx *RLPTx) ToTransaction() (*Transaction, error) {
 		GasPrice: tx.GasPrice,
 		Data:     tx.Data,
 		ChainID:  tx.ChainID,
+		Verified: true,
 		Signature: &TxSignature{
 			R: tx.R,
 			S: tx.S,

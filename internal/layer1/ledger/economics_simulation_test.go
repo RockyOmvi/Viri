@@ -339,7 +339,7 @@ func TestEconomicSimulation_InflationRate(t *testing.T) {
 
 	var lastRate *big.Float
 	for _, height := range checkpoints {
-		rate := econ.InflationRate(height)
+		rate := econ.InflationRate(height, 1)
 		if rate.Sign() < 0 {
 			t.Errorf("Negative inflation at height %d: %v", height, rate)
 		}
@@ -353,18 +353,18 @@ func TestEconomicSimulation_InflationRate(t *testing.T) {
 		lastRate = rate
 	}
 
-	rate0 := econ.InflationRate(0)
+	rate0 := econ.InflationRate(0, 1)
 	if rate0.Sign() <= 0 {
 		t.Error("Initial inflation rate should be positive")
 	}
 
-	postHalving := econ.InflationRate(halvingInterval)
+	postHalving := econ.InflationRate(halvingInterval, 1)
 	if postHalving.Cmp(rate0) >= 0 {
 		t.Logf("Inflation after first halving (%.6f%%) < initial (%.6f%%)", postHalving, rate0)
 	}
 
 	post64 := uint64(64) * halvingInterval
-	rate64 := econ.InflationRate(post64)
+	rate64 := econ.InflationRate(post64, 1)
 	if rate64.Sign() != 0 {
 		t.Logf("Inflation rate after 64 halvings: %v (reward is zero)", rate64)
 	}

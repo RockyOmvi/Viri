@@ -193,7 +193,7 @@ func DefaultConfig() *Config {
 
 func TestnetConfig() *Config {
 	cfg := DefaultConfig()
-	cfg.Chain.ChainID = 999
+	cfg.Chain.ChainID = 99997
 	cfg.Chain.NetworkName = "viri-testnet"
 	cfg.Chain.BlockTime = Duration(time.Second)
 	cfg.Network.ListenAddr = "0.0.0.0:30303"

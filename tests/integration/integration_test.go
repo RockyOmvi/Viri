@@ -15,6 +15,7 @@ import (
 	"github.com/viri-chain/viri/internal/layer1/events"
 	"github.com/viri-chain/viri/internal/layer1/ledger"
 	"github.com/viri-chain/viri/internal/layer1/state"
+	"github.com/viri-chain/viri/internal/layer1/logging"
 	"github.com/viri-chain/viri/internal/pkg/audit"
 )
 
@@ -530,7 +531,8 @@ func newTestValidator(t *testing.T, baseDir string, idx int, key *crypto.Private
 	config.BlockTime = 100 * time.Millisecond
 	config.ViewTimeout = 200 * time.Millisecond
 	config.MinValidators = 1
-	engine := consensus.NewHotStuffEngine(config, validatorSet, producer, staking, nil, auditLogger)
+	logger := logging.NewLogger(fmt.Sprintf("node-%d", idx), logging.DEBUG, "text")
+	engine := consensus.NewHotStuffEngine(config, validatorSet, producer, staking, logger, auditLogger)
 	eventBus := events.NewEventBus()
 	return &testValidator{
 		engine:      engine,

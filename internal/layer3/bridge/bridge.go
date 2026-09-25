@@ -190,7 +190,8 @@ func (bs *BridgeState) AddSignature(msgID []byte, validatorIdx int, signature []
 			requiredStake += v.Stake
 		}
 	}
-	requiredStake = requiredStake / 3 * 2
+	// G-03: Fix 2/3 threshold: requiredStake * 2 / 3 + 1
+	requiredStake = requiredStake*2/3 + 1
 
 	if totalStake >= requiredStake {
 		msg.Status = Confirmed
@@ -379,6 +380,53 @@ func (bc *BridgeContract) VerifyOracleProof(proof *OracleProof, msg *BridgeMessa
 	}
 	if len(proof.StateRoot) != 32 {
 		return false
+	}
+
+	// G-01: Implement real Merkle proof verification.
+	// Walk the proof path from leaf to root and verify it matches the state root.
+	msgID := computeMessageID(msg.SourceChain, msg.DestChain, msg.Sender, msg.Receiver, msg.Token, msg.Amount, msg.Nonce)
+	current := sha256Hash(msgID)
+	for _, sibling := range proof.MerkleProof {
+		if len(sibling) != 32 {
+			return false
+		}
+		// Ordered hashing: smaller hash goes first for determinism
+		if compareBytesLess(current, sibling) {
+			current = sha256Hash(append(current, sibling...))
+		} else {
+			current = sha256Hash(append(sibling, current...))
+		}
+	}
+
+	// The computed root must match the proof's state root
+	return compareBytesEqual(current, proof.StateRoot)
+}
+
+func sha256Hash(data []byte) []byte {
+	h := sha256.Sum256(data)
+	return h[:]
+}
+
+func compareBytesLess(a, b []byte) bool {
+	for i := 0; i < len(a) && i < len(b); i++ {
+		if a[i] < b[i] {
+			return true
+		}
+		if a[i] > b[i] {
+			return false
+		}
+	}
+	return len(a) < len(b)
+}
+
+func compareBytesEqual(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
 	}
 	return true
 }

@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"math/big"
 )
@@ -165,7 +166,10 @@ func GenerateTestAssignment(circuit *Circuit) *Assignment {
 
 func randBytes(n int) []byte {
 	b := make([]byte, n)
-	rand.Read(b)
+	// ZK-02: Check error from rand.Read
+	if _, err := rand.Read(b); err != nil {
+		panic(fmt.Sprintf("crypto/rand.Read failed: %v", err))
+	}
 	return b
 }
 

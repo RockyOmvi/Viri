@@ -551,9 +551,27 @@ func (m *MerklePatriciaTrie) deleteBranch(data []byte, path []byte) ([]byte, err
 func (m *MerklePatriciaTrie) storeNode(n node) ([]byte, error) {
 	data := n.serialize()
 	hash := sha256.Sum256(data)
-	if err := m.db.Put(append([]byte("mpt:"), hash[:]...), data); err != nil {
+	nodeKey := append([]byte("mpt:"), hash[:]...)
+
+	// If node already exists, we don't write it again to avoid resetting its reference count
+	// or writing duplicate data. But we still return its hash.
+	exists, err := m.db.Has(nodeKey)
+	if err == nil && exists {
+		return hash[:], nil
+	}
+
+	if err := m.db.Put(nodeKey, data); err != nil {
 		return nil, err
 	}
+
+	// Since this is a new node, increment reference count of its children
+	childHashes := getChildHashes(data)
+	for _, child := range childHashes {
+		if err := m.incrementRef(child); err != nil {
+			return nil, err
+		}
+	}
+
 	return hash[:], nil
 }
 
@@ -727,3 +745,121 @@ func (m *MerklePatriciaTrie) Has(key []byte) bool {
 	_, err := m.Get(key)
 	return err == nil
 }
+
+// getChildHashes parses node data to return child hashes
+func getChildHashes(data []byte) [][]byte {
+	if len(data) == 0 {
+		return nil
+	}
+	var children [][]byte
+	switch data[0] {
+	case nodeTypeLeaf:
+		// Leaf nodes do not reference other nodes.
+	case nodeTypeExtension:
+		_, childHash := parseExtensionData(data)
+		if len(childHash) > 0 {
+			children = append(children, childHash)
+		}
+	case nodeTypeBranch:
+		branchChildren, _ := parseBranchData(data)
+		for i := 0; i < 16; i++ {
+			if len(branchChildren[i].hash) > 0 {
+				children = append(children, branchChildren[i].hash)
+			}
+		}
+	}
+	return children
+}
+
+func (m *MerklePatriciaTrie) incrementRef(hash []byte) error {
+	refKey := append([]byte("mpt:refcnt:"), hash...)
+	currentVal, err := m.db.Get(refKey)
+	var count uint64
+	if err == nil && len(currentVal) == 8 {
+		count = binary.BigEndian.Uint64(currentVal)
+	}
+	count++
+	newVal := make([]byte, 8)
+	binary.BigEndian.PutUint64(newVal, count)
+	return m.db.Put(refKey, newVal)
+}
+
+func (m *MerklePatriciaTrie) decrementRef(hash []byte) error {
+	refKey := append([]byte("mpt:refcnt:"), hash...)
+	currentVal, err := m.db.Get(refKey)
+	if err != nil || len(currentVal) != 8 {
+		return nil
+	}
+	count := binary.BigEndian.Uint64(currentVal)
+	if count > 0 {
+		count--
+	}
+	if count == 0 {
+		_ = m.db.Delete(refKey)
+
+		nodeKey := append([]byte("mpt:"), hash...)
+		data, err := m.db.Get(nodeKey)
+		if err == nil && len(data) > 0 {
+			_ = m.db.Delete(nodeKey)
+			children := getChildHashes(data)
+			for _, child := range children {
+				if err := m.decrementRef(child); err != nil {
+					return err
+				}
+			}
+		}
+	} else {
+		newVal := make([]byte, 8)
+		binary.BigEndian.PutUint64(newVal, count)
+		if err := m.db.Put(refKey, newVal); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// SaveEpochRoot saves the root hash for a given epoch/block height and
+// increments its reference count.
+func (m *MerklePatriciaTrie) SaveEpochRoot(epoch uint64, root []byte) error {
+	if len(root) == 0 {
+		return nil
+	}
+
+	epochKey := make([]byte, 8)
+	binary.BigEndian.PutUint64(epochKey, epoch)
+	dbKey := append([]byte("mpt:root:"), epochKey...)
+
+	// Save mapping
+	if err := m.db.Put(dbKey, root); err != nil {
+		return err
+	}
+
+	// Increment reference count of the root
+	return m.incrementRef(root)
+}
+
+// GarbageCollect prunes all trie nodes that were orphaned before the given epoch.
+func (m *MerklePatriciaTrie) GarbageCollect(beforeEpoch uint64) (uint64, error) {
+	var pruned uint64
+
+	for epoch := uint64(0); epoch < beforeEpoch; epoch++ {
+		epochKey := make([]byte, 8)
+		binary.BigEndian.PutUint64(epochKey, epoch)
+		dbKey := append([]byte("mpt:root:"), epochKey...)
+
+		root, err := m.db.Get(dbKey)
+		if err != nil {
+			continue
+		}
+
+		if err := m.decrementRef(root); err != nil {
+			return pruned, err
+		}
+
+		_ = m.db.Delete(dbKey)
+		pruned++
+	}
+
+	return pruned, nil
+}
+

@@ -97,7 +97,7 @@ func TestEconomicsCirculatingSupply(t *testing.T) {
 func TestEconomicsInflationRate(t *testing.T) {
 	econ := NewEconomics(nil)
 
-	rate := econ.InflationRate(0)
+	rate := econ.InflationRate(0, 1)
 	if rate.Sign() <= 0 {
 		t.Error("Inflation rate should be positive")
 	}

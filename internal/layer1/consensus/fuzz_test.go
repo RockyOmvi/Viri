@@ -262,8 +262,13 @@ func TestLRUTrimVotesAndTimeouts(t *testing.T) {
 	engine := NewHotStuffEngine(config, vs, bp, staking, nil, &noopAudit3{})
 
 	for i := 0; i < 3000; i++ {
-		key := fmt.Sprintf("%d-%d-%s", i, 0, PhasePrepare.String())
-		engine.votes[key] = make(map[Phase]map[string]bool)
+		key := fmt.Sprintf("%d-%d", i, 0)
+		engine.viewVotes[key] = &ViewVoteRegistry{
+			Votes:              make(map[Phase]map[string]map[string]bool),
+			VoteCache:          make(map[Phase]map[string][]*Vote),
+			VoteSignatureCache: make(map[Phase]map[string]map[string]*crypto.Signature),
+			MyVotes:            make(map[Phase][]byte),
+		}
 		engine.votesOrder = append(engine.votesOrder, key)
 	}
 	engine.trimVotes()

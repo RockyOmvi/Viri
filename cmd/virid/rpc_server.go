@@ -19,6 +19,7 @@ import (
 	"github.com/viri-chain/viri/internal/layer1/crypto"
 	"github.com/viri-chain/viri/internal/layer1/ledger"
 	"github.com/viri-chain/viri/internal/layer1/logging"
+	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/viri-chain/viri/internal/layer1/p2p"
 	"github.com/viri-chain/viri/internal/layer1/state"
 	nodesync "github.com/viri-chain/viri/internal/layer1/sync"
@@ -197,6 +198,32 @@ func (s *RPCServer) registerMethods() {
 	s.methods["rollup_confirmBatch"] = s.rollupConfirmBatch
 	s.methods["rollup_challengeBatch"] = s.rollupChallengeBatch
 	s.methods["rollup_batchCount"] = s.rollupBatchCount
+
+	// Standard Ethereum methods
+	s.methods["eth_maxPriorityFeePerGas"] = s.maxPriorityFeePerGas
+	s.methods["eth_feeHistory"] = s.feeHistory
+	s.methods["eth_getProof"] = s.getProof
+
+	// Viri-specific
+	s.methods["viri_cryptoAlgorithms"] = s.cryptoAlgorithms
+	s.methods["viri_gobEncode"] = s.gobEncode
+	s.methods["viri_gobDecode"] = s.gobDecode
+	s.methods["viri_removePeer"] = s.removePeer
+	s.methods["viri_getSlashedValidators"] = s.getSlashedValidators
+	s.methods["viri_isValidatorJailed"] = s.isValidatorJailed
+
+	// TxPool
+	s.methods["txpool_status"] = s.txPoolStatus
+	s.methods["txpool_content"] = s.txPoolContent
+	s.methods["txpool_inspect"] = s.txPoolInspect
+
+	// Admin
+	s.methods["admin_peers"] = s.adminPeers
+	s.methods["admin_nodeInfo"] = s.adminNodeInfo
+
+	// WASM
+	s.methods["wasm_call"] = s.wasmCall
+	s.methods["wasm_deploy"] = s.wasmDeploy
 }
 
 func (s *RPCServer) Start() error {
@@ -1855,6 +1882,23 @@ func (s *RPCServer) getUncleCountByNumber(ctx context.Context, params json.RawMe
 	return "0x0", nil
 }
 
+// unpackStructParams handles both JSON-RPC calling conventions:
+//   - `"params":{...}` (named/object params)
+//   - `"params":[{...}]` (positional array with single object)
+func unpackStructParams(params json.RawMessage, target interface{}) error {
+	if err := json.Unmarshal(params, target); err == nil {
+		return nil
+	}
+	var args []json.RawMessage
+	if err := json.Unmarshal(params, &args); err != nil {
+		return fmt.Errorf("unexpected params format")
+	}
+	if len(args) == 0 {
+		return fmt.Errorf("missing params")
+	}
+	return json.Unmarshal(args[0], target)
+}
+
 // ── ZK Privacy Pool RPC ──────────────────────────────────────────────────────
 
 func (s *RPCServer) pvtCreateNote(ctx context.Context, params json.RawMessage) (interface{}, error) {
@@ -1863,7 +1907,7 @@ func (s *RPCServer) pvtCreateNote(ctx context.Context, params json.RawMessage) (
 		Owner      string `json:"owner"`
 		Randomness string `json:"randomness"`
 	}
-	if err := json.Unmarshal(params, &req); err != nil {
+	if err := unpackStructParams(params, &req); err != nil {
 		return nil, fmt.Errorf("invalid params: %w", err)
 	}
 	owner, err := hex.DecodeString(strings.TrimPrefix(req.Owner, "0x"))
@@ -1890,7 +1934,7 @@ func (s *RPCServer) pvtSpendNote(ctx context.Context, params json.RawMessage) (i
 	var req struct {
 		Nullifier string `json:"nullifier"`
 	}
-	if err := json.Unmarshal(params, &req); err != nil {
+	if err := unpackStructParams(params, &req); err != nil {
 		return nil, fmt.Errorf("invalid params: %w", err)
 	}
 	nullifier, err := hex.DecodeString(strings.TrimPrefix(req.Nullifier, "0x"))
@@ -1916,7 +1960,7 @@ func (s *RPCServer) pvtHasCommitment(ctx context.Context, params json.RawMessage
 	var req struct {
 		Commitment string `json:"commitment"`
 	}
-	if err := json.Unmarshal(params, &req); err != nil {
+	if err := unpackStructParams(params, &req); err != nil {
 		return nil, fmt.Errorf("invalid params: %w", err)
 	}
 	commitment, err := hex.DecodeString(strings.TrimPrefix(req.Commitment, "0x"))
@@ -1930,7 +1974,7 @@ func (s *RPCServer) pvtHasNullifier(ctx context.Context, params json.RawMessage)
 	var req struct {
 		Nullifier string `json:"nullifier"`
 	}
-	if err := json.Unmarshal(params, &req); err != nil {
+	if err := unpackStructParams(params, &req); err != nil {
 		return nil, fmt.Errorf("invalid params: %w", err)
 	}
 	nullifier, err := hex.DecodeString(strings.TrimPrefix(req.Nullifier, "0x"))
@@ -1949,7 +1993,7 @@ func (s *RPCServer) mevSubmitEncryptedTx(ctx context.Context, params json.RawMes
 		Sender    string `json:"sender"`
 		Nonce     uint64 `json:"nonce"`
 	}
-	if err := json.Unmarshal(params, &req); err != nil {
+	if err := unpackStructParams(params, &req); err != nil {
 		return nil, fmt.Errorf("invalid params: %w", err)
 	}
 	id, _ := hex.DecodeString(strings.TrimPrefix(req.ID, "0x"))
@@ -1973,7 +2017,7 @@ func (s *RPCServer) mevSubmitCommitment(ctx context.Context, params json.RawMess
 		Commitment string `json:"commitment"`
 		Nonce      uint64 `json:"nonce"`
 	}
-	if err := json.Unmarshal(params, &req); err != nil {
+	if err := unpackStructParams(params, &req); err != nil {
 		return nil, fmt.Errorf("invalid params: %w", err)
 	}
 	sender, _ := hex.DecodeString(strings.TrimPrefix(req.Sender, "0x"))
@@ -1990,7 +2034,7 @@ func (s *RPCServer) mevRevealTransaction(ctx context.Context, params json.RawMes
 		Nonce  uint64 `json:"nonce"`
 		Data   string `json:"data"`
 	}
-	if err := json.Unmarshal(params, &req); err != nil {
+	if err := unpackStructParams(params, &req); err != nil {
 		return nil, fmt.Errorf("invalid params: %w", err)
 	}
 	sender, _ := hex.DecodeString(strings.TrimPrefix(req.Sender, "0x"))
@@ -2006,7 +2050,7 @@ func (s *RPCServer) mevSubmitPBSBid(ctx context.Context, params json.RawMessage)
 		BlockBuilder string `json:"block_builder"`
 		BidAmount    string `json:"bid_amount"`
 	}
-	if err := json.Unmarshal(params, &req); err != nil {
+	if err := unpackStructParams(params, &req); err != nil {
 		return nil, fmt.Errorf("invalid params: %w", err)
 	}
 	bidAmount := new(big.Int)
@@ -2048,7 +2092,7 @@ func (s *RPCServer) rollupSubmitBatch(ctx context.Context, params json.RawMessag
 		Data      string `json:"data"`
 		Submitter string `json:"submitter"`
 	}
-	if err := json.Unmarshal(params, &req); err != nil {
+	if err := unpackStructParams(params, &req); err != nil {
 		return nil, fmt.Errorf("invalid params: %w", err)
 	}
 	data, _ := hex.DecodeString(strings.TrimPrefix(req.Data, "0x"))
@@ -2067,7 +2111,7 @@ func (s *RPCServer) rollupGetBatch(ctx context.Context, params json.RawMessage) 
 	var req struct {
 		SequenceNumber uint64 `json:"sequence_number"`
 	}
-	if err := json.Unmarshal(params, &req); err != nil {
+	if err := unpackStructParams(params, &req); err != nil {
 		return nil, fmt.Errorf("invalid params: %w", err)
 	}
 	batch, err := s.rollupChain.GetBatch(req.SequenceNumber)
@@ -2090,7 +2134,7 @@ func (s *RPCServer) rollupConfirmBatch(ctx context.Context, params json.RawMessa
 	var req struct {
 		SequenceNumber uint64 `json:"sequence_number"`
 	}
-	if err := json.Unmarshal(params, &req); err != nil {
+	if err := unpackStructParams(params, &req); err != nil {
 		return nil, fmt.Errorf("invalid params: %w", err)
 	}
 	if err := s.rollupChain.ConfirmBatch(req.SequenceNumber); err != nil {
@@ -2103,7 +2147,7 @@ func (s *RPCServer) rollupChallengeBatch(ctx context.Context, params json.RawMes
 	var req struct {
 		SequenceNumber uint64 `json:"sequence_number"`
 	}
-	if err := json.Unmarshal(params, &req); err != nil {
+	if err := unpackStructParams(params, &req); err != nil {
 		return nil, fmt.Errorf("invalid params: %w", err)
 	}
 	if err := s.rollupChain.ChallengeBatch(req.SequenceNumber); err != nil {
@@ -2139,6 +2183,384 @@ func formatBatch(b *rollups.Batch) map[string]interface{} {
 		"timestamp":       b.Timestamp,
 		"status":          batchStatusString(b.Status),
 	}
+}
+
+// ── eth_maxPriorityFeePerGas ───────────────────────────────────────────────────────
+
+func (s *RPCServer) maxPriorityFeePerGas(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	return "0x3b9aca00", nil
+}
+
+// ── eth_feeHistory ──────────────────────────────────────────────────────────────────
+
+func (s *RPCServer) feeHistory(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	var args []interface{}
+	if err := json.Unmarshal(params, &args); err != nil {
+		return nil, fmt.Errorf("invalid params")
+	}
+	blockCount := 5
+	if len(args) > 0 {
+		if c, ok := args[0].(float64); ok {
+			blockCount = int(c)
+		}
+	}
+	if blockCount < 1 {
+		blockCount = 1
+	}
+	if blockCount > 1024 {
+		blockCount = 1024
+	}
+	currentHeight := s.blockchain.Height()
+	oldest := uint64(0)
+	if currentHeight >= uint64(blockCount) {
+		oldest = currentHeight - uint64(blockCount) + 1
+	}
+	fm := ledger.DefaultFeeMarket()
+	baseFee := fm.BaseFee()
+	baseFeeHex := fmt.Sprintf("0x%x", baseFee)
+	baseFees := make([]string, 0, blockCount)
+	gasUsedRatios := make([]float64, 0, blockCount)
+	for h := oldest; h <= currentHeight; h++ {
+		baseFees = append(baseFees, baseFeeHex)
+		block, err := s.blockchain.GetBlock(h)
+		if err != nil {
+			gasUsedRatios = append(gasUsedRatios, 0)
+			continue
+		}
+		if block.Header == nil {
+			gasUsedRatios = append(gasUsedRatios, 0)
+			continue
+		}
+		txGas := uint64(0)
+		for _, tx := range block.Transactions {
+			txGas += tx.GasLimit
+		}
+		ratio := 0.0
+		if fm.BlockGasLimit() > 0 {
+			ratio = float64(txGas) / float64(fm.BlockGasLimit())
+		}
+		gasUsedRatios = append(gasUsedRatios, ratio)
+	}
+	return map[string]interface{}{
+		"oldestBlock":   fmt.Sprintf("0x%x", oldest),
+		"baseFeePerGas": baseFees,
+		"gasUsedRatio":  gasUsedRatios,
+	}, nil
+}
+
+// ── eth_getProof ────────────────────────────────────────────────────────────────────
+
+func (s *RPCServer) getProof(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	var args []interface{}
+	if err := json.Unmarshal(params, &args); err != nil {
+		return nil, fmt.Errorf("invalid params")
+	}
+	if len(args) < 1 {
+		return nil, fmt.Errorf("missing address")
+	}
+	addrStr, ok := args[0].(string)
+	if !ok {
+		return nil, fmt.Errorf("invalid address")
+	}
+	addrBytes, err := hex.DecodeString(strings.TrimPrefix(addrStr, "0x"))
+	if err != nil {
+		return nil, fmt.Errorf("invalid address format")
+	}
+	account, err := s.stateMgr.GetAccount(addrBytes)
+	if err != nil {
+		return nil, fmt.Errorf("account not found")
+	}
+	proof, err := s.stateMgr.Prove(addrBytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate proof: %w", err)
+	}
+	proofHex := make([]string, len(proof))
+	for i, p := range proof {
+		proofHex[i] = "0x" + hex.EncodeToString(p)
+	}
+	storageProof := make([]map[string]interface{}, 0)
+	if len(args) > 1 {
+		if storageKeys, ok := args[1].([]interface{}); ok {
+			for _, sk := range storageKeys {
+				keyStr, ok := sk.(string)
+				if !ok {
+					continue
+				}
+				keyBytes, err := hex.DecodeString(strings.TrimPrefix(keyStr, "0x"))
+				if err != nil {
+					continue
+				}
+				storageVal, _ := s.stateMgr.GetStorage(addrBytes, keyBytes)
+				storageProof = append(storageProof, map[string]interface{}{
+					"key":   keyStr,
+					"value": "0x" + hex.EncodeToString(storageVal),
+					"proof": []string{},
+				})
+			}
+		}
+	}
+	return map[string]interface{}{
+		"address":      addrStr,
+		"accountProof": proofHex,
+		"balance":      "0x" + account.Balance.Text(16),
+		"codeHash":     "0x" + hex.EncodeToString(account.CodeHash),
+		"nonce":        fmt.Sprintf("0x%x", account.Nonce),
+		"storageHash":  "0x" + hex.EncodeToString(account.StorageRoot),
+		"storageProof": storageProof,
+	}, nil
+}
+
+// ── viri_cryptoAlgorithms ───────────────────────────────────────────────────────────
+
+func (s *RPCServer) cryptoAlgorithms(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	return []map[string]interface{}{
+		{"name": "ecdsa", "curve": "P-256", "status": "active"},
+		{"name": "ml-dsa", "variants": []string{"ML-DSA-44", "ML-DSA-65", "ML-DSA-87"}, "status": "available"},
+		{"name": "sphincs+", "variants": []string{"SPHINCS+-128S", "SPHINCS+-192S", "SPHINCS+-256S"}, "status": "available"},
+	}, nil
+}
+
+// ── viri_gobEncode / viri_gobDecode ─────────────────────────────────────────────────
+
+func (s *RPCServer) gobEncode(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	var args []interface{}
+	if err := json.Unmarshal(params, &args); err != nil {
+		return nil, fmt.Errorf("invalid params")
+	}
+	if len(args) < 1 {
+		return nil, fmt.Errorf("missing transaction data")
+	}
+	txMap, ok := args[0].(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("expected transaction object")
+	}
+	tx := &ledger.Transaction{}
+	tx.Value = uint64(jsonNumber(txMap["value"]))
+	tx.GasLimit = uint64(jsonNumber(txMap["gas"]))
+	tx.GasPrice = uint64(jsonNumber(txMap["gasPrice"]))
+	tx.Nonce = uint64(jsonNumber(txMap["nonce"]))
+	if to, ok := txMap["to"].(string); ok {
+		tx.To, _ = hex.DecodeString(strings.TrimPrefix(to, "0x"))
+	}
+	if data, ok := txMap["data"].(string); ok {
+		tx.Data, _ = hex.DecodeString(strings.TrimPrefix(data, "0x"))
+	}
+	encoded, err := ledger.SerializeTransaction(tx)
+	if err != nil {
+		return nil, fmt.Errorf("gob encode failed: %w", err)
+	}
+	return "0x" + hex.EncodeToString(encoded), nil
+}
+
+func jsonNumber(v interface{}) float64 {
+	if v == nil {
+		return 0
+	}
+	switch n := v.(type) {
+	case float64:
+		return n
+	case string:
+		val, _ := strconv.ParseFloat(strings.TrimPrefix(n, "0x"), 64)
+		return val
+	}
+	return 0
+}
+
+func (s *RPCServer) gobDecode(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	var args []string
+	if err := json.Unmarshal(params, &args); err != nil {
+		return nil, fmt.Errorf("invalid params")
+	}
+	if len(args) == 0 {
+		return nil, fmt.Errorf("missing hex data")
+	}
+	data, err := hex.DecodeString(strings.TrimPrefix(args[0], "0x"))
+	if err != nil {
+		return nil, fmt.Errorf("invalid hex encoding")
+	}
+	tx, err := ledger.DeserializeTransaction(data)
+	if err != nil {
+		return nil, fmt.Errorf("gob decode failed: %w", err)
+	}
+	return formatTx(tx, nil, 0, 0), nil
+}
+
+// ── viri_removePeer ─────────────────────────────────────────────────────────────────
+
+func (s *RPCServer) removePeer(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	var args []string
+	if err := json.Unmarshal(params, &args); err != nil {
+		return nil, fmt.Errorf("invalid params")
+	}
+	if len(args) == 0 {
+		return nil, fmt.Errorf("missing peer ID")
+	}
+	peerID := args[0]
+	s.network.PeerManager().RemovePeer(peer.ID(peerID))
+	return map[string]interface{}{"success": true}, nil
+}
+
+// ── viri_getSlashedValidators / viri_isValidatorJailed ───────────────────────────────
+
+func (s *RPCServer) getSlashedValidators(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	if s.engine == nil {
+		return []interface{}{}, nil
+	}
+	sm := s.engine.StakingModule()
+	if sm == nil {
+		return []interface{}{}, nil
+	}
+	inactive := sm.GetInactiveValidators()
+	result := make([]map[string]interface{}, 0)
+	for _, v := range inactive {
+		if v.Jailed {
+			result = append(result, map[string]interface{}{
+				"address":       "0x" + hex.EncodeToString(v.Address),
+				"stake":         v.Stake,
+				"jailed":        v.Jailed,
+				"jailed_until":  v.JailedUntil.Unix(),
+				"is_active":     v.IsActive,
+			})
+		}
+	}
+	return result, nil
+}
+
+func (s *RPCServer) isValidatorJailed(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	var args []string
+	if err := json.Unmarshal(params, &args); err != nil {
+		return nil, fmt.Errorf("invalid params")
+	}
+	if len(args) == 0 {
+		return nil, fmt.Errorf("missing validator address")
+	}
+	addrBytes, err := hex.DecodeString(strings.TrimPrefix(args[0], "0x"))
+	if err != nil {
+		return nil, fmt.Errorf("invalid address format")
+	}
+	if s.engine == nil {
+		return map[string]interface{}{"jailed": false, "found": false}, nil
+	}
+	sm := s.engine.StakingModule()
+	if sm == nil {
+		return map[string]interface{}{"jailed": false, "found": false}, nil
+	}
+	record, exists := sm.GetValidator(addrBytes)
+	if !exists {
+		return map[string]interface{}{"jailed": false, "found": false}, nil
+	}
+	return map[string]interface{}{
+		"jailed":       record.Jailed,
+		"found":        true,
+		"stake":        record.Stake,
+		"is_active":    record.IsActive,
+		"jailed_until": record.JailedUntil.Unix(),
+	}, nil
+}
+
+// ── txpool_status / txpool_content / txpool_inspect ─────────────────────────────────
+
+func (s *RPCServer) txPoolStatus(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	if s.blockchain == nil {
+		return map[string]interface{}{"pending": 0, "queued": 0}, nil
+	}
+	pool := s.blockchain.TxPool()
+	if pool == nil {
+		return map[string]interface{}{"pending": 0, "queued": 0}, nil
+	}
+	stats := pool.Stats()
+	return map[string]interface{}{
+		"pending": stats.PendingCount,
+		"queued":  stats.QueuedCount,
+	}, nil
+}
+
+func (s *RPCServer) txPoolContent(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	if s.blockchain == nil {
+		return map[string]interface{}{}, nil
+	}
+	pool := s.blockchain.TxPool()
+	if pool == nil {
+		return map[string]interface{}{}, nil
+	}
+	pending := pool.GetPending()
+	bySender := make(map[string][]map[string]interface{})
+	for _, tx := range pending {
+		from := "0x" + hex.EncodeToString(tx.From)
+		bySender[from] = append(bySender[from], formatTx(tx, nil, 0, len(bySender[from])))
+	}
+	return map[string]interface{}{
+		"pending": bySender,
+	}, nil
+}
+
+func (s *RPCServer) txPoolInspect(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	if s.blockchain == nil {
+		return map[string]interface{}{}, nil
+	}
+	pool := s.blockchain.TxPool()
+	if pool == nil {
+		return map[string]interface{}{}, nil
+	}
+	pending := pool.GetPending()
+	bySender := make(map[string][]string)
+	for _, tx := range pending {
+		from := "0x" + hex.EncodeToString(tx.From)
+		to := "0x" + hex.EncodeToString(tx.To)
+		summary := fmt.Sprintf("%s: %d wei + %d gas x %d wei",
+			to, tx.Value, tx.GasLimit, tx.GasPrice)
+		bySender[from] = append(bySender[from], summary)
+	}
+	return map[string]interface{}{
+		"pending": bySender,
+	}, nil
+}
+
+// ── admin_peers / admin_nodeInfo ─────────────────────────────────────────────────────
+
+func (s *RPCServer) adminPeers(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	if s.network == nil {
+		return []interface{}{}, nil
+	}
+	peers := s.network.Peers()
+	result := make([]map[string]interface{}, len(peers))
+	for i, p := range peers {
+		result[i] = map[string]interface{}{
+			"id":      p.ID.String(),
+			"address": p.Address.String(),
+			"version": p.Version,
+			"height":  p.Height,
+			"agent":   p.Agent,
+			"status":  p.Status,
+			"score":   p.Score,
+		}
+	}
+	return result, nil
+}
+
+func (s *RPCServer) adminNodeInfo(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	info := map[string]interface{}{
+		"id":         s.network.PeerID().String(),
+		"listenAddr": fmt.Sprintf("/ip4/0.0.0.0/tcp/30303"),
+		"protocols":  []string{"viri/1.0.0"},
+	}
+	if s.blockchain != nil {
+		info["blocks"] = s.blockchain.Height()
+	}
+	if s.network != nil {
+		info["peers"] = s.network.PeerCount()
+	}
+	return info, nil
+}
+
+// ── wasm_call / wasm_deploy ──────────────────────────────────────────────────────────
+
+func (s *RPCServer) wasmCall(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	return nil, fmt.Errorf("wasm_call requires a full execution context; use eth_call for EVM or deploy a WASM contract and call via a transaction")
+}
+
+func (s *RPCServer) wasmDeploy(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	return nil, fmt.Errorf("wasm_deploy requires a full execution context; deploy WASM code via a transaction to the WASM precompile address")
 }
 
 func (s *RPCServer) corsMiddleware(next http.Handler) http.Handler {

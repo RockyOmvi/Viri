@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"sort"
 	"sync"
 	"time"
 
@@ -190,6 +191,18 @@ func (p *chainBlockProducer) CreateBlock(proposer []byte, height uint64) ([]byte
 		}
 		txs = ordered
 	}
+
+	// Sort by gas price (desc), then by (sender, nonce) to ensure correct execution ordering
+	sort.SliceStable(txs, func(i, j int) bool {
+		if txs[i].GasPrice != txs[j].GasPrice {
+			return txs[i].GasPrice > txs[j].GasPrice
+		}
+		fromCmp := bytes.Compare(txs[i].From, txs[j].From)
+		if fromCmp != 0 {
+			return fromCmp < 0
+		}
+		return txs[i].Nonce < txs[j].Nonce
+	})
 
 	prevHash := p.blockchain.TipHash()
 

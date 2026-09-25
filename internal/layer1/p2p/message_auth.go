@@ -20,7 +20,7 @@ var (
 
 const (
 	MaxSignedMessageSize = 10*1024*1024 + 256
-	DefaultMaxMessageAge = 5 * time.Minute
+	DefaultMaxMessageAge = 30 * time.Second // N-01: Reduced from 5 minutes to 30 seconds
 	CompressedPubKeyLen  = 33
 )
 
@@ -176,7 +176,8 @@ func VerifySignedMessage(sm *SignedMessage, chainID uint64, maxAge time.Duration
 	}
 
 	now := time.Now().Unix()
-	if sm.Timestamp > now+5 {
+	// N-02: Reduced future tolerance from 5s to 2s
+	if sm.Timestamp > now+2 {
 		return ErrInvalidTimestamp
 	}
 	if time.Duration(now-sm.Timestamp)*time.Second > maxAge {

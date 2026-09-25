@@ -14,6 +14,12 @@ const (
 )
 
 func (s Scheme) String() string {
+	globalRegistry.mu.RLock()
+	info, ok := globalRegistry.schemes[s]
+	globalRegistry.mu.RUnlock()
+	if ok {
+		return info.Name
+	}
 	switch s {
 	case SchemeECDSA:
 		return "secp256k1"
@@ -32,6 +38,12 @@ func (s Scheme) String() string {
 
 // PrivateBytes returns the size of the private key for this scheme.
 func (s Scheme) PrivateBytes() int {
+	globalRegistry.mu.RLock()
+	info, ok := globalRegistry.schemes[s]
+	globalRegistry.mu.RUnlock()
+	if ok {
+		return info.PrivateBytes
+	}
 	switch s {
 	case SchemeECDSA:
 		return 32
@@ -50,6 +62,12 @@ func (s Scheme) PrivateBytes() int {
 
 // PublicBytes returns the size of the public key for this scheme.
 func (s Scheme) PublicBytes() int {
+	globalRegistry.mu.RLock()
+	info, ok := globalRegistry.schemes[s]
+	globalRegistry.mu.RUnlock()
+	if ok {
+		return info.PublicBytes
+	}
 	switch s {
 	case SchemeECDSA:
 		return 65 // uncompressed secp256k1
@@ -68,6 +86,12 @@ func (s Scheme) PublicBytes() int {
 
 // SigBytes returns the maximum signature size for this scheme.
 func (s Scheme) SigBytes() int {
+	globalRegistry.mu.RLock()
+	info, ok := globalRegistry.schemes[s]
+	globalRegistry.mu.RUnlock()
+	if ok {
+		return info.SigBytes
+	}
 	switch s {
 	case SchemeECDSA:
 		return 64
@@ -152,6 +176,12 @@ func DecodeSignatureEnvelope(data []byte) (*SignatureEnvelope, error) {
 
 // ParseScheme parses a scheme name string.
 func ParseScheme(s string) (Scheme, bool) {
+	globalRegistry.mu.RLock()
+	scheme, ok := globalRegistry.names[s]
+	globalRegistry.mu.RUnlock()
+	if ok {
+		return scheme, true
+	}
 	switch s {
 	case "secp256k1", "ecdsa":
 		return SchemeECDSA, true

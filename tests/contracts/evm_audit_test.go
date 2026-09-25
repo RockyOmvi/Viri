@@ -854,3 +854,29 @@ func TestAuditSingleSTOP(t *testing.T) {
 		t.Fatalf("STOP output: %x", output)
 	}
 }
+
+func TestAuditStackOverflow(t *testing.T) {
+	ctx := defaultCtx()
+	state := newAuditState()
+	// Build bytecode that pushes 1025 times.
+	// PUSH1 0x01 (0x60, 0x01) 1025 times.
+	code := make([]byte, 1025*2)
+	for i := 0; i < 1025; i++ {
+		code[i*2] = 0x60 // PUSH1
+		code[i*2+1] = 0x01
+	}
+
+	exec := vm.NewEVMExecutor(ctx, state)
+	_, _, err := exec.Execute(code)
+	if err == nil {
+		t.Fatal("expected stack overflow error but got none")
+	}
+	expectedErr := "stack overflow"
+	if !containsString(err.Error(), expectedErr) {
+		t.Fatalf("expected error containing %q, got %q", expectedErr, err.Error())
+	}
+}
+
+func containsString(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(s) > len(substr) && (s[:len(substr)] == substr || s[len(s)-len(substr):] == substr || containsString(s[1:], substr)))
+}

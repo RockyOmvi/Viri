@@ -75,10 +75,7 @@ type HotStuffEngine struct {
 	liveness      *LivenessTracker
 	stateSyncer   *StateSyncer
 
-	votes         map[string]map[Phase]map[string]bool
-	voteCache     map[string]map[Phase][]*Vote
-	voteSignatureCache map[string]map[Phase]map[string]*crypto.Signature
-	myVotes       map[string]map[Phase][]byte // heightKey -> phase -> blockHash we voted for
+	viewVotes     map[string]*ViewVoteRegistry
 	timeoutTimer  *time.Timer
 	timeoutView   uint64
 	viewTimeout   time.Duration
@@ -87,6 +84,7 @@ type HotStuffEngine struct {
 	timeoutHighQCs    map[uint64]map[string]*QC
 
 	messageCh     chan *ConsensusMessage
+	proposeCh     chan struct{}
 	futureMsgCh   chan *ConsensusMessage
 	syncMsgCh     chan *ConsensusMessage
 	applyCh       chan *blockApplyRequest
@@ -101,7 +99,7 @@ type HotStuffEngine struct {
 	timeoutsOrder []uint64
 
 	epochStartHeight uint64
-	rewardPool       uint64
+	rewardPool       *big.Int // C-03: Use *big.Int to prevent overflow
 
 	metrics   *metrics.MetricsCollector
 	auditLog  audit.AuditLoggerInterface
@@ -169,6 +167,22 @@ type pendingBlock struct {
 	payload  []byte
 }
 
+type ViewVoteRegistry struct {
+	Votes              map[Phase]map[string]map[string]bool
+	VoteCache          map[Phase]map[string][]*Vote
+	VoteSignatureCache map[Phase]map[string]map[string]*crypto.Signature
+	MyVotes            map[Phase][]byte
+}
+
+func newViewVoteRegistry() *ViewVoteRegistry {
+	return &ViewVoteRegistry{
+		Votes:              make(map[Phase]map[string]map[string]bool),
+		VoteCache:          make(map[Phase]map[string][]*Vote),
+		VoteSignatureCache: make(map[Phase]map[string]map[string]*crypto.Signature),
+		MyVotes:            make(map[Phase][]byte),
+	}
+}
+
 func (hs *HotStuffEngine) SetMetrics(mc *metrics.MetricsCollector) {
 	hs.metrics = mc
 }
@@ -193,15 +207,13 @@ func newHotStuffEngineWithChainID(config *ConsensusConfig, vs *ValidatorSet, bp 
 		state: &ConsensusState{
 			Phase: PhaseIdle,
 		},
-		votes:         make(map[string]map[Phase]map[string]bool),
-		voteCache:     make(map[string]map[Phase][]*Vote),
-		voteSignatureCache: make(map[string]map[Phase]map[string]*crypto.Signature),
-		myVotes:       make(map[string]map[Phase][]byte),
+		viewVotes:     make(map[string]*ViewVoteRegistry),
 		timeouts:      make(map[uint64]map[string]bool),
 		timeoutSignatures: make(map[uint64]map[string]*crypto.Signature),
 		timeoutHighQCs:    make(map[uint64]map[string]*QC),
 		viewTimeout:   config.ViewTimeout,
 		messageCh:     make(chan *ConsensusMessage, 1000),
+		proposeCh:     make(chan struct{}, 1),
 		futureMsgCh:   make(chan *ConsensusMessage, 500),
 		syncMsgCh:     make(chan *ConsensusMessage, 2000),
 		applyCh:       make(chan *blockApplyRequest, 500),
@@ -225,6 +237,17 @@ func newHotStuffEngineWithChainID(config *ConsensusConfig, vs *ValidatorSet, bp 
 	)
 
 	return hs
+}
+
+func (hs *HotStuffEngine) getOrCreateVoteRegistry(height uint64, view uint64) *ViewVoteRegistry {
+	key := fmt.Sprintf("%d-%d", height, view)
+	reg, exists := hs.viewVotes[key]
+	if !exists {
+		reg = newViewVoteRegistry()
+		hs.viewVotes[key] = reg
+		hs.votesOrder = append(hs.votesOrder, key)
+	}
+	return reg
 }
 
 func (hs *HotStuffEngine) Start(height uint64) error {
@@ -282,7 +305,7 @@ func (hs *HotStuffEngine) Start(height uint64) error {
 	go hs.applyLoop()
 
 	if proposer != nil && bytes.Equal(hs.blockProducer.GetValidatorAddress(), proposer.Address) {
-		go hs.doPropose()
+		hs.triggerPropose()
 	}
 
 	hs.startTimeout()
@@ -323,9 +346,18 @@ func (hs *HotStuffEngine) loop() {
 		select {
 		case msg := <-hs.messageCh:
 			hs.handleMessage(msg)
+		case <-hs.proposeCh:
+			hs.doPropose()
 		case <-hs.done:
 			return
 		}
+	}
+}
+
+func (hs *HotStuffEngine) triggerPropose() {
+	select {
+	case hs.proposeCh <- struct{}{}:
+	default:
 	}
 }
 
@@ -422,6 +454,13 @@ func (hs *HotStuffEngine) recoverPanic(goroutine string) {
 	if r := recover(); r != nil {
 		hs.logInfo(fmt.Sprintf("CRITICAL: consensus %s panicked: %v", goroutine, r))
 		hs.logInfo("Consensus goroutine recovered — node may be in inconsistent state, restart recommended")
+		// C-02: Mark engine as stopped and close done channel so other goroutines exit.
+		hs.running.Store(false)
+		select {
+		case <-hs.done:
+		default:
+			close(hs.done)
+		}
 	}
 }
 
@@ -543,30 +582,39 @@ func (hs *HotStuffEngine) selfVote(blockHash []byte, height uint64, view uint64)
 	}
 
 	blockHashStr := hex.EncodeToString(blockHash)
-	heightKey := fmt.Sprintf("%d-%d-%s-%s", height, view, PhasePrepare.String(), blockHashStr)
-	if hs.votes[heightKey] == nil {
-		hs.votes[heightKey] = make(map[Phase]map[string]bool)
+	reg := hs.getOrCreateVoteRegistry(height, view)
+
+	if reg.Votes[PhasePrepare] == nil {
+		reg.Votes[PhasePrepare] = make(map[string]map[string]bool)
 	}
-	if hs.votes[heightKey][PhasePrepare] == nil {
-		hs.votes[heightKey][PhasePrepare] = make(map[string]bool)
-	}
-	if hs.myVotes[heightKey] == nil {
-		hs.myVotes[heightKey] = make(map[Phase][]byte)
+	if reg.Votes[PhasePrepare][blockHashStr] == nil {
+		reg.Votes[PhasePrepare][blockHashStr] = make(map[string]bool)
 	}
 
 	validatorAddr := hex.EncodeToString(hs.blockProducer.GetValidatorAddress())
-	hs.votes[heightKey][PhasePrepare][validatorAddr] = true
-	hs.myVotes[heightKey][PhasePrepare] = blockHash
+	reg.Votes[PhasePrepare][blockHashStr][validatorAddr] = true
+	reg.MyVotes[PhasePrepare] = blockHash
 	hs.liveness.RecordActivity(hs.blockProducer.GetValidatorAddress(), height)
 
 	sigData := hs.createVoteData(height, view, PhasePrepare, blockHash)
 	selfSig, err := hs.blockProducer.Sign(sigData)
 	if err == nil {
-		hs.storeVoteSignature(heightKey, PhasePrepare, validatorAddr, selfSig)
+		hs.storeVoteSignature(height, view, PhasePrepare, blockHashStr, validatorAddr, selfSig)
+		// Broadcast the proposer's prepare vote so other validators can reach quorum
+		vote := &ConsensusMessage{
+			Type:      MsgVotePrepare,
+			Height:    height,
+			View:      view,
+			BlockHash: blockHash,
+			Validator: hs.blockProducer.GetValidatorAddress(),
+			Signature: selfSig,
+			Timestamp: time.Now(),
+		}
+		hs.doBroadcast(vote)
 	}
 
-	if hs.validatorSet.HasSuperMajority(hs.votes[heightKey][PhasePrepare]) {
-		qc := hs.createQC(height, view, PhasePrepare, blockHash, heightKey)
+	if hs.validatorSet.HasSuperMajority(reg.Votes[PhasePrepare][blockHashStr]) {
+		qc := hs.createQC(height, view, PhasePrepare, blockHash)
 
 		hs.state.PreparedQC = qc
 		if hs.state.LockedQC == nil || qc.View >= hs.state.LockedQC.View {
@@ -574,48 +622,40 @@ func (hs *HotStuffEngine) selfVote(blockHash []byte, height uint64, view uint64)
 		}
 		hs.state.Phase = PhasePreCommit
 
-		preCommitKey := fmt.Sprintf("%d-%d-%s-%s", height, view, PhasePreCommit.String(), blockHashStr)
-		if hs.votes[preCommitKey] == nil {
-			hs.votes[preCommitKey] = make(map[Phase]map[string]bool)
+		if reg.Votes[PhasePreCommit] == nil {
+			reg.Votes[PhasePreCommit] = make(map[string]map[string]bool)
 		}
-		if hs.votes[preCommitKey][PhasePreCommit] == nil {
-			hs.votes[preCommitKey][PhasePreCommit] = make(map[string]bool)
+		if reg.Votes[PhasePreCommit][blockHashStr] == nil {
+			reg.Votes[PhasePreCommit][blockHashStr] = make(map[string]bool)
 		}
-		hs.votes[preCommitKey][PhasePreCommit][validatorAddr] = true
-		if hs.myVotes[preCommitKey] == nil {
-			hs.myVotes[preCommitKey] = make(map[Phase][]byte)
-		}
-		hs.myVotes[preCommitKey][PhasePreCommit] = blockHash
+		reg.Votes[PhasePreCommit][blockHashStr][validatorAddr] = true
+		reg.MyVotes[PhasePreCommit] = blockHash
 
 		pcSigData := hs.createVoteData(height, view, PhasePreCommit, blockHash)
 		pcSig, err := hs.blockProducer.Sign(pcSigData)
 		if err == nil {
-			hs.storeVoteSignature(preCommitKey, PhasePreCommit, validatorAddr, pcSig)
+			hs.storeVoteSignature(height, view, PhasePreCommit, blockHashStr, validatorAddr, pcSig)
 		}
 
-		if hs.validatorSet.HasSuperMajority(hs.votes[preCommitKey][PhasePreCommit]) {
+		if hs.validatorSet.HasSuperMajority(reg.Votes[PhasePreCommit][blockHashStr]) {
 			hs.state.Phase = PhaseCommit
 
-			commitKey := fmt.Sprintf("%d-%d-%s-%s", height, view, PhaseCommit.String(), blockHashStr)
-			if hs.votes[commitKey] == nil {
-				hs.votes[commitKey] = make(map[Phase]map[string]bool)
+			if reg.Votes[PhaseCommit] == nil {
+				reg.Votes[PhaseCommit] = make(map[string]map[string]bool)
 			}
-			if hs.votes[commitKey][PhaseCommit] == nil {
-				hs.votes[commitKey][PhaseCommit] = make(map[string]bool)
+			if reg.Votes[PhaseCommit][blockHashStr] == nil {
+				reg.Votes[PhaseCommit][blockHashStr] = make(map[string]bool)
 			}
-			hs.votes[commitKey][PhaseCommit][validatorAddr] = true
-			if hs.myVotes[commitKey] == nil {
-				hs.myVotes[commitKey] = make(map[Phase][]byte)
-			}
-			hs.myVotes[commitKey][PhaseCommit] = blockHash
+			reg.Votes[PhaseCommit][blockHashStr][validatorAddr] = true
+			reg.MyVotes[PhaseCommit] = blockHash
 
 			cSigData := hs.createVoteData(height, view, PhaseCommit, blockHash)
 			cSig, err := hs.blockProducer.Sign(cSigData)
 			if err == nil {
-				hs.storeVoteSignature(commitKey, PhaseCommit, validatorAddr, cSig)
+				hs.storeVoteSignature(height, view, PhaseCommit, blockHashStr, validatorAddr, cSig)
 			}
 
-			if hs.validatorSet.HasSuperMajority(hs.votes[commitKey][PhaseCommit]) {
+			if hs.validatorSet.HasSuperMajority(reg.Votes[PhaseCommit][blockHashStr]) {
 				hs.decide(blockHash, height)
 				return
 			}
@@ -624,6 +664,9 @@ func (hs *HotStuffEngine) selfVote(blockHash []byte, height uint64, view uint64)
 }
 
 func (hs *HotStuffEngine) HandleMessage(msg *ConsensusMessage) {
+	if msg != nil {
+		hs.logDebug(fmt.Sprintf("HandleMessage type=%v height=%d view=%d validator=%s", msg.Type, msg.Height, msg.View, safeValStr(msg.Validator)))
+	}
 	if !hs.running.Load() {
 		select {
 		case hs.messageCh <- msg:
@@ -690,6 +733,9 @@ func (hs *HotStuffEngine) HandleMessage(msg *ConsensusMessage) {
 }
 
 func (hs *HotStuffEngine) handleMessage(msg *ConsensusMessage) {
+	if msg != nil {
+		hs.logDebug(fmt.Sprintf("handleMessage type=%v height=%d view=%d validator=%s", msg.Type, msg.Height, msg.View, safeValStr(msg.Validator)))
+	}
 	hs.mu.Lock()
 	defer hs.mu.Unlock()
 
@@ -697,6 +743,9 @@ func (hs *HotStuffEngine) handleMessage(msg *ConsensusMessage) {
 }
 
 func (hs *HotStuffEngine) handleMessageLocked(msg *ConsensusMessage) {
+	if msg != nil {
+		hs.logDebug(fmt.Sprintf("handleMessageLocked type=%v height=%d view=%d validator=%s (state: height=%d view=%d phase=%v)", msg.Type, msg.Height, msg.View, safeValStr(msg.Validator), hs.state.Height, hs.state.View, hs.state.Phase))
+	}
 	switch msg.Type {
 	case MsgBlockRequest:
 		// MsgBlockRequest is handled in HandleMessage without the mutex
@@ -817,11 +866,8 @@ func (hs *HotStuffEngine) handleProposal(msg *ConsensusMessage) {
 		hs.auditLog.LogProposal(msg.Height, msg.View, fmt.Sprintf("%x", msg.Validator), fmt.Sprintf("%x", msg.BlockHash))
 	}
 
-	heightKey := fmt.Sprintf("%d-%d-%s", msg.Height, msg.View, PhasePrepare.String())
-	if hs.myVotes[heightKey] == nil {
-		hs.myVotes[heightKey] = make(map[Phase][]byte)
-	}
-	if existing, voted := hs.myVotes[heightKey][PhasePrepare]; voted {
+	reg := hs.getOrCreateVoteRegistry(msg.Height, msg.View)
+	if existing, voted := reg.MyVotes[PhasePrepare]; voted {
 		if !bytes.Equal(existing, msg.BlockHash) {
 			hs.logDebug(fmt.Sprintf("handleProposal: already voted for different block at height=%d view=%d, rejecting", msg.Height, msg.View))
 			return
@@ -848,28 +894,24 @@ func (hs *HotStuffEngine) handleProposal(msg *ConsensusMessage) {
 	hs.doBroadcast(vote)
 
 	blockHashStr := hex.EncodeToString(msg.BlockHash)
-	voteKey := fmt.Sprintf("%d-%d-%s-%s", msg.Height, msg.View, PhasePrepare.String(), blockHashStr)
-	if hs.votes[voteKey] == nil {
-		hs.votes[voteKey] = make(map[Phase]map[string]bool)
+	if reg.Votes[PhasePrepare] == nil {
+		reg.Votes[PhasePrepare] = make(map[string]map[string]bool)
 	}
-	if hs.votes[voteKey][PhasePrepare] == nil {
-		hs.votes[voteKey][PhasePrepare] = make(map[string]bool)
+	if reg.Votes[PhasePrepare][blockHashStr] == nil {
+		reg.Votes[PhasePrepare][blockHashStr] = make(map[string]bool)
 	}
 	validatorAddr := hex.EncodeToString(hs.blockProducer.GetValidatorAddress())
-	hs.votes[voteKey][PhasePrepare][validatorAddr] = true
-	if hs.myVotes[heightKey] == nil {
-		hs.myVotes[heightKey] = make(map[Phase][]byte)
-	}
-		hs.myVotes[heightKey][PhasePrepare] = msg.BlockHash
+	reg.Votes[PhasePrepare][blockHashStr][validatorAddr] = true
+	reg.MyVotes[PhasePrepare] = msg.BlockHash
 
 	if sig != nil {
-		hs.storeVoteSignature(voteKey, PhasePrepare, validatorAddr, sig)
+		hs.storeVoteSignature(msg.Height, msg.View, PhasePrepare, blockHashStr, validatorAddr, sig)
 	}
 
 	hs.liveness.RecordActivity(hs.blockProducer.GetValidatorAddress(), msg.Height)
 
-	if hs.validatorSet.HasSuperMajority(hs.votes[voteKey][PhasePrepare]) {
-		qc := hs.createQC(msg.Height, msg.View, PhasePrepare, msg.BlockHash, voteKey)
+	if hs.validatorSet.HasSuperMajority(reg.Votes[PhasePrepare][blockHashStr]) {
+		qc := hs.createQC(msg.Height, msg.View, PhasePrepare, msg.BlockHash)
 		hs.state.PreparedQC = qc
 		if hs.state.LockedQC == nil || qc.View >= hs.state.LockedQC.View {
 			hs.state.LockedQC = qc
@@ -906,21 +948,20 @@ func (hs *HotStuffEngine) handleVote(msg *ConsensusMessage, phase Phase) {
 	}
 
 	blockHashStr := hex.EncodeToString(msg.BlockHash)
-	heightKey := fmt.Sprintf("%d-%d-%s-%s", msg.Height, msg.View, phase.String(), blockHashStr)
+	reg := hs.getOrCreateVoteRegistry(msg.Height, msg.View)
 
-	if hs.votes[heightKey] == nil {
-		hs.votes[heightKey] = make(map[Phase]map[string]bool)
-		hs.votesOrder = append(hs.votesOrder, heightKey)
+	if reg.Votes[phase] == nil {
+		reg.Votes[phase] = make(map[string]map[string]bool)
 	}
-	if hs.votes[heightKey][phase] == nil {
-		hs.votes[heightKey][phase] = make(map[string]bool)
+	if reg.Votes[phase][blockHashStr] == nil {
+		reg.Votes[phase][blockHashStr] = make(map[string]bool)
 	}
 
 	validatorAddr := hex.EncodeToString(msg.Validator)
-	hs.votes[heightKey][phase][validatorAddr] = true
+	reg.Votes[phase][blockHashStr][validatorAddr] = true
 
 	if msg.Signature != nil {
-		hs.storeVoteSignature(heightKey, phase, validatorAddr, msg.Signature)
+		hs.storeVoteSignature(msg.Height, msg.View, phase, blockHashStr, validatorAddr, msg.Signature)
 	}
 
 	hs.liveness.RecordActivity(msg.Validator, msg.Height)
@@ -929,8 +970,8 @@ func (hs *HotStuffEngine) handleVote(msg *ConsensusMessage, phase Phase) {
 		hs.auditLog.LogVote(msg.Height, msg.View, phase.String(), fmt.Sprintf("%x", msg.Validator), fmt.Sprintf("%x", msg.BlockHash))
 	}
 
-	if hs.validatorSet.HasSuperMajority(hs.votes[heightKey][phase]) {
-		qc := hs.createQC(msg.Height, msg.View, phase, msg.BlockHash, heightKey)
+	if hs.validatorSet.HasSuperMajority(reg.Votes[phase][blockHashStr]) {
+		qc := hs.createQC(msg.Height, msg.View, phase, msg.BlockHash)
 
 		switch phase {
 		case PhasePrepare:
@@ -954,13 +995,30 @@ func (hs *HotStuffEngine) handleVote(msg *ConsensusMessage, phase Phase) {
 }
 
 func (hs *HotStuffEngine) trimVotes() {
+	// C-05: Prune vote registries for heights < current - 10.
+	const keepHeights = 10
+	currentHeight := hs.state.Height
+
 	const maxVoteEntries = 2048
 	for len(hs.votesOrder) > maxVoteEntries {
 		oldest := hs.votesOrder[0]
 		hs.votesOrder = hs.votesOrder[1:]
-		delete(hs.votes, oldest)
-		delete(hs.voteCache, oldest)
-		delete(hs.voteSignatureCache, oldest)
+		delete(hs.viewVotes, oldest)
+	}
+
+	// Additionally prune by height
+	if currentHeight > keepHeights {
+		pruneBelow := currentHeight - keepHeights
+		newOrder := make([]string, 0, len(hs.votesOrder))
+		for _, key := range hs.votesOrder {
+			var h, v uint64
+			if _, err := fmt.Sscanf(key, "%d-%d", &h, &v); err == nil && h < pruneBelow {
+				delete(hs.viewVotes, key)
+				continue
+			}
+			newOrder = append(newOrder, key)
+		}
+		hs.votesOrder = newOrder
 	}
 }
 
@@ -1027,7 +1085,7 @@ func (hs *HotStuffEngine) handleTimeout(msg *ConsensusMessage) {
 		proposer, err := hs.validatorSet.GetProposerForView(hs.state.Height, hs.state.View)
 		if err == nil && bytes.Equal(hs.blockProducer.GetValidatorAddress(), proposer.Address) {
 			if hs.state.Phase == PhasePrepare {
-				go hs.doPropose()
+				hs.triggerPropose()
 			}
 		}
 	}
@@ -1214,7 +1272,7 @@ func (hs *HotStuffEngine) handleNewView(msg *ConsensusMessage) {
 	proposer, err := hs.validatorSet.GetProposerForView(hs.state.Height, hs.state.View)
 	if err == nil && bytes.Equal(hs.blockProducer.GetValidatorAddress(), proposer.Address) {
 		if hs.state.Phase == PhasePrepare {
-			go hs.doPropose()
+			hs.triggerPropose()
 		}
 	}
 }
@@ -1253,18 +1311,20 @@ func (hs *HotStuffEngine) advancePhase(phase Phase) {
 
 	hs.doBroadcast(voteMsg)
 
-	heightKey := fmt.Sprintf("%d-%d-%s", hs.state.Height, hs.state.View, phase.String())
-	if hs.votes[heightKey] == nil {
-		hs.votes[heightKey] = make(map[Phase]map[string]bool)
+	reg := hs.getOrCreateVoteRegistry(hs.state.Height, hs.state.View)
+	blockHashStr := hex.EncodeToString(hs.state.PreparedQC.BlockHash)
+	if reg.Votes[phase] == nil {
+		reg.Votes[phase] = make(map[string]map[string]bool)
 	}
-	if hs.votes[heightKey][phase] == nil {
-		hs.votes[heightKey][phase] = make(map[string]bool)
+	if reg.Votes[phase][blockHashStr] == nil {
+		reg.Votes[phase][blockHashStr] = make(map[string]bool)
 	}
 	validatorAddr := hex.EncodeToString(hs.blockProducer.GetValidatorAddress())
-	hs.votes[heightKey][phase][validatorAddr] = true
+	reg.Votes[phase][blockHashStr][validatorAddr] = true
+	reg.MyVotes[phase] = hs.state.PreparedQC.BlockHash
 
 	if sig != nil {
-		hs.storeVoteSignature(heightKey, phase, validatorAddr, sig)
+		hs.storeVoteSignature(hs.state.Height, hs.state.View, phase, blockHashStr, validatorAddr, sig)
 	}
 }
 
@@ -1339,13 +1399,10 @@ func (hs *HotStuffEngine) decide(blockHash []byte, height uint64) {
 	hs.curHeight.Store(hs.state.Height)
 	hs.curView.Store(0)
 
-	for addr := range hs.votes {
-		delete(hs.votes, addr)
+	for addr := range hs.viewVotes {
+		delete(hs.viewVotes, addr)
 	}
 	hs.votesOrder = hs.votesOrder[:0]
-	for key := range hs.voteSignatureCache {
-		delete(hs.voteSignatureCache, key)
-	}
 
 	for view := range hs.timeouts {
 		delete(hs.timeouts, view)
@@ -1365,7 +1422,7 @@ func (hs *HotStuffEngine) decide(blockHash []byte, height uint64) {
 		if hs.timeoutTimer != nil {
 			hs.timeoutTimer.Stop()
 		}
-		time.AfterFunc(hs.config.ViewTimeout, func() {
+		hs.timeoutTimer = time.AfterFunc(hs.config.ViewTimeout, func() {
 			hs.mu.Lock()
 			defer hs.mu.Unlock()
 			if !hs.running.Load() {
@@ -1378,7 +1435,7 @@ func (hs *HotStuffEngine) decide(blockHash []byte, height uint64) {
 	} else {
 		nextProposer, err := hs.validatorSet.GetProposer(hs.state.Height)
 		if err == nil && bytes.Equal(hs.blockProducer.GetValidatorAddress(), nextProposer.Address) {
-			go hs.doPropose()
+			hs.triggerPropose()
 		}
 		hs.startTimeout()
 	}
@@ -1414,11 +1471,8 @@ func (hs *HotStuffEngine) updateView(newView uint64) {
 		hs.viewTimeout = hs.config.MaxViewTimeout
 	}
 
-	for addr := range hs.votes {
-		delete(hs.votes, addr)
-	}
-	for key := range hs.voteSignatureCache {
-		delete(hs.voteSignatureCache, key)
+	for addr := range hs.viewVotes {
+		delete(hs.viewVotes, addr)
 	}
 
 	delete(hs.pendingBlocks, hs.state.Height)
@@ -1502,7 +1556,7 @@ func (hs *HotStuffEngine) startTimeout() {
 			proposer, err := hs.validatorSet.GetProposerForView(hs.state.Height, hs.state.View)
 			if err == nil && bytes.Equal(hs.blockProducer.GetValidatorAddress(), proposer.Address) {
 				if hs.state.Phase == PhasePrepare {
-					go hs.doPropose()
+					hs.triggerPropose()
 				}
 			}
 		}
@@ -1659,7 +1713,7 @@ func (hs *HotStuffEngine) applyEpochSlashing() {
 }
 
 func (hs *HotStuffEngine) distributeRewards(height uint64) {
-	if hs.rewardPool == 0 {
+	if hs.rewardPool == nil || hs.rewardPool.Sign() == 0 {
 		return
 	}
 
@@ -1668,18 +1722,23 @@ func (hs *HotStuffEngine) distributeRewards(height uint64) {
 		return
 	}
 
-	rewardPerValidator := hs.rewardPool / uint64(len(validators))
+	rewardPerValidator := new(big.Int).Div(hs.rewardPool, big.NewInt(int64(len(validators))))
 	for _, v := range validators {
-		hs.staking.Stake(v.Address, v.PublicKey, rewardPerValidator)
+		if rewardPerValidator.IsUint64() {
+			hs.staking.Stake(v.Address, v.PublicKey, rewardPerValidator.Uint64())
+		}
 	}
 
-	hs.rewardPool = 0
+	hs.rewardPool = new(big.Int)
 }
 
 func (hs *HotStuffEngine) AddReward(amount uint64) {
 	hs.mu.Lock()
 	defer hs.mu.Unlock()
-	hs.rewardPool += amount
+	if hs.rewardPool == nil {
+		hs.rewardPool = new(big.Int)
+	}
+	hs.rewardPool.Add(hs.rewardPool, new(big.Int).SetUint64(amount))
 }
 
 func (hs *HotStuffEngine) RegisterValidator(address []byte, publicKey []byte, stake uint64) error {
@@ -1701,6 +1760,11 @@ func (hs *HotStuffEngine) GetState() *ConsensusState {
 
 	s := *hs.state
 	return &s
+}
+
+// StakingModule returns the engine's staking module for querying validator stake info.
+func (hs *HotStuffEngine) StakingModule() *StakingModule {
+	return hs.staking
 }
 
 func (hs *HotStuffEngine) IsLeader() bool {
@@ -1785,22 +1849,25 @@ func (hs *HotStuffEngine) createTimeoutData(height uint64, view uint64) []byte {
 	return data
 }
 
-func (hs *HotStuffEngine) storeVoteSignature(heightKey string, phase Phase, validatorAddr string, sig *crypto.Signature) {
+func (hs *HotStuffEngine) storeVoteSignature(height, view uint64, phase Phase, blockHash string, validatorAddr string, sig *crypto.Signature) {
 	if sig == nil {
 		return
 	}
-	if hs.voteSignatureCache[heightKey] == nil {
-		hs.voteSignatureCache[heightKey] = make(map[Phase]map[string]*crypto.Signature)
+	reg := hs.getOrCreateVoteRegistry(height, view)
+	if reg.VoteSignatureCache[phase] == nil {
+		reg.VoteSignatureCache[phase] = make(map[string]map[string]*crypto.Signature)
 	}
-	if hs.voteSignatureCache[heightKey][phase] == nil {
-		hs.voteSignatureCache[heightKey][phase] = make(map[string]*crypto.Signature)
+	if reg.VoteSignatureCache[phase][blockHash] == nil {
+		reg.VoteSignatureCache[phase][blockHash] = make(map[string]*crypto.Signature)
 	}
-	hs.voteSignatureCache[heightKey][phase][validatorAddr] = sig
+	reg.VoteSignatureCache[phase][blockHash][validatorAddr] = sig
 }
 
-func (hs *HotStuffEngine) createQC(height, view uint64, phase Phase, blockHash []byte, heightKey string) *QC {
-	sigCache := hs.voteSignatureCache[heightKey]
-	if sigCache == nil || sigCache[phase] == nil {
+func (hs *HotStuffEngine) createQC(height, view uint64, phase Phase, blockHash []byte) *QC {
+	blockHashStr := hex.EncodeToString(blockHash)
+	reg := hs.getOrCreateVoteRegistry(height, view)
+	sigCache := reg.VoteSignatureCache[phase]
+	if sigCache == nil || sigCache[blockHashStr] == nil {
 		return &QC{
 			Height:    height,
 			View:      view,
@@ -1812,9 +1879,9 @@ func (hs *HotStuffEngine) createQC(height, view uint64, phase Phase, blockHash [
 	}
 
 	signatures := make(map[string]crypto.Signature)
-	validatorAddrs := make([]string, 0, len(sigCache[phase]))
+	validatorAddrs := make([]string, 0, len(sigCache[blockHashStr]))
 
-	for addr, sig := range sigCache[phase] {
+	for addr, sig := range sigCache[blockHashStr] {
 		signatures[addr] = *sig
 		validatorAddrs = append(validatorAddrs, addr)
 	}
@@ -2003,7 +2070,7 @@ func (hs *HotStuffEngine) OnSyncComplete(callback func()) {
 
 				proposer, err := hs.validatorSet.GetProposer(localHeight)
 				if err == nil && bytes.Equal(hs.blockProducer.GetValidatorAddress(), proposer.Address) {
-					go hs.doPropose()
+					hs.triggerPropose()
 				}
 
 				hs.mu.Lock()
@@ -2101,7 +2168,7 @@ func (hs *HotStuffEngine) verifyInvariants() []invariantViolation {
 		})
 	}
 
-	for heightKey := range hs.votes {
+	for heightKey := range hs.viewVotes {
 		parts := splitHeightKey(heightKey)
 		if len(parts) >= 1 {
 			voteHeight := parseUint64(parts[0])
@@ -2156,4 +2223,14 @@ func parseUint64(s string) uint64 {
 		}
 	}
 	return n
+}
+
+func safeValStr(val []byte) string {
+	if len(val) == 0 {
+		return ""
+	}
+	if len(val) >= 4 {
+		return hex.EncodeToString(val[:4])
+	}
+	return hex.EncodeToString(val)
 }

@@ -21,14 +21,15 @@ func DefaultGenesis() *GenesisConfig {
 }
 
 type rawGenesis struct {
-	ChainID        uint64           `json:"chain_id"`
-	Network        string           `json:"network_name,omitempty"`
-	GenesisTime    string           `json:"genesis_time,omitempty"`
-	Validators     []rawValidator   `json:"validators"`
-	TotalStake     uint64           `json:"total_stake,omitempty"`
-	BlockTime      string           `json:"block_time,omitempty"`
-	MaxBlockSize   uint64           `json:"max_block_size,omitempty"`
-	MaxGasPerBlock uint64           `json:"max_gas_per_block,omitempty"`
+	ChainID        uint64            `json:"chain_id"`
+	Network        string            `json:"network_name,omitempty"`
+	GenesisTime    string            `json:"genesis_time,omitempty"`
+	Validators     []rawValidator    `json:"validators"`
+	TotalStake     uint64            `json:"total_stake,omitempty"`
+	BlockTime      string            `json:"block_time,omitempty"`
+	MaxBlockSize   uint64            `json:"max_block_size,omitempty"`
+	MaxGasPerBlock uint64            `json:"max_gas_per_block,omitempty"`
+	Allocations    map[string]string `json:"allocations,omitempty"`
 }
 
 type rawValidator struct {
@@ -96,6 +97,8 @@ func LoadGenesis(path string) (*GenesisConfig, error) {
 			Name:      rv.Name,
 		})
 	}
+
+	config.Allocations = raw.Allocations
 
 	return config, nil
 }

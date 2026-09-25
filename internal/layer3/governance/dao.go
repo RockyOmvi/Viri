@@ -52,13 +52,14 @@ type Proposal struct {
 }
 
 type GovernanceDAO struct {
-	mu          sync.RWMutex
-	proposals   map[uint64]*Proposal
-	votes       map[uint64]map[string]VoteChoice
-	nextID      uint64
-	votingPeriod time.Duration
-	minStake    uint64
-	quorum      float64
+	mu              sync.RWMutex
+	proposals       map[uint64]*Proposal
+	votes           map[uint64]map[string]VoteChoice
+	nextID          uint64
+	votingPeriod    time.Duration
+	minStake        uint64
+	quorum          float64
+	totalNetworkStake uint64
 }
 
 func NewGovernanceDAO(votingPeriod time.Duration, minStake uint64, quorum float64) *GovernanceDAO {
@@ -71,12 +72,34 @@ func NewGovernanceDAO(votingPeriod time.Duration, minStake uint64, quorum float6
 	}
 }
 
+// SetTotalNetworkStake updates the network-wide total stake used for quorum
+// calculations. This should be called whenever the validator set changes.
+func (dao *GovernanceDAO) SetTotalNetworkStake(totalStake uint64) {
+	dao.mu.Lock()
+	defer dao.mu.Unlock()
+	dao.totalNetworkStake = totalStake
+}
+
+// TotalNetworkStake returns the current network-wide total stake.
+func (dao *GovernanceDAO) TotalNetworkStake() uint64 {
+	dao.mu.RLock()
+	defer dao.mu.RUnlock()
+	return dao.totalNetworkStake
+}
+
 func (dao *GovernanceDAO) SubmitProposal(title, description string, proposalType ProposalType, proposer []byte, stake uint64) (*Proposal, error) {
 	dao.mu.Lock()
 	defer dao.mu.Unlock()
 
 	if stake < dao.minStake {
 		return nil, fmt.Errorf("stake too low: required %d, got %d", dao.minStake, stake)
+	}
+
+	// G-05: Use network-wide total stake for quorum calculations.
+	// Do NOT fall back to the proposer's stake — require explicit setup.
+	networkStake := dao.totalNetworkStake
+	if networkStake == 0 {
+		return nil, fmt.Errorf("total network stake not set: call SetTotalNetworkStake before submitting proposals")
 	}
 
 	now := time.Now()
@@ -91,7 +114,7 @@ func (dao *GovernanceDAO) SubmitProposal(title, description string, proposalType
 		EndTime:     now.Add(dao.votingPeriod),
 		Threshold:   0.5,
 		VetoPercent: 0.33,
-		TotalStake:  stake,
+		TotalStake:  networkStake,
 	}
 
 	dao.proposals[dao.nextID] = proposal

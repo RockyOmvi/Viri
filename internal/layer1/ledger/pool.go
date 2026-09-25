@@ -1,6 +1,7 @@
 package ledger
 
 import (
+	"fmt"
 	"sort"
 	"sync"
 
@@ -38,6 +39,7 @@ type PressureCallback func(level float64)
 type TxPool struct {
 	mu             sync.RWMutex
 	config         *TxPoolConfig
+	chainID        uint64 // T-02: expected chain ID for validation
 	pending        map[string]*Transaction
 	queued         map[string][]*Transaction
 	byGasPrice     []*Transaction
@@ -67,6 +69,12 @@ func (p *TxPool) Add(tx *Transaction) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	// T-03: Reject transactions where SenderAddress() returns nil.
+	sender := tx.SenderAddress()
+	if sender == nil {
+		return fmt.Errorf("invalid sender: cannot derive address from From field")
+	}
+
 	txHash := string(tx.Hash)
 	if _, exists := p.pending[txHash]; exists {
 		return ErrDuplicateTx
@@ -76,7 +84,11 @@ func (p *TxPool) Add(tx *Transaction) error {
 		return ErrGasPriceTooLow
 	}
 
-	sender := tx.SenderAddress()
+	// T-02: Validate ChainID matches expected chain.
+	if p.chainID != 0 && tx.ChainID != 0 && tx.ChainID != p.chainID {
+		return fmt.Errorf("chain ID mismatch: expected %d, got %d", p.chainID, tx.ChainID)
+	}
+
 	accountTxs := p.countAccountTxs(string(sender))
 	if accountTxs >= p.config.MaxAccountTxs {
 		return ErrAccountTxLimit
@@ -89,12 +101,23 @@ func (p *TxPool) Add(tx *Transaction) error {
 		}
 	}
 
-	// Evict lowest-gas-price tx if pool is full (replace-by-fee)
+	// T-01: RBF — only replace same-sender-same-nonce txs with ≥10% higher gas price.
 	if len(p.pending) >= p.config.MaxTransactions {
-		if len(p.byGasPrice) > 0 && tx.GasPrice > p.byGasPrice[len(p.byGasPrice)-1].GasPrice {
-			evictHash := string(p.byGasPrice[len(p.byGasPrice)-1].Hash)
-			p.removeLocked(evictHash)
-		} else {
+		replaced := false
+		senderStr := string(sender)
+		for hash, existing := range p.pending {
+			existingSender := existing.SenderAddress()
+			if existingSender != nil && string(existingSender) == senderStr && existing.Nonce == tx.Nonce {
+				// Same sender, same nonce: allow replacement if gas price is 10% higher
+				minPrice := existing.GasPrice + existing.GasPrice/10
+				if tx.GasPrice > minPrice {
+					p.removeLocked(hash)
+					replaced = true
+					break
+				}
+			}
+		}
+		if !replaced {
 			return ErrTxPoolFull
 		}
 	}
@@ -108,6 +131,19 @@ func (p *TxPool) Add(tx *Transaction) error {
 	p.txCounter++
 	p.notifyPressure()
 	return nil
+}
+
+// bytesEqualSlice compares two byte slices for equality.
+func bytesEqualSlice(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func (p *TxPool) GetPending() []*Transaction {

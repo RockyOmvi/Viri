@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"html/template"
 	"io"
 	"math/big"
 	"net/http"
@@ -24,6 +23,7 @@ type FaucetServer struct {
 	mu          sync.Mutex
 	port        int
 	rpcURL      string
+	rpcAPIKey   string
 	walletKey   *crypto.PrivateKey
 	perClaim    uint64
 	dailyLimit  uint64
@@ -35,15 +35,17 @@ type FaucetServer struct {
 	dailyReset  time.Time
 	nextNonce   uint64
 	nonceInit   bool
+	chainID     uint64
 	server      *http.Server
 	tlsCert     string
 	tlsKey      string
 }
 
-func NewFaucetServer(port int, rpcURL string, key *crypto.PrivateKey, perClaim, dailyLimit uint64, cooldown time.Duration, tlsCert, tlsKey string) *FaucetServer {
+func NewFaucetServer(port int, rpcURL, rpcAPIKey string, key *crypto.PrivateKey, perClaim, dailyLimit uint64, cooldown time.Duration, tlsCert, tlsKey string) *FaucetServer {
 	return &FaucetServer{
 		port:       port,
 		rpcURL:     rpcURL,
+		rpcAPIKey:  rpcAPIKey,
 		walletKey:  key,
 		perClaim:   perClaim,
 		dailyLimit: dailyLimit,
@@ -58,6 +60,17 @@ func NewFaucetServer(port int, rpcURL string, key *crypto.PrivateKey, perClaim, 
 }
 
 func (f *FaucetServer) Start() error {
+	// Detect chain ID from RPC
+	if res, err := f.rpcCall("eth_chainId", nil); err == nil {
+		if cidHex, ok := res.(string); ok {
+			fmt.Sscanf(cidHex, "0x%x", &f.chainID)
+		}
+	}
+	if f.chainID == 0 {
+		f.chainID = 99997
+	}
+	fmt.Printf("Chain ID: %d\n", f.chainID)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", f.handleIndex)
 	mux.HandleFunc("/api/claim", f.handleClaim)
@@ -93,7 +106,16 @@ func (f *FaucetServer) rpcCall(method string, params []interface{}) (interface{}
 	}
 	reqData, _ := json.Marshal(reqBody)
 
-	resp, err := http.Post(f.rpcURL, "application/json", bytes.NewReader(reqData))
+	req, err := http.NewRequest("POST", f.rpcURL, bytes.NewReader(reqData))
+	if err != nil {
+		return nil, fmt.Errorf("RPC request error: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if f.rpcAPIKey != "" {
+		req.Header.Set("X-API-Key", f.rpcAPIKey)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("RPC error: %w", err)
 	}
@@ -208,20 +230,6 @@ func (f *FaucetServer) handleClaim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Global rate limit: at most one claim per globalRate
-	now := time.Now()
-	if f.globalRate > 0 && !f.dailyReset.IsZero() {
-		lastGlobal := f.dailyReset // reuse dailyReset as approximate global timestamp
-		if since := now.Sub(lastGlobal); since < f.globalRate {
-			wait := f.globalRate - since
-			json.NewEncoder(w).Encode(ClaimResponse{
-				Error: "Too many requests. Please wait.",
-				Wait:  wait.Round(time.Millisecond).String(),
-			})
-			return
-		}
-	}
-
 	// IP-based rate limit: max 1 claim per 30s per IP
 	clientIP := r.RemoteAddr
 	if lastIP, exists := f.ipClaims[clientIP]; exists {
@@ -247,23 +255,19 @@ func (f *FaucetServer) handleClaim(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Get nonce for the faucet wallet — use local counter with initial RPC fetch
-	f.mu.Lock()
+	// Get nonce for the faucet wallet (mutex already held)
 	if !f.nonceInit {
 		faucetAddr := hex.EncodeToString(f.walletKey.PubKey().Address())
 		if result, err := f.rpcCall("eth_getTransactionCount", []interface{}{"0x" + faucetAddr, "latest"}); err != nil {
-			f.mu.Unlock()
 			json.NewEncoder(w).Encode(ClaimResponse{Error: "Failed to get nonce: " + err.Error()})
 			return
 		} else {
 			nonceHex, ok := result.(string)
 			if !ok {
-				f.mu.Unlock()
 				json.NewEncoder(w).Encode(ClaimResponse{Error: "Invalid nonce response"})
 				return
 			}
 			if _, err := fmt.Sscanf(nonceHex, "0x%x", &f.nextNonce); err != nil {
-				f.mu.Unlock()
 				json.NewEncoder(w).Encode(ClaimResponse{Error: "Failed to parse nonce: " + err.Error()})
 				return
 			}
@@ -272,10 +276,9 @@ func (f *FaucetServer) handleClaim(w http.ResponseWriter, r *http.Request) {
 	}
 	nonce := f.nextNonce
 	f.nextNonce++
-	f.mu.Unlock()
 
 	// Create and sign the native VIRI transfer
-	tx, err := ledger.NewTransactionFromKey(nonce, addrBytes, f.perClaim, 21000, 1, nil, uint64(1), f.walletKey)
+	tx, err := ledger.NewTransactionFromKey(nonce, addrBytes, f.perClaim, 50000, 1, nil, f.chainID, f.walletKey)
 	if err != nil {
 		json.NewEncoder(w).Encode(ClaimResponse{Error: "Failed to create transaction: " + err.Error()})
 		return
@@ -296,31 +299,15 @@ func (f *FaucetServer) handleClaim(w http.ResponseWriter, r *http.Request) {
 
 	txHash := fmt.Sprintf("%v", result)
 
-	// Also send ERC-20 VIRI token transfer
-	tokenAmount := new(big.Int).SetUint64(f.perClaim)
-	transferData := erc20TransferData(addrBytes, tokenAmount)
-	tokenTx, err := ledger.NewTransactionFromKey(nonce+1, erc20TokenAddr, 0, 100000, 1, transferData, uint64(1), f.walletKey)
-	var tokenTxHash string
-	if err == nil {
-		tokenTxBytes, err := ledger.SerializeTransaction(tokenTx)
-		if err == nil {
-			result2, err := f.rpcCall("eth_sendRawTransaction", []interface{}{"0x" + hex.EncodeToString(tokenTxBytes)})
-			if err == nil {
-				tokenTxHash = fmt.Sprintf("%v", result2)
-			}
-		}
-	}
-
 	// Record the claim
 	f.claims[normalizedAddr] = time.Now()
 	f.ipClaims[clientIP] = time.Now()
 	f.dailyTotal += f.perClaim
 
 	json.NewEncoder(w).Encode(ClaimResponse{
-		Success:     true,
-		TxHash:      txHash,
-		TokenTxHash: tokenTxHash,
-		Amount:      fmt.Sprintf("%d", f.perClaim),
+		Success: true,
+		TxHash:  txHash,
+		Amount:  fmt.Sprintf("%d", f.perClaim),
 	})
 }
 
@@ -349,16 +336,11 @@ func (f *FaucetServer) handleInfo(w http.ResponseWriter, r *http.Request) {
 
 func (f *FaucetServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	tmpl, _ := template.New("faucet").Parse(faucetHTML)
-
-	data := map[string]interface{}{
-		"FaucetAddress": fmt.Sprintf("0x%x", f.walletKey.PubKey().Address()),
-		"PerClaim":      f.perClaim,
-		"Cooldown":      f.cooldown.String(),
-		"NetworkName":   "Viri Testnet",
-	}
-
-	tmpl.Execute(w, data)
+	fmt.Fprintf(w, `<html><body style="font-family:monospace;background:#020408;color:#e8f4f8;padding:40px">
+<h1>Viri Faucet</h1>
+<p>Faucet API is available at /api/claim</p>
+<p>Faucet address: 0x%x</p>
+</body></html>`, f.walletKey.PubKey().Address())
 }
 
 // RunFaucet starts the faucet service standalone.
@@ -410,7 +392,7 @@ func RunFaucet() {
 		}
 	}
 
-	dailyLimit := uint64(100_000_000_000_000_000_00) // 100 tokens total daily
+	dailyLimit := uint64(18_000_000_000_000_000_000) // 18 tokens total daily (uint64 max bound)
 	if v := os.Getenv("FAUCET_DAILY_LIMIT"); v != "" {
 		if n, err := strconv.ParseUint(v, 10, 64); err == nil {
 			dailyLimit = n
@@ -424,186 +406,16 @@ func RunFaucet() {
 		}
 	}
 
+	rpcAPIKey := os.Getenv("FAUCET_RPC_API_KEY")
+
 	fmt.Printf("Viri Faucet v%s\n", Version)
 	fmt.Printf("RPC: %s | Port: %d\n", rpcURL, port)
 
-	faucet := NewFaucetServer(port, rpcURL, key, perClaim, dailyLimit, cooldown, tlsCert, tlsKey)
+	faucet := NewFaucetServer(port, rpcURL, rpcAPIKey, key, perClaim, dailyLimit, cooldown, tlsCert, tlsKey)
 	if err := faucet.Start(); err != nil && err != http.ErrServerClosed {
 		fmt.Fprintf(os.Stderr, "Faucet error: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-// ============================================================
-// Embedded Faucet HTML
-// ============================================================
 
-const faucetHTML = `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Viri Testnet Faucet</title>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
-  <style>
-    :root {
-      --bg: #0a0e17;
-      --bg2: #111827;
-      --card: #1a2332;
-      --text: #e2e8f0;
-      --text2: #94a3b8;
-      --accent: #6366f1;
-      --accent2: #818cf8;
-      --success: #10b981;
-      --error: #ef4444;
-      --border: #1e293b;
-    }
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body {
-      font-family: 'Inter', sans-serif;
-      background: var(--bg);
-      color: var(--text);
-      min-height: 100vh;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-    }
-    .faucet-card {
-      background: var(--card);
-      border: 1px solid var(--border);
-      border-radius: 16px;
-      padding: 2.5rem;
-      width: 100%;
-      max-width: 480px;
-      text-align: center;
-    }
-    .faucet-card h1 {
-      font-size: 2rem;
-      font-weight: 800;
-      background: linear-gradient(135deg, var(--accent2), var(--success));
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-      margin-bottom: 0.5rem;
-    }
-    .faucet-card .subtitle {
-      color: var(--text2);
-      font-size: 0.9rem;
-      margin-bottom: 2rem;
-    }
-    .faucet-card input {
-      width: 100%;
-      padding: 0.875rem 1rem;
-      background: var(--bg2);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      color: var(--text);
-      font-size: 0.9rem;
-      font-family: 'Fira Code', monospace;
-      outline: none;
-      transition: border-color 0.2s;
-      margin-bottom: 1rem;
-    }
-    .faucet-card input:focus { border-color: var(--accent); }
-    .faucet-card button {
-      width: 100%;
-      padding: 0.875rem;
-      background: linear-gradient(135deg, var(--accent), #4f46e5);
-      color: white;
-      border: none;
-      border-radius: 10px;
-      font-size: 1rem;
-      font-weight: 700;
-      cursor: pointer;
-      transition: all 0.2s;
-    }
-    .faucet-card button:hover { transform: translateY(-2px); box-shadow: 0 8px 25px rgba(99,102,241,0.3); }
-    .faucet-card button:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
-    .info {
-      display: flex;
-      justify-content: space-between;
-      padding: 0.75rem 0;
-      border-bottom: 1px solid rgba(255,255,255,0.05);
-      font-size: 0.85rem;
-    }
-    .info .label { color: var(--text2); }
-    .info .value { font-family: 'Fira Code', monospace; }
-    .result {
-      margin-top: 1.5rem;
-      padding: 1rem;
-      border-radius: 10px;
-      font-size: 0.85rem;
-      display: none;
-    }
-    .result.success { background: rgba(16,185,129,0.1); border: 1px solid rgba(16,185,129,0.3); color: #6ee7b7; display: block; }
-    .result.error { background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.3); color: #fca5a5; display: block; }
-    .result a { color: var(--accent2); word-break: break-all; }
-    .drip-emoji { font-size: 3rem; margin-bottom: 1rem; }
-  </style>
-</head>
-<body>
-  <div class="faucet-card">
-    <div class="drip-emoji">💧</div>
-    <h1>Viri Faucet</h1>
-    <p class="subtitle">{{.NetworkName}} — Get free testnet tokens</p>
-
-    <input type="text" id="address" placeholder="0x... your wallet address">
-    <button id="claim-btn" onclick="claim()">Request Tokens</button>
-
-    <div id="result" class="result"></div>
-
-    <div style="margin-top: 1.5rem;">
-      <div class="info">
-        <span class="label">Per Claim</span>
-        <span class="value">{{.PerClaim}} wei</span>
-      </div>
-      <div class="info">
-        <span class="label">Cooldown</span>
-        <span class="value">{{.Cooldown}}</span>
-      </div>
-      <div class="info">
-        <span class="label">Faucet Address</span>
-        <span class="value" style="font-size:0.7rem">{{.FaucetAddress}}</span>
-      </div>
-    </div>
-  </div>
-
-  <script>
-  async function claim() {
-    var addr = document.getElementById('address').value.trim();
-    if (!addr) { showResult('error', 'Please enter a wallet address'); return; }
-    var btn = document.getElementById('claim-btn');
-    btn.disabled = true;
-    btn.textContent = 'Sending...';
-    try {
-      var resp = await fetch('/api/claim', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ address: addr })
-      });
-      var data = await resp.json();
-      if (data.success) {
-        var msg = 'Tokens sent!<br>Native TX: <a href="/tx/' + data.tx_hash + '">' + data.tx_hash + '</a>';
-        if (data.token_tx_hash) {
-          msg += '<br>Token TX: <a href="/tx/' + data.token_tx_hash + '">' + data.token_tx_hash + '</a>';
-        }
-        showResult('success', msg);
-      } else {
-        var msg = data.error;
-        if (data.wait) msg += ' (wait ' + data.wait + ')';
-        showResult('error', msg);
-      }
-    } catch(e) {
-      showResult('error', 'Network error: ' + e.message);
-    }
-    btn.disabled = false;
-    btn.textContent = 'Request Tokens';
-  }
-  function showResult(type, msg) {
-    var el = document.getElementById('result');
-    el.className = 'result ' + type;
-    el.innerHTML = msg;
-  }
-  </script>
-</body>
-</html>`

@@ -41,6 +41,7 @@ type Transaction struct {
 	Data        []byte
 	Signature   *TxSignature
 	ChainID     uint64
+	Verified    bool // true when signature has been verified (e.g. RLP-recovered sender)
 }
 
 // FeeToken returns the fee currency. nil means native coin.
@@ -106,14 +107,15 @@ type SlashingRecord struct {
 }
 
 type GenesisConfig struct {
-	ChainID          uint64           `json:"chain_id"`
-	Network          string           `json:"network_name,omitempty"`
-	GenesisTime      string           `json:"genesis_time,omitempty"`
+	ChainID          uint64            `json:"chain_id"`
+	Network          string            `json:"network_name,omitempty"`
+	GenesisTime      string            `json:"genesis_time,omitempty"`
 	InitialValidators []*ValidatorInfo `json:"validators"`
-	InitialSupply    uint64           `json:"total_stake,omitempty"`
-	BlockTime        time.Duration    `json:"block_time,omitempty"`
-	MaxBlockSize     uint64           `json:"max_block_size,omitempty"`
-	MaxGasPerBlock   uint64           `json:"max_gas_per_block,omitempty"`
+	InitialSupply    uint64            `json:"total_stake,omitempty"`
+	BlockTime        time.Duration     `json:"block_time,omitempty"`
+	MaxBlockSize     uint64            `json:"max_block_size,omitempty"`
+	MaxGasPerBlock   uint64            `json:"max_gas_per_block,omitempty"`
+	Allocations      map[string]string `json:"allocations,omitempty"`
 }
 
 type ValidatorInfo struct {

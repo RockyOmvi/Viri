@@ -247,9 +247,17 @@ func (s *APIServer) getBlock(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var height uint64
-	if _, err := fmt.Sscanf(heightStr, "%d", &height); err != nil {
-		s.sendJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid block height"})
-		return
+	if heightStr == "latest" {
+		if s.blockchain == nil {
+			s.sendJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "blockchain not available"})
+			return
+		}
+		height = s.blockchain.Height()
+	} else {
+		if _, err := fmt.Sscanf(heightStr, "%d", &height); err != nil {
+			s.sendJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid block height"})
+			return
+		}
 	}
 
 	if s.blockchain == nil {

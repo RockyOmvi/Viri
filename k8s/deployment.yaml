@@ -12,7 +12,7 @@ data:
   config.json: |
     {
       "chain": {
-        "chain_id": 999,
+        "chain_id": 99997,
         "network_name": "viri-testnet",
         "block_time": "1s",
         "max_block_size": 10485760,
