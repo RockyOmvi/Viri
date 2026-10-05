@@ -805,17 +805,11 @@ func (s *RPCServer) getTransactionByHash(ctx context.Context, params json.RawMes
 
 	for _, tx := range s.blockchain.TxPool().GetPending() {
 		if bytes.Equal(tx.Hash, txHash) {
-			return map[string]interface{}{
-				"hash":      fmt.Sprintf("0x%x", tx.Hash),
-				"nonce":     fmt.Sprintf("0x%x", tx.Nonce),
-				"from":      fmt.Sprintf("0x%x", tx.SenderAddress()),
-				"to":        fmt.Sprintf("0x%x", tx.To),
-				"value":     fmt.Sprintf("0x%x", tx.Value),
-				"gas":       fmt.Sprintf("0x%x", tx.GasLimit),
-				"gasPrice":  fmt.Sprintf("0x%x", tx.GasPrice),
-				"blockHash": nil,
-				"status":    "pending",
-			}, nil
+			res := formatTx(tx, nil, 0, 0)
+			res["blockHash"] = nil
+			res["blockNumber"] = nil
+			res["transactionIndex"] = nil
+			return res, nil
 		}
 	}
 
@@ -824,19 +818,7 @@ func (s *RPCServer) getTransactionByHash(ctx context.Context, params json.RawMes
 		block, err := s.blockchain.GetBlock(entry.Height)
 		if err == nil && entry.Index < len(block.Transactions) {
 			tx := block.Transactions[entry.Index]
-			return map[string]interface{}{
-				"hash":             fmt.Sprintf("0x%x", tx.Hash),
-				"nonce":            fmt.Sprintf("0x%x", tx.Nonce),
-				"from":             fmt.Sprintf("0x%x", tx.SenderAddress()),
-				"to":               fmt.Sprintf("0x%x", tx.To),
-				"value":            fmt.Sprintf("0x%x", tx.Value),
-				"gas":              fmt.Sprintf("0x%x", tx.GasLimit),
-				"gasPrice":         fmt.Sprintf("0x%x", tx.GasPrice),
-				"blockHash":        fmt.Sprintf("0x%x", block.Hash()),
-				"blockNumber":      fmt.Sprintf("0x%x", block.Header.Height),
-				"transactionIndex": fmt.Sprintf("0x%x", entry.Index),
-				"status":           "confirmed",
-			}, nil
+			return formatTx(tx, block.Hash(), block.Header.Height, entry.Index), nil
 		}
 	}
 
