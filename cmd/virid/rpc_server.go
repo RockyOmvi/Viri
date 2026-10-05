@@ -1611,6 +1611,7 @@ func formatTx(tx *ledger.Transaction, blockHash []byte, height uint64, txIdx int
 		res["maxFeePerGas"] = fmt.Sprintf("0x%x", tx.GasPrice)
 		res["maxPriorityFeePerGas"] = fmt.Sprintf("0x%x", tx.GasPrice)
 		res["accessList"] = []interface{}{}
+		res["yParity"] = vHex
 	}
 	if len(tx.FeeCurrency) > 0 {
 		res["feeCurrency"] = fmt.Sprintf("0x%x", tx.FeeCurrency)
