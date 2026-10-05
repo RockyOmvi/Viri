@@ -93,7 +93,7 @@ func (s *APIServer) Start() error {
 
 	handler := observability.RequestIDMiddleware(
 		security.HTTPSRedirectMiddleware(tlsEnabled,
-			security.NewAPIKeyAuthFromHash(s.apiKeyHash).Middleware(
+			s.authMiddleware(
 				security.ConnectionLimitMiddleware(connLimiter, getClientID)(
 					security.DDoSProtectionMiddleware(ddosDetector, getClientID)(
 						security.RateLimitMiddleware(rateLimiter, getClientID)(
@@ -136,6 +136,24 @@ func (s *APIServer) Start() error {
 	return nil
 }
 
+func (s *APIServer) authMiddleware(next http.Handler) http.Handler {
+	if s.apiKeyHash == "" {
+		return next
+	}
+	auth := security.NewAPIKeyAuthFromHash(s.apiKeyHash)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Explorer web UI and public REST read APIs are completely open to browsers and tools
+		if strings.HasPrefix(r.URL.Path, "/explorer") ||
+			strings.HasPrefix(r.URL.Path, "/api/v1") ||
+			r.URL.Path == "/" ||
+			r.URL.Path == "/metrics" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		auth.Middleware(next).ServeHTTP(w, r)
+	})
+}
+
 func (s *APIServer) Stop() error {
 	if s.server != nil {
 		s.drainer.StartDrain()
@@ -152,19 +170,12 @@ func (s *APIServer) Stop() error {
 }
 
 func (s *APIServer) corsMiddleware(next http.Handler) http.Handler {
-	allowedOrigins := map[string]bool{
-		"http://localhost":      true,
-		"http://localhost:3000": true,
-		"http://localhost:8080": true,
-		"http://127.0.0.1":      true,
-		"http://127.0.0.1:3000": true,
-		"http://127.0.0.1:8080": true,
-	}
-
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
-		if allowedOrigins[origin] {
+		if origin != "" {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
+		} else {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
 		}
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS, HEAD")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key, X-Requested-With, Accept")
@@ -392,26 +403,69 @@ func (s *APIServer) getAccount(w http.ResponseWriter, r *http.Request) {
 	}
 
 	account, err := s.stateMgr.GetAccount(addrBytes)
+	var balanceStr string
+	var nonce uint64
+	var acctType uint8
+	var hasCode bool
+
 	if err == nil && account != nil {
-		s.sendJSON(w, http.StatusOK, map[string]interface{}{
-			"address":  fmt.Sprintf("0x%x", account.Address),
-			"balance":  account.Balance.String(),
-			"nonce":    account.Nonce,
-			"type":     account.Type,
-			"has_code": len(account.Code) > 0,
-		})
-		return
+		balanceStr = account.Balance.String()
+		nonce = account.Nonce
+		acctType = uint8(account.Type)
+		hasCode = len(account.Code) > 0
+	} else {
+		bal, _ := s.stateMgr.GetBalance(addrBytes)
+		n, _ := s.stateMgr.GetNonce(addrBytes)
+		balanceStr = bal.String()
+		nonce = n
+		acctType = 0
+		hasCode = false
 	}
 
-	balance, _ := s.stateMgr.GetBalance(addrBytes)
-	nonce, _ := s.stateMgr.GetNonce(addrBytes)
+	recentTxs := make([]map[string]interface{}, 0)
+	if s.blockchain != nil {
+		currentHeight := s.blockchain.Height()
+		scanStart := uint64(0)
+		if currentHeight > 500 {
+			scanStart = currentHeight - 500
+		}
+		for h := currentHeight; h >= scanStart && len(recentTxs) < 25; h-- {
+			b, err := s.blockchain.GetBlock(h)
+			if err != nil {
+				if h == 0 {
+					break
+				}
+				continue
+			}
+			for idx, tx := range b.Transactions {
+				if bytes.Equal(tx.SenderAddress(), addrBytes) || bytes.Equal(tx.To, addrBytes) {
+					recentTxs = append(recentTxs, map[string]interface{}{
+						"hash":         fmt.Sprintf("0x%x", tx.Hash),
+						"block_height": b.Header.Height,
+						"from":         fmt.Sprintf("0x%x", tx.SenderAddress()),
+						"to":           fmt.Sprintf("0x%x", tx.To),
+						"value":        fmt.Sprintf("0x%x", tx.Value),
+						"timestamp":    b.Header.Timestamp.Unix(),
+						"tx_index":     idx,
+					})
+					if len(recentTxs) >= 25 {
+						break
+					}
+				}
+			}
+			if h == 0 {
+				break
+			}
+		}
+	}
 
 	s.sendJSON(w, http.StatusOK, map[string]interface{}{
-		"address":  fmt.Sprintf("0x%x", addrBytes),
-		"balance":  balance.String(),
-		"nonce":    nonce,
-		"type":     0,
-		"has_code": false,
+		"address":             fmt.Sprintf("0x%x", addrBytes),
+		"balance":             balanceStr,
+		"nonce":               nonce,
+		"type":                acctType,
+		"has_code":            hasCode,
+		"recent_transactions": recentTxs,
 	})
 }
 
