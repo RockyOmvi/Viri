@@ -5,6 +5,8 @@ build/
 # Data directories
 data/
 .viri/
+.viri-dev/
+.viri-local-testnet/
 
 # Testnet data (badger DB files too large for git)
 testnet_data/
