@@ -7,6 +7,8 @@ import (
 	"math/big"
 	"sync"
 	"time"
+
+	"github.com/viri-chain/viri/internal/layer1/crypto"
 )
 
 type ChainID uint64
@@ -176,6 +178,21 @@ func (bs *BridgeState) AddSignature(msgID []byte, validatorIdx int, signature []
 		}
 	}
 
+	val := vs.Validators[validatorIdx]
+	if !val.IsActive {
+		return fmt.Errorf("validator is inactive")
+	}
+
+	if len(val.PublicKey) > 0 {
+		pubKey, err := crypto.PubKeyFromBytes(val.PublicKey)
+		if err != nil {
+			return fmt.Errorf("invalid validator public key: %w", err)
+		}
+		if !pubKey.VerifyMessage(msgID, signature) {
+			return fmt.Errorf("invalid validator signature")
+		}
+	}
+
 	msg.Signatures = append(msg.Signatures, signature)
 	msg.ValidatorIdx = append(msg.ValidatorIdx, validatorIdx)
 
@@ -247,8 +264,14 @@ func (bs *BridgeState) VerifyMessage(msg *BridgeMessage) error {
 		}
 		totalStake += v.Stake
 
-		for _, idx := range msg.ValidatorIdx {
+		for sIdx, idx := range msg.ValidatorIdx {
 			if idx == i {
+				if len(v.PublicKey) > 0 && sIdx < len(msg.Signatures) {
+					pubKey, err := crypto.PubKeyFromBytes(v.PublicKey)
+					if err != nil || !pubKey.VerifyMessage(msg.ID, msg.Signatures[sIdx]) {
+						continue
+					}
+				}
 				validStake += v.Stake
 				break
 			}

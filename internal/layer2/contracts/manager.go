@@ -68,6 +68,18 @@ func (cm *ContractManager) GetStandardContract(addr []byte) StandardContract {
 	return cm.standards[string(addr)]
 }
 
+// GetERC20 returns the ERC20Token instance for the given address if it exists.
+func (cm *ContractManager) GetERC20(addr []byte) *ERC20Token {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+	if sc, ok := cm.standards[string(addr)]; ok {
+		if tok, ok := sc.(*ERC20Token); ok {
+			return tok
+		}
+	}
+	return nil
+}
+
 // IsStandardContract returns true if the address is a registered standard contract.
 func (cm *ContractManager) IsStandardContract(addr []byte) bool {
 	cm.mu.RLock()

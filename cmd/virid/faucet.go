@@ -299,15 +299,30 @@ func (f *FaucetServer) handleClaim(w http.ResponseWriter, r *http.Request) {
 
 	txHash := fmt.Sprintf("%v", result)
 
+	// Send ERC-20 VIRI test tokens (0x...E0) so user can immediately test multi-token gas
+	tokenTxHash := ""
+	tokenNonce := f.nextNonce
+	f.nextNonce++
+	tokenAmount := new(big.Int).Mul(big.NewInt(100), new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil))
+	tokenData := erc20TransferData(addrBytes, tokenAmount)
+	if tokenTx, err := ledger.NewTransactionFromKey(tokenNonce, erc20TokenAddr, 0, 100000, 1, tokenData, f.chainID, f.walletKey); err == nil {
+		if tokenTxBytes, err := ledger.SerializeTransaction(tokenTx); err == nil {
+			if tokenRes, err := f.rpcCall("eth_sendRawTransaction", []interface{}{"0x" + hex.EncodeToString(tokenTxBytes)}); err == nil {
+				tokenTxHash = fmt.Sprintf("%v", tokenRes)
+			}
+		}
+	}
+
 	// Record the claim
 	f.claims[normalizedAddr] = time.Now()
 	f.ipClaims[clientIP] = time.Now()
 	f.dailyTotal += f.perClaim
 
 	json.NewEncoder(w).Encode(ClaimResponse{
-		Success: true,
-		TxHash:  txHash,
-		Amount:  fmt.Sprintf("%d", f.perClaim),
+		Success:     true,
+		TxHash:      txHash,
+		TokenTxHash: tokenTxHash,
+		Amount:      fmt.Sprintf("%d", f.perClaim),
 	})
 }
 

@@ -1143,10 +1143,14 @@ func (s *RPCServer) getTransactionReceipt(ctx context.Context, params json.RawMe
 		"transactionIndex":  fmt.Sprintf("0x%x", entry.Index),
 		"blockHash":         fmt.Sprintf("0x%x", block.Hash()),
 		"blockNumber":       fmt.Sprintf("0x%x", entry.Height),
-		"from":              fmt.Sprintf("0x%x", tx.From),
+		"from":              fmt.Sprintf("0x%x", tx.SenderAddress()),
 		"to":                fmt.Sprintf("0x%x", tx.To),
+		"cumulativeGasUsed": fmt.Sprintf("0x%x", receipt.GasUsed),
 		"gasUsed":           fmt.Sprintf("0x%x", receipt.GasUsed),
+		"effectiveGasPrice": fmt.Sprintf("0x%x", tx.GasPrice),
 		"status":            fmt.Sprintf("0x%x", receipt.Status),
+		"type":              "0x0",
+		"logsBloom":         "0x" + fmt.Sprintf("%0512x", 0),
 		"logs":              logs,
 	}
 
@@ -1200,10 +1204,14 @@ func (s *RPCServer) getBlockReceipts(ctx context.Context, params json.RawMessage
 			"transactionIndex":  fmt.Sprintf("0x%x", txIdx),
 			"blockHash":         fmt.Sprintf("0x%x", block.Hash()),
 			"blockNumber":       fmt.Sprintf("0x%x", height),
-			"from":              fmt.Sprintf("0x%x", tx.From),
+			"from":              fmt.Sprintf("0x%x", tx.SenderAddress()),
 			"to":                fmt.Sprintf("0x%x", tx.To),
+			"cumulativeGasUsed": fmt.Sprintf("0x%x", gasUsed),
 			"gasUsed":           fmt.Sprintf("0x%x", gasUsed),
+			"effectiveGasPrice": fmt.Sprintf("0x%x", tx.GasPrice),
 			"status":            fmt.Sprintf("0x%x", status),
+			"type":              "0x0",
+			"logsBloom":         "0x" + fmt.Sprintf("%0512x", 0),
 			"logs":              logs,
 		})
 	}
@@ -1516,7 +1524,17 @@ func (s *RPCServer) getStorageAt(ctx context.Context, params json.RawMessage) (i
 }
 
 func formatTx(tx *ledger.Transaction, blockHash []byte, height uint64, txIdx int) map[string]interface{} {
-	return map[string]interface{}{
+	var rHex, sHex, vHex string
+	if tx.Signature != nil {
+		rHex = fmt.Sprintf("0x%x", tx.Signature.R)
+		sHex = fmt.Sprintf("0x%x", tx.Signature.S)
+		vHex = fmt.Sprintf("0x%x", tx.Signature.V)
+	} else {
+		rHex = "0x0"
+		sHex = "0x0"
+		vHex = "0x0"
+	}
+	res := map[string]interface{}{
 		"hash":             fmt.Sprintf("0x%x", tx.Hash),
 		"nonce":            fmt.Sprintf("0x%x", tx.Nonce),
 		"blockHash":        fmt.Sprintf("0x%x", blockHash),
@@ -1528,7 +1546,16 @@ func formatTx(tx *ledger.Transaction, blockHash []byte, height uint64, txIdx int
 		"gas":              fmt.Sprintf("0x%x", tx.GasLimit),
 		"gasPrice":         fmt.Sprintf("0x%x", tx.GasPrice),
 		"input":            fmt.Sprintf("0x%x", tx.Data),
+		"chainId":          fmt.Sprintf("0x%x", tx.ChainID),
+		"r":                rHex,
+		"s":                sHex,
+		"v":                vHex,
+		"type":             "0x0",
 	}
+	if len(tx.FeeCurrency) > 0 {
+		res["feeCurrency"] = fmt.Sprintf("0x%x", tx.FeeCurrency)
+	}
+	return res
 }
 
 func formatBlockWithTxs(block *ledger.Block) map[string]interface{} {
@@ -1538,15 +1565,41 @@ func formatBlockWithTxs(block *ledger.Block) map[string]interface{} {
 		txs = append(txs, formatTx(tx, blockHash, block.Header.Height, i))
 	}
 
+	stateRoot := "0x0000000000000000000000000000000000000000000000000000000000000000"
+	if len(block.Header.StateRoot) > 0 {
+		stateRoot = fmt.Sprintf("0x%x", block.Header.StateRoot)
+	}
+	receiptsRoot := "0x0000000000000000000000000000000000000000000000000000000000000000"
+	if len(block.Header.ReceiptsRoot) > 0 {
+		receiptsRoot = fmt.Sprintf("0x%x", block.Header.ReceiptsRoot)
+	}
+
+	transactionsRoot := "0x0000000000000000000000000000000000000000000000000000000000000000"
+	if len(block.Header.TxsHash) > 0 {
+		transactionsRoot = fmt.Sprintf("0x%x", block.Header.TxsHash)
+	}
+
 	return map[string]interface{}{
-		"number":       fmt.Sprintf("0x%x", block.Header.Height),
-		"hash":         fmt.Sprintf("0x%x", blockHash),
-		"parentHash":   fmt.Sprintf("0x%x", block.Header.PrevHash),
-		"timestamp":    fmt.Sprintf("0x%x", block.Header.Timestamp.Unix()),
-		"proposer":     fmt.Sprintf("0x%x", block.Header.Proposer),
-		"miner":        fmt.Sprintf("0x%x", block.Header.Proposer),
-		"gasUsed":      "0x0",
-		"transactions": txs,
+		"number":           fmt.Sprintf("0x%x", block.Header.Height),
+		"hash":             fmt.Sprintf("0x%x", blockHash),
+		"parentHash":       fmt.Sprintf("0x%x", block.Header.PrevHash),
+		"nonce":            "0x0000000000000000",
+		"sha3Uncles":       "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
+		"logsBloom":        "0x" + fmt.Sprintf("%0512x", 0),
+		"transactionsRoot": transactionsRoot,
+		"stateRoot":        stateRoot,
+		"receiptsRoot":     receiptsRoot,
+		"miner":            fmt.Sprintf("0x%x", block.Header.Proposer),
+		"difficulty":       "0x1",
+		"totalDifficulty":  fmt.Sprintf("0x%x", block.Header.Height),
+		"extraData":        "0x",
+		"size":             fmt.Sprintf("0x%x", 1024),
+		"gasLimit":         "0x1c9c380",
+		"gasUsed":          "0x0",
+		"timestamp":        fmt.Sprintf("0x%x", block.Header.Timestamp.Unix()),
+		"transactions":     txs,
+		"uncles":           []string{},
+		"baseFeePerGas":    "0x7",
 	}
 }
 
@@ -1556,13 +1609,40 @@ func formatBlock(block *ledger.Block) map[string]interface{} {
 		txs = append(txs, fmt.Sprintf("0x%x", tx.Hash))
 	}
 
+	stateRoot := "0x0000000000000000000000000000000000000000000000000000000000000000"
+	if len(block.Header.StateRoot) > 0 {
+		stateRoot = fmt.Sprintf("0x%x", block.Header.StateRoot)
+	}
+	receiptsRoot := "0x0000000000000000000000000000000000000000000000000000000000000000"
+	if len(block.Header.ReceiptsRoot) > 0 {
+		receiptsRoot = fmt.Sprintf("0x%x", block.Header.ReceiptsRoot)
+	}
+	transactionsRoot := "0x0000000000000000000000000000000000000000000000000000000000000000"
+	if len(block.Header.TxsHash) > 0 {
+		transactionsRoot = fmt.Sprintf("0x%x", block.Header.TxsHash)
+	}
+
 	return map[string]interface{}{
-		"number":       fmt.Sprintf("0x%x", block.Header.Height),
-		"hash":         fmt.Sprintf("0x%x", block.Hash()),
-		"parentHash":   fmt.Sprintf("0x%x", block.Header.PrevHash),
-		"timestamp":    fmt.Sprintf("0x%x", block.Header.Timestamp.Unix()),
-		"proposer":     fmt.Sprintf("0x%x", block.Header.Proposer),
-		"transactions": txs,
+		"number":           fmt.Sprintf("0x%x", block.Header.Height),
+		"hash":             fmt.Sprintf("0x%x", block.Hash()),
+		"parentHash":       fmt.Sprintf("0x%x", block.Header.PrevHash),
+		"nonce":            "0x0000000000000000",
+		"sha3Uncles":       "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
+		"logsBloom":        "0x" + fmt.Sprintf("%0512x", 0),
+		"transactionsRoot": transactionsRoot,
+		"stateRoot":        stateRoot,
+		"receiptsRoot":     receiptsRoot,
+		"miner":            fmt.Sprintf("0x%x", block.Header.Proposer),
+		"difficulty":       "0x1",
+		"totalDifficulty":  fmt.Sprintf("0x%x", block.Header.Height),
+		"extraData":        "0x",
+		"size":             fmt.Sprintf("0x%x", 1024),
+		"gasLimit":         "0x1c9c380",
+		"gasUsed":          "0x0",
+		"timestamp":        fmt.Sprintf("0x%x", block.Header.Timestamp.Unix()),
+		"transactions":     txs,
+		"uncles":           []string{},
+		"baseFeePerGas":    "0x7",
 	}
 }
 
@@ -2486,7 +2566,11 @@ func (s *RPCServer) txPoolContent(ctx context.Context, params json.RawMessage) (
 	pending := pool.GetPending()
 	bySender := make(map[string][]map[string]interface{})
 	for _, tx := range pending {
-		from := "0x" + hex.EncodeToString(tx.From)
+		sender := tx.SenderAddress()
+		if len(sender) == 0 {
+			sender = tx.From
+		}
+		from := "0x" + hex.EncodeToString(sender)
 		bySender[from] = append(bySender[from], formatTx(tx, nil, 0, len(bySender[from])))
 	}
 	return map[string]interface{}{
@@ -2505,7 +2589,11 @@ func (s *RPCServer) txPoolInspect(ctx context.Context, params json.RawMessage) (
 	pending := pool.GetPending()
 	bySender := make(map[string][]string)
 	for _, tx := range pending {
-		from := "0x" + hex.EncodeToString(tx.From)
+		sender := tx.SenderAddress()
+		if len(sender) == 0 {
+			sender = tx.From
+		}
+		from := "0x" + hex.EncodeToString(sender)
 		to := "0x" + hex.EncodeToString(tx.To)
 		summary := fmt.Sprintf("%s: %d wei + %d gas x %d wei",
 			to, tx.Value, tx.GasLimit, tx.GasPrice)

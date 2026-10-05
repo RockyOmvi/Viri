@@ -217,7 +217,8 @@ func (e *ExecutionEngine) ExecuteTransaction(tx *ledger.Transaction, blockHeight
 	}
 
 	feeToken := tx.FeeToken()
-	feeAmount := new(big.Int).SetUint64(gasCost * tx.GasPrice)
+	feeAmount := new(big.Int).SetUint64(tx.GasLimit * tx.GasPrice)
+	feeToDeduct := feeAmount
 
 	// Check balance: value in native, fee in fee token
 	if len(feeToken) == 0 {
@@ -247,7 +248,20 @@ func (e *ExecutionEngine) ExecuteTransaction(tx *ledger.Transaction, blockHeight
 				feeInToken = new(big.Int).SetUint64(tokenFee)
 			}
 		}
+		feeToDeduct = feeInToken
+
 		tokenBal := sender.GetTokenBalance(feeToken)
+		var erc20Tok *contracts.ERC20Token
+		if e.contractMgr != nil {
+			erc20Tok = e.contractMgr.GetERC20(feeToken)
+		}
+		if tokenBal.Cmp(feeInToken) < 0 && erc20Tok != nil {
+			contractBal := erc20Tok.BalanceOf(senderAddr)
+			if contractBal.Cmp(feeInToken) >= 0 {
+				tokenBal = contractBal
+			}
+		}
+
 		if tokenBal.Cmp(feeInToken) < 0 {
 			return &ExecutionResult{
 				GasUsed: 0, Status: 0,
@@ -271,8 +285,18 @@ func (e *ExecutionEngine) ExecuteTransaction(tx *ledger.Transaction, blockHeight
 		sender.Balance = new(big.Int).Sub(sender.Balance, new(big.Int).SetUint64(tx.Value))
 	}
 
-	// Deduct fee in appropriate currency
-	sender.DeductTokenBalance(feeToken, feeAmount)
+	// Deduct fee in appropriate currency (EX-02: deduct feeInToken, not unconverted feeAmount)
+	if len(feeToken) == 0 {
+		sender.DeductTokenBalance(nil, feeAmount)
+	} else {
+		if sender.GetTokenBalance(feeToken).Cmp(feeToDeduct) >= 0 {
+			sender.DeductTokenBalance(feeToken, feeToDeduct)
+		} else if e.contractMgr != nil {
+			if tok := e.contractMgr.GetERC20(feeToken); tok != nil {
+				_ = tok.TransferFromAccount(senderAddr, nil, feeToDeduct)
+			}
+		}
+	}
 
 	if err := setAccount(senderAddr, sender); err != nil {
 		return &ExecutionResult{
@@ -309,20 +333,25 @@ func (e *ExecutionEngine) ExecuteTransaction(tx *ledger.Transaction, blockHeight
 		result.GasUsed = gasCost
 	}
 	feeToCharge := result.GasUsed
-	result.GasRefund = (tx.GasLimit - feeToCharge) * tx.GasPrice
+	nativeRefund := (tx.GasLimit - feeToCharge) * tx.GasPrice
 
-	if result.GasRefund > 0 {
+	if nativeRefund > 0 {
 		refundAddr := tx.SenderAddress()
 		refundAccount, err := getAccount(refundAddr)
 		if err == nil {
-			// EX-01: Refund in native token when fee was paid in native.
-			// Only use feeToken for refund if fee was actually paid in that token.
-			refundToken := feeToken
-			if len(refundToken) == 0 {
-				// Native fee — refund to native balance
+			if len(feeToken) == 0 {
+				result.GasRefund = nativeRefund
 				refundAccount.Balance = new(big.Int).Add(refundAccount.Balance, new(big.Int).SetUint64(result.GasRefund))
 			} else {
-				refundAccount.AddTokenBalance(refundToken, new(big.Int).SetUint64(result.GasRefund))
+				tokenRefund := nativeRefund
+				if e.feOracle != nil {
+					converted := e.feOracle.ConvertFromNative(feeToken, nativeRefund)
+					if converted > 0 {
+						tokenRefund = converted
+					}
+				}
+				result.GasRefund = tokenRefund
+				refundAccount.AddTokenBalance(feeToken, new(big.Int).SetUint64(result.GasRefund))
 			}
 			if err := setAccount(refundAddr, refundAccount); err != nil {
 				fmt.Printf("[WARN] Failed to persist gas refund for %x: %v\n", refundAddr, err)

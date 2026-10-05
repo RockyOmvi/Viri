@@ -244,3 +244,49 @@ func encodeString(s string) []byte {
 	copy(dataPart, data)
 	return append(append(offsetPart, lenPart...), dataPart...)
 }
+
+// BalanceOf returns the balance of the given owner directly.
+func (t *ERC20Token) BalanceOf(owner []byte) *big.Int {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	bal := t.balances[string(owner)]
+	if bal == nil {
+		return big.NewInt(0)
+	}
+	return new(big.Int).Set(bal)
+}
+
+// TransferFromAccount transfers tokens from an account without allowance check (system use).
+func (t *ERC20Token) TransferFromAccount(from, to []byte, amount *big.Int) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	fromKey := string(from)
+	cur := t.balances[fromKey]
+	if cur == nil || cur.Cmp(amount) < 0 {
+		return fmt.Errorf("insufficient token balance")
+	}
+	t.balances[fromKey] = new(big.Int).Sub(cur, amount)
+	if len(to) > 0 {
+		toKey := string(to)
+		toCur := t.balances[toKey]
+		if toCur == nil {
+			toCur = new(big.Int)
+		}
+		t.balances[toKey] = new(big.Int).Add(toCur, amount)
+	}
+	return nil
+}
+
+// Mint mints tokens directly to an address.
+func (t *ERC20Token) Mint(to []byte, amount *big.Int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	toKey := string(to)
+	cur := t.balances[toKey]
+	if cur == nil {
+		cur = new(big.Int)
+	}
+	t.balances[toKey] = new(big.Int).Add(cur, amount)
+	t.totalSupply.Add(t.totalSupply, amount)
+}
+

@@ -16,15 +16,16 @@ const (
 )
 
 type Account struct {
-	Address     []byte
-	Type        AccountType
-	Balance     *big.Int
-	Nonce       uint64
-	Code        []byte
-	CodeHash    []byte
-	StorageRoot []byte
-	Storage     map[string][]byte
-	Metadata    map[string]string
+	Address       []byte
+	Type          AccountType
+	Balance       *big.Int
+	TokenBalances map[string]*big.Int `json:"token_balances,omitempty"`
+	Nonce         uint64
+	Code          []byte
+	CodeHash      []byte
+	StorageRoot   []byte
+	Storage       map[string][]byte
+	Metadata      map[string]string
 }
 
 type AccountState struct {
@@ -37,12 +38,13 @@ func NewAccountState(db KVStore) *AccountState {
 
 func NewAccount(address []byte, accountType AccountType) *Account {
 	return &Account{
-		Address:  address,
-		Type:     accountType,
-		Balance:  new(big.Int),
-		Nonce:    0,
-		Storage:  make(map[string][]byte),
-		Metadata: make(map[string]string),
+		Address:       address,
+		Type:          accountType,
+		Balance:       new(big.Int),
+		TokenBalances: make(map[string]*big.Int),
+		Nonce:         0,
+		Storage:       make(map[string][]byte),
+		Metadata:      make(map[string]string),
 	}
 }
 
@@ -72,6 +74,61 @@ func (a *Account) Transfer(amount *big.Int) error {
 
 func (a *Account) Deposit(amount *big.Int) {
 	a.Balance = new(big.Int).Add(a.Balance, amount)
+}
+
+func (a *Account) GetTokenBalance(token []byte) *big.Int {
+	if len(token) == 0 {
+		return a.Balance
+	}
+	if a.TokenBalances == nil {
+		return new(big.Int)
+	}
+	b, ok := a.TokenBalances[string(token)]
+	if !ok || b == nil {
+		return new(big.Int)
+	}
+	return new(big.Int).Set(b)
+}
+
+func (a *Account) SetTokenBalance(token []byte, amount *big.Int) {
+	if len(token) == 0 {
+		a.Balance = new(big.Int).Set(amount)
+		return
+	}
+	if a.TokenBalances == nil {
+		a.TokenBalances = make(map[string]*big.Int)
+	}
+	a.TokenBalances[string(token)] = new(big.Int).Set(amount)
+}
+
+func (a *Account) AddTokenBalance(token []byte, amount *big.Int) {
+	if len(token) == 0 {
+		a.Balance = new(big.Int).Add(a.Balance, amount)
+		return
+	}
+	if a.TokenBalances == nil {
+		a.TokenBalances = make(map[string]*big.Int)
+	}
+	cur := a.TokenBalances[string(token)]
+	if cur == nil {
+		cur = new(big.Int)
+	}
+	a.TokenBalances[string(token)] = new(big.Int).Add(cur, amount)
+}
+
+func (a *Account) DeductTokenBalance(token []byte, amount *big.Int) {
+	if len(token) == 0 {
+		a.Balance = new(big.Int).Sub(a.Balance, amount)
+		return
+	}
+	if a.TokenBalances == nil {
+		a.TokenBalances = make(map[string]*big.Int)
+	}
+	cur := a.TokenBalances[string(token)]
+	if cur == nil {
+		cur = new(big.Int)
+	}
+	a.TokenBalances[string(token)] = new(big.Int).Sub(cur, amount)
 }
 
 func (a *Account) IncrementNonce() {

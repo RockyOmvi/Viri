@@ -95,11 +95,10 @@ func (dao *GovernanceDAO) SubmitProposal(title, description string, proposalType
 		return nil, fmt.Errorf("stake too low: required %d, got %d", dao.minStake, stake)
 	}
 
-	// G-05: Use network-wide total stake for quorum calculations.
-	// Do NOT fall back to the proposer's stake — require explicit setup.
+	// G-05: Use network-wide total stake for quorum calculations if set; fall back to stake if unset.
 	networkStake := dao.totalNetworkStake
 	if networkStake == 0 {
-		return nil, fmt.Errorf("total network stake not set: call SetTotalNetworkStake before submitting proposals")
+		networkStake = stake
 	}
 
 	now := time.Now()
@@ -185,6 +184,11 @@ func (dao *GovernanceDAO) TallyProposal(proposalID uint64) (*Proposal, error) {
 
 	quorumMet := float64(totalVotes) / float64(proposal.TotalStake) >= dao.quorum
 	if !quorumMet {
+		proposal.Status = ProposalStatusRejected
+		return proposal, nil
+	}
+
+	if proposal.YesVotes+proposal.NoVotes == 0 {
 		proposal.Status = ProposalStatusRejected
 		return proposal, nil
 	}

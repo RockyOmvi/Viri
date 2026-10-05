@@ -102,6 +102,28 @@ func (sm *StateManager) GetBalance(address []byte) (*big.Int, error) {
 	return sm.accountState.GetBalance(address)
 }
 
+func (sm *StateManager) GetTokenBalance(address, token []byte) (*big.Int, error) {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	acc, err := sm.accountState.GetAccount(address)
+	if err != nil {
+		return nil, err
+	}
+	return acc.GetTokenBalance(token), nil
+}
+
+func (sm *StateManager) SetTokenBalance(address, token []byte, amount *big.Int) error {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	acc, err := sm.accountState.GetAccount(address)
+	if err != nil {
+		acc = NewAccount(address, AccountTypeNormal)
+	}
+	acc.SetTokenBalance(token, amount)
+	sm.dirtyAccounts[string(address)] = true
+	return sm.accountState.SetAccount(acc)
+}
+
 func (sm *StateManager) GetNonce(address []byte) (uint64, error) {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()

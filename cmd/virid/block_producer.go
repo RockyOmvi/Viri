@@ -62,12 +62,19 @@ func stateToExecAccount(acct *state.Account) *execution.AccountState {
 			storage[k] = v
 		}
 	}
+	tokenBalances := make(map[string]*big.Int)
+	if acct.TokenBalances != nil {
+		for k, v := range acct.TokenBalances {
+			tokenBalances[k] = new(big.Int).Set(v)
+		}
+	}
 	return &execution.AccountState{
-		Address: acct.Address,
-		Balance: new(big.Int).Set(acct.Balance),
-		Nonce:   acct.Nonce,
-		Code:    acct.Code,
-		Storage: storage,
+		Address:       acct.Address,
+		Balance:       new(big.Int).Set(acct.Balance),
+		TokenBalances: tokenBalances,
+		Nonce:         acct.Nonce,
+		Code:          acct.Code,
+		Storage:       storage,
 	}
 }
 
@@ -87,6 +94,14 @@ func execToStateAccount(src *execution.AccountState, dst *state.Account) {
 			dst.Storage[k] = v
 		}
 	}
+	if src.TokenBalances != nil {
+		if dst.TokenBalances == nil {
+			dst.TokenBalances = make(map[string]*big.Int, len(src.TokenBalances))
+		}
+		for k, v := range src.TokenBalances {
+			dst.TokenBalances[k] = new(big.Int).Set(v)
+		}
+	}
 }
 
 // executeBlockTxs runs L2 execution on the block's transactions and returns receipts.
@@ -99,10 +114,11 @@ func (p *chainBlockProducer) executeBlockTxs(block *ledger.Block, height uint64)
 		acct, err := p.stateMgr.GetAccount(addr)
 		if err != nil {
 			return &execution.AccountState{
-				Address: addr,
-				Balance: big.NewInt(0),
-				Nonce:   0,
-				Storage: make(map[string][]byte),
+				Address:       addr,
+				Balance:       big.NewInt(0),
+				TokenBalances: make(map[string]*big.Int),
+				Nonce:         0,
+				Storage:       make(map[string][]byte),
 			}, nil
 		}
 		return stateToExecAccount(acct), nil

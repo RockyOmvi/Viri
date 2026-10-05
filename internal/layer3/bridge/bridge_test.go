@@ -1,6 +1,11 @@
 package bridge
 
-import "testing"
+import (
+	"math/big"
+	"testing"
+
+	"github.com/viri-chain/viri/internal/layer1/crypto"
+)
 
 func TestRegisterChainAndInitiateTransfer(t *testing.T) {
 	br := NewChainBridge(2)
@@ -94,5 +99,82 @@ func TestGetTransferAndPending(t *testing.T) {
 	pending := br.GetPendingTransfers()
 	if len(pending) != 1 {
 		t.Fatalf("expected 1 pending")
+	}
+}
+
+func TestBridgeStateCryptoSignatureVerification(t *testing.T) {
+	bs := NewBridgeState()
+
+	privKey1, _ := crypto.GenerateKey()
+	privKey2, _ := crypto.GenerateKey()
+
+	vs := &ValidatorSet{
+		Validators: []*BridgeValidator{
+			{
+				Address:   privKey1.PubKey().Address(),
+				PublicKey: privKey1.PubKey().Bytes(),
+				Stake:     100,
+				IsActive:  true,
+			},
+			{
+				Address:   privKey2.PubKey().Address(),
+				PublicKey: privKey2.PubKey().Bytes(),
+				Stake:     100,
+				IsActive:  true,
+			},
+		},
+		Threshold: 2,
+	}
+
+	bs.RegisterValidatorSet(Viri, vs)
+
+	msg, err := bs.CreateBridgeMessage(Viri, Ethereum, []byte("sender"), []byte("receiver"), []byte("token"), big.NewInt(1000), nil)
+	if err != nil {
+		t.Fatalf("create message failed: %v", err)
+	}
+
+	// 1. Invalid signature should be rejected
+	badSig := make([]byte, 64)
+	if err := bs.AddSignature(msg.ID, 0, badSig); err == nil {
+		t.Fatalf("expected error adding invalid signature")
+	}
+
+	// 2. Valid signature from validator 0
+	sig1, err := privKey1.Sign(msg.ID)
+	if err != nil {
+		t.Fatalf("sign failed: %v", err)
+	}
+	if err := bs.AddSignature(msg.ID, 0, sig1.Bytes()); err != nil {
+		t.Fatalf("failed to add valid signature 0: %v", err)
+	}
+
+	// Message should still be Pending because threshold 2/3 of 200 stake = 134 stake required
+	if msg.Status != Pending {
+		t.Fatalf("expected status Pending after 1 signature, got %v", msg.Status)
+	}
+
+	// 3. Valid signature from validator 1
+	sig2, err := privKey2.Sign(msg.ID)
+	if err != nil {
+		t.Fatalf("sign failed: %v", err)
+	}
+	if err := bs.AddSignature(msg.ID, 1, sig2.Bytes()); err != nil {
+		t.Fatalf("failed to add valid signature 1: %v", err)
+	}
+
+	// Status should now be Confirmed (200 >= 134)
+	if msg.Status != Confirmed {
+		t.Fatalf("expected status Confirmed after 2 signatures, got %v", msg.Status)
+	}
+
+	// 4. Verify message via VerifyMessage
+	if err := bs.VerifyMessage(msg); err != nil {
+		t.Fatalf("VerifyMessage failed: %v", err)
+	}
+
+	// 5. Tampered signature in VerifyMessage should fail
+	msg.Signatures[0] = badSig
+	if err := bs.VerifyMessage(msg); err == nil {
+		t.Fatalf("expected VerifyMessage to fail with tampered signature")
 	}
 }

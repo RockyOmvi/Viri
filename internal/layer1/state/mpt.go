@@ -842,24 +842,46 @@ func (m *MerklePatriciaTrie) SaveEpochRoot(epoch uint64, root []byte) error {
 func (m *MerklePatriciaTrie) GarbageCollect(beforeEpoch uint64) (uint64, error) {
 	var pruned uint64
 
-	for epoch := uint64(0); epoch < beforeEpoch; epoch++ {
-		epochKey := make([]byte, 8)
-		binary.BigEndian.PutUint64(epochKey, epoch)
-		dbKey := append([]byte("mpt:root:"), epochKey...)
-
-		root, err := m.db.Get(dbKey)
+	prefix := []byte("mpt:root:")
+	if iterStore, ok := m.db.(IterableKVStore); ok {
+		iter, err := iterStore.Iterator(prefix)
 		if err != nil {
-			continue
+			return 0, err
 		}
 
-		if err := m.decrementRef(root); err != nil {
-			return pruned, err
+		type pruneItem struct {
+			key  []byte
+			root []byte
 		}
+		var toPrune []pruneItem
 
-		_ = m.db.Delete(dbKey)
-		pruned++
+		for iter.Next() {
+			key := iter.Key()
+			if len(key) < len(prefix)+8 {
+				continue
+			}
+			epoch := binary.BigEndian.Uint64(key[len(prefix):])
+			if epoch >= beforeEpoch {
+				continue
+			}
+			k := make([]byte, len(key))
+			copy(k, key)
+			v := make([]byte, len(iter.Value()))
+			copy(v, iter.Value())
+			toPrune = append(toPrune, pruneItem{key: k, root: v})
+		}
+		_ = iter.Close()
+
+		for _, item := range toPrune {
+			if err := m.decrementRef(item.root); err != nil {
+				return pruned, err
+			}
+			_ = m.db.Delete(item.key)
+			pruned++
+		}
+		return pruned, nil
 	}
 
-	return pruned, nil
+	return 0, nil
 }
 
