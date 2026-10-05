@@ -116,7 +116,7 @@ func main() {
 
 	deployTx := &ledger.Transaction{
 		Nonce: 1, Data: append(initCode, make([]byte, 32)...),
-		GasLimit: 2000000, GasPrice: 1,
+		GasLimit: 200000, GasPrice: 1,
 	}
 	signTx(deployTx, wallet1)
 
@@ -138,7 +138,7 @@ func main() {
 
 	callTx := &ledger.Transaction{
 		Nonce: 2, To: contractAddr, Data: input,
-		GasLimit: 2000000, GasPrice: 1,
+		GasLimit: 200000, GasPrice: 1,
 	}
 	signTx(callTx, wallet1)
 	result3, _ := engine.ExecuteTransaction(callTx, 1, getAcct, setAcct)
@@ -153,7 +153,7 @@ func main() {
 	getSelector := []byte{0x6d, 0x4c, 0xe6, 0x3c}
 	getTx := &ledger.Transaction{
 		Nonce: 3, To: contractAddr, Data: getSelector,
-		GasLimit: 2000000, GasPrice: 1,
+		GasLimit: 200000, GasPrice: 1,
 	}
 	signTx(getTx, wallet1)
 	result4, _ := engine.ExecuteTransaction(getTx, 1, getAcct, setAcct)

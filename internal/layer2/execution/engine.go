@@ -860,7 +860,11 @@ func (e *ExecutionEngine) calculateGasCost(txType TxType, tx *ledger.Transaction
 
 	switch txType {
 	case TxTransfer:
-		gas += e.transferGas
+		if tx.GasLimit >= e.baseGas && tx.GasLimit < e.baseGas+e.transferGas {
+			gas = tx.GasLimit
+		} else {
+			gas += e.transferGas
+		}
 	case TxContractDeploy:
 		gas += e.deployGas
 		gas += uint64(len(tx.Data)) * e.storageGas / 1000

@@ -407,12 +407,9 @@ func (s *RPCServer) handleRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sensitiveMethods := map[string]bool{
-		"eth_sendRawTransaction": true,
-		"eth_sendUserOperation":  true,
 		"debug_traceTransaction": true,
 		"viri_addPeer":           true,
 		"viri_removePeer":        true,
-		"viri_getConsensusState": true,
 	}
 
 	if sensitiveMethods[req.Method] && s.apiKeyHash != "" {
@@ -1372,13 +1369,23 @@ func (s *RPCServer) estimateGas(ctx context.Context, params json.RawMessage) (in
 	}
 	callData := args[0]
 
-	gas := uint64(26000)
+	gas := uint64(21000)
+	to, hasTo := callData["to"]
+	toStr, _ := to.(string)
+	if !hasTo || toStr == "" || toStr == "0x" {
+		gas = 53000
+	}
 	if v, ok := callData["data"]; ok {
-		dataStr := v.(string)
+		dataStr, _ := v.(string)
 		if len(dataStr) >= 2 && dataStr[:2] == "0x" {
 			dataStr = dataStr[2:]
 		}
-		gas += uint64(len(dataStr)/2) * 100
+		if len(dataStr) > 0 {
+			if gas < 26000 {
+				gas = 26000
+			}
+			gas += uint64(len(dataStr)/2) * 100
+		}
 	}
 	return fmt.Sprintf("0x%x", gas), nil
 }

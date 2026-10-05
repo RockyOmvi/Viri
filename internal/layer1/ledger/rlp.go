@@ -21,8 +21,9 @@ type RLPTx struct {
 	R                     []byte
 	S                     []byte
 	ChainID               uint64
-	txType                byte  // 0 = legacy, 1 = EIP-2930, 2 = EIP-1559
+	txType                byte   // 0 = legacy, 1 = EIP-2930, 2 = EIP-1559
 	MaxPriorityFeePerGas  uint64 // EIP-1559 only
+	AccessListRaw         []byte // Raw payload bytes inside access list
 }
 
 func decodeRLPItem(data []byte) ([]byte, []byte, error) {
@@ -130,6 +131,7 @@ func DecodeRLPTransaction(raw []byte) (*RLPTx, error) {
 		tx.To = items[5]
 		tx.Value = decodeRLPBigInt(items[6])
 		tx.Data = items[7]
+		tx.AccessListRaw = items[8]
 		tx.R = items[10]
 		tx.S = items[11]
 		v := decodeRLPBigInt(items[9])
@@ -168,6 +170,13 @@ func DecodeRLPTransaction(raw []byte) (*RLPTx, error) {
 	return tx, nil
 }
 
+func (tx *RLPTx) encodeAccessList() []byte {
+	if len(tx.AccessListRaw) == 0 {
+		return rlpEncodeList()
+	}
+	return rlpEncodeWithPrefix(tx.AccessListRaw, 0xC0)
+}
+
 func (tx *RLPTx) SigningHash() []byte {
 	var buf []byte
 	if tx.txType == 2 || tx.txType == 1 {
@@ -182,7 +191,7 @@ func (tx *RLPTx) SigningHash() []byte {
 			rlpEncodeBytes(tx.To),
 			rlpEncodeUint64(tx.Value),
 			rlpEncodeBytes(tx.Data),
-			rlpEncodeBytes(nil), // empty accessList
+			tx.encodeAccessList(),
 		)...)
 	} else {
 		// Legacy EIP-155: RLP([nonce, gasPrice, gasLimit, to, value, data, chainID, 0, 0])
@@ -214,7 +223,7 @@ func (tx *RLPTx) TxHash() []byte {
 			rlpEncodeBytes(tx.To),
 			rlpEncodeUint64(tx.Value),
 			rlpEncodeBytes(tx.Data),
-			rlpEncodeBytes(nil),
+			tx.encodeAccessList(),
 			rlpEncodeUint64(uint64(tx.V)),
 			rlpEncodeBytes(tx.R),
 			rlpEncodeBytes(tx.S),
