@@ -101,6 +101,8 @@ type FilterLog struct {
 	BlockHash   string   `json:"blockHash"`
 	TxHash      string   `json:"transactionHash"`
 	TxIndex     string   `json:"transactionIndex"`
+	LogIndex    string   `json:"logIndex"`
+	Removed     bool     `json:"removed"`
 }
 
 func NewRPCServer(port int, bc *ledger.PersistentBlockchain, sm *state.StateManager, net *p2p.ViriNetwork, engine *consensus.HotStuffEngine, log *logging.Logger, chainID uint64, validator bool, coinbase []byte, tlsCert, tlsKey, apiKeyHash string, auditLog *observability.AuditLogger, syncer *nodesync.Syncer, ep *accounts.EntryPoint, cm *contracts.ContractManager, sp *privacy.ShieldedPool, ms *mev.MEVState, rc *rollups.RollupChain) *RPCServer {
@@ -1065,20 +1067,32 @@ func (s *RPCServer) queryLogs(fromBlock, toBlock uint64, address string, topics 
 }
 
 func logsToFilterLogs(logs []*ledger.Log, height uint64, blockHash, txHash []byte, txIdx int) []FilterLog {
-	var fl []FilterLog
-	for _, l := range logs {
+	fl := make([]FilterLog, 0, len(logs))
+	for logIdx, l := range logs {
 		topics := make([]string, len(l.Topics))
 		for i, t := range l.Topics {
-			topics[i] = fmt.Sprintf("0x%x", t)
+			padded := make([]byte, 32)
+			if len(t) <= 32 {
+				copy(padded[32-len(t):], t)
+			} else {
+				copy(padded, t[:32])
+			}
+			topics[i] = fmt.Sprintf("0x%x", padded)
+		}
+		dataHex := "0x"
+		if len(l.Data) > 0 {
+			dataHex = fmt.Sprintf("0x%x", l.Data)
 		}
 		fl = append(fl, FilterLog{
 			Address:     fmt.Sprintf("0x%x", l.Address),
 			Topics:      topics,
-			Data:        fmt.Sprintf("0x%x", l.Data),
+			Data:        dataHex,
 			BlockNumber: fmt.Sprintf("0x%x", height),
 			BlockHash:   fmt.Sprintf("0x%x", blockHash),
 			TxHash:      fmt.Sprintf("0x%x", txHash),
 			TxIndex:     fmt.Sprintf("0x%x", txIdx),
+			LogIndex:    fmt.Sprintf("0x%x", logIdx),
+			Removed:     false,
 		})
 	}
 	return fl
@@ -1119,9 +1133,27 @@ func (s *RPCServer) getTransactionReceipt(ctx context.Context, params json.RawMe
 		receipt = &ledger.Receipt{TxHash: txHash, BlockHeight: entry.Height, GasUsed: tx.GasLimit, Status: 1}
 	}
 
-	var logs []FilterLog
-	if receipt != nil && len(receipt.Logs) > 0 {
+	logs := []FilterLog{}
+	if len(tx.Data) > 0 && receipt != nil && len(receipt.Logs) > 0 {
 		logs = logsToFilterLogs(receipt.Logs, entry.Height, block.Hash(), txHash, entry.Index)
+	}
+
+	var toAddr interface{} = nil
+	if len(tx.To) > 0 {
+		toAddr = fmt.Sprintf("0x%x", tx.To)
+	}
+
+	var contractAddr interface{} = nil
+	if len(tx.To) == 0 && len(tx.Data) > 0 {
+		nonceBytes := make([]byte, 8)
+		binary.BigEndian.PutUint64(nonceBytes, tx.Nonce)
+		cAddr := crypto.Keccak256(append(tx.SenderAddress(), nonceBytes...))[12:]
+		contractAddr = fmt.Sprintf("0x%x", cAddr)
+	}
+
+	txType := "0x0"
+	if tx.ChainID > 0 {
+		txType = "0x2"
 	}
 
 	result := map[string]interface{}{
@@ -1130,22 +1162,15 @@ func (s *RPCServer) getTransactionReceipt(ctx context.Context, params json.RawMe
 		"blockHash":         fmt.Sprintf("0x%x", block.Hash()),
 		"blockNumber":       fmt.Sprintf("0x%x", entry.Height),
 		"from":              fmt.Sprintf("0x%x", tx.SenderAddress()),
-		"to":                fmt.Sprintf("0x%x", tx.To),
+		"to":                toAddr,
 		"cumulativeGasUsed": fmt.Sprintf("0x%x", receipt.GasUsed),
 		"gasUsed":           fmt.Sprintf("0x%x", receipt.GasUsed),
 		"effectiveGasPrice": fmt.Sprintf("0x%x", tx.GasPrice),
 		"status":            fmt.Sprintf("0x%x", receipt.Status),
-		"type":              "0x0",
+		"type":              txType,
 		"logsBloom":         "0x" + fmt.Sprintf("%0512x", 0),
 		"logs":              logs,
-	}
-
-	// For deploy transactions, compute contractAddress
-	if len(tx.To) == 0 && len(tx.Data) > 0 {
-		nonceBytes := make([]byte, 8)
-		binary.BigEndian.PutUint64(nonceBytes, tx.Nonce)
-		contractAddr := crypto.Keccak256(append(tx.SenderAddress(), nonceBytes...))[12:]
-		result["contractAddress"] = fmt.Sprintf("0x%x", contractAddr)
+		"contractAddress":   contractAddr,
 	}
 
 	return result, nil
@@ -1174,31 +1199,54 @@ func (s *RPCServer) getBlockReceipts(ctx context.Context, params json.RawMessage
 		return nil, fmt.Errorf("block not found")
 	}
 
-	var receipts []map[string]interface{}
+	receipts := make([]map[string]interface{}, 0, len(block.Transactions))
 	for txIdx, tx := range block.Transactions {
 		receipt, err := s.blockchain.GetReceipt(tx.Hash)
 		gasUsed := tx.GasLimit
 		status := uint8(1)
-		var logs []FilterLog
-		if err == nil && receipt != nil {
+		logs := []FilterLog{}
+		if len(tx.Data) > 0 && err == nil && receipt != nil && len(receipt.Logs) > 0 {
 			gasUsed = receipt.GasUsed
 			status = receipt.Status
 			logs = logsToFilterLogs(receipt.Logs, height, block.Hash(), tx.Hash, txIdx)
+		} else if err == nil && receipt != nil {
+			gasUsed = receipt.GasUsed
+			status = receipt.Status
 		}
+
+		var toAddr interface{} = nil
+		if len(tx.To) > 0 {
+			toAddr = fmt.Sprintf("0x%x", tx.To)
+		}
+
+		var contractAddr interface{} = nil
+		if len(tx.To) == 0 && len(tx.Data) > 0 {
+			nonceBytes := make([]byte, 8)
+			binary.BigEndian.PutUint64(nonceBytes, tx.Nonce)
+			cAddr := crypto.Keccak256(append(tx.SenderAddress(), nonceBytes...))[12:]
+			contractAddr = fmt.Sprintf("0x%x", cAddr)
+		}
+
+		txType := "0x0"
+		if tx.ChainID > 0 {
+			txType = "0x2"
+		}
+
 		receipts = append(receipts, map[string]interface{}{
 			"transactionHash":   fmt.Sprintf("0x%x", tx.Hash),
 			"transactionIndex":  fmt.Sprintf("0x%x", txIdx),
 			"blockHash":         fmt.Sprintf("0x%x", block.Hash()),
 			"blockNumber":       fmt.Sprintf("0x%x", height),
 			"from":              fmt.Sprintf("0x%x", tx.SenderAddress()),
-			"to":                fmt.Sprintf("0x%x", tx.To),
+			"to":                toAddr,
 			"cumulativeGasUsed": fmt.Sprintf("0x%x", gasUsed),
 			"gasUsed":           fmt.Sprintf("0x%x", gasUsed),
 			"effectiveGasPrice": fmt.Sprintf("0x%x", tx.GasPrice),
 			"status":            fmt.Sprintf("0x%x", status),
-			"type":              "0x0",
+			"type":              txType,
 			"logsBloom":         "0x" + fmt.Sprintf("%0512x", 0),
 			"logs":              logs,
+			"contractAddress":   contractAddr,
 		})
 	}
 	return receipts, nil
@@ -1530,6 +1578,17 @@ func formatTx(tx *ledger.Transaction, blockHash []byte, height uint64, txIdx int
 		sHex = "0x0"
 		vHex = "0x0"
 	}
+
+	var toAddr interface{} = nil
+	if len(tx.To) > 0 {
+		toAddr = fmt.Sprintf("0x%x", tx.To)
+	}
+
+	txType := "0x0"
+	if tx.ChainID > 0 {
+		txType = "0x2"
+	}
+
 	res := map[string]interface{}{
 		"hash":             fmt.Sprintf("0x%x", tx.Hash),
 		"nonce":            fmt.Sprintf("0x%x", tx.Nonce),
@@ -1537,7 +1596,7 @@ func formatTx(tx *ledger.Transaction, blockHash []byte, height uint64, txIdx int
 		"blockNumber":      fmt.Sprintf("0x%x", height),
 		"transactionIndex": fmt.Sprintf("0x%x", txIdx),
 		"from":             fmt.Sprintf("0x%x", tx.SenderAddress()),
-		"to":               fmt.Sprintf("0x%x", tx.To),
+		"to":               toAddr,
 		"value":            fmt.Sprintf("0x%x", tx.Value),
 		"gas":              fmt.Sprintf("0x%x", tx.GasLimit),
 		"gasPrice":         fmt.Sprintf("0x%x", tx.GasPrice),
@@ -1546,7 +1605,12 @@ func formatTx(tx *ledger.Transaction, blockHash []byte, height uint64, txIdx int
 		"r":                rHex,
 		"s":                sHex,
 		"v":                vHex,
-		"type":             "0x0",
+		"type":             txType,
+	}
+	if txType == "0x2" {
+		res["maxFeePerGas"] = fmt.Sprintf("0x%x", tx.GasPrice)
+		res["maxPriorityFeePerGas"] = fmt.Sprintf("0x%x", tx.GasPrice)
+		res["accessList"] = []interface{}{}
 	}
 	if len(tx.FeeCurrency) > 0 {
 		res["feeCurrency"] = fmt.Sprintf("0x%x", tx.FeeCurrency)

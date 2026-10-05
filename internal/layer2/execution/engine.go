@@ -359,12 +359,6 @@ func (e *ExecutionEngine) ExecuteTransaction(tx *ledger.Transaction, blockHeight
 		}
 	}
 
-	result.Logs = append(result.Logs, &ledger.Log{
-		Address: tx.To,
-		Topics:  [][]byte{tx.SenderAddress()},
-		Data:    []byte{byte(result.Status)},
-	})
-
 	return result, nil
 }
 
