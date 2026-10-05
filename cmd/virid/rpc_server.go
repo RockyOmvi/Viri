@@ -372,6 +372,13 @@ func (s *RPCServer) handleReady(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *RPCServer) handleRequest(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(fmt.Sprintf(`{"status":"running","chain_id":%d,"service":"viri-jsonrpc"}`+"\n", s.chainID)))
+		return
+	}
+
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -2658,8 +2665,9 @@ func (s *RPCServer) corsMiddleware(next http.Handler) http.Handler {
 			origin = "*"
 		}
 		w.Header().Set("Access-Control-Allow-Origin", origin)
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-API-Key, Authorization")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS, HEAD")
+		w.Header().Set("Access-Control-Allow-Headers", "*")
+		w.Header().Set("Access-Control-Max-Age", "86400")
 
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusOK)
