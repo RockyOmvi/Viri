@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math/big"
 	"net/http"
 	"os"
@@ -391,21 +392,64 @@ func (s *RPCServer) handleRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req JSONRPCRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		s.sendError(w, nil, -32700, "Parse error")
+		return
+	}
+	bodyBytes = bytes.TrimSpace(bodyBytes)
+	if len(bodyBytes) == 0 {
 		s.sendError(w, nil, -32700, "Parse error")
 		return
 	}
 
-	if req.JSONRPC != "2.0" {
-		s.sendError(w, req.ID, -32600, "Invalid request")
+	w.Header().Set("Content-Type", "application/json")
+
+	if bodyBytes[0] == '[' {
+		var reqs []JSONRPCRequest
+		if err := json.Unmarshal(bodyBytes, &reqs); err != nil {
+			s.sendError(w, nil, -32700, "Parse error")
+			return
+		}
+		responses := make([]JSONRPCResponse, 0, len(reqs))
+		for _, req := range reqs {
+			responses = append(responses, s.executeSingleRequest(r.Context(), req, r))
+		}
+		json.NewEncoder(w).Encode(responses)
 		return
+	}
+
+	var req JSONRPCRequest
+	if err := json.Unmarshal(bodyBytes, &req); err != nil {
+		s.sendError(w, nil, -32700, "Parse error")
+		return
+	}
+	resp := s.executeSingleRequest(r.Context(), req, r)
+	json.NewEncoder(w).Encode(resp)
+}
+
+func (s *RPCServer) executeSingleRequest(ctx context.Context, req JSONRPCRequest, r *http.Request) JSONRPCResponse {
+	if req.JSONRPC != "2.0" {
+		return JSONRPCResponse{
+			JSONRPC: "2.0",
+			ID:      req.ID,
+			Error: &RPCError{
+				Code:    -32600,
+				Message: "Invalid request",
+			},
+		}
 	}
 
 	handler, exists := s.methods[req.Method]
 	if !exists {
-		s.sendError(w, req.ID, -32601, "Method not found")
-		return
+		return JSONRPCResponse{
+			JSONRPC: "2.0",
+			ID:      req.ID,
+			Error: &RPCError{
+				Code:    -32601,
+				Message: "Method not found",
+			},
+		}
 	}
 
 	sensitiveMethods := map[string]bool{
@@ -417,23 +461,45 @@ func (s *RPCServer) handleRequest(w http.ResponseWriter, r *http.Request) {
 	if sensitiveMethods[req.Method] && s.apiKeyHash != "" {
 		key := security.ExtractAPIKey(r)
 		if key == "" {
-			s.sendError(w, req.ID, -32000, "missing API key")
-			return
+			return JSONRPCResponse{
+				JSONRPC: "2.0",
+				ID:      req.ID,
+				Error: &RPCError{
+					Code:    -32000,
+					Message: "missing API key",
+				},
+			}
 		}
 		auth := security.NewAPIKeyAuthFromHash(s.apiKeyHash)
 		if !auth.IsValid(key) {
-			s.sendError(w, req.ID, -32000, "invalid API key")
-			return
+			return JSONRPCResponse{
+				JSONRPC: "2.0",
+				ID:      req.ID,
+				Error: &RPCError{
+					Code:    -32000,
+					Message: "invalid API key",
+				},
+			}
 		}
 	}
 
-	result, err := handler(r.Context(), req.Params)
+	result, err := handler(ctx, req.Params)
 	if err != nil {
-		s.sendError(w, req.ID, -32000, err.Error())
-		return
+		return JSONRPCResponse{
+			JSONRPC: "2.0",
+			ID:      req.ID,
+			Error: &RPCError{
+				Code:    -32000,
+				Message: err.Error(),
+			},
+		}
 	}
 
-	s.sendResult(w, req.ID, result)
+	return JSONRPCResponse{
+		JSONRPC: "2.0",
+		ID:      req.ID,
+		Result:  result,
+	}
 }
 
 func (s *RPCServer) sendResult(w http.ResponseWriter, id interface{}, result interface{}) {
